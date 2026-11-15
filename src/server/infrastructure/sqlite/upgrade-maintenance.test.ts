@@ -25,6 +25,7 @@ import { enableProvisionalSchema } from "./provisional-schema-gate";
 import { hashFile, parseManifest, readBoundedJson, validateBackup, BACKUP_LIMITS } from "./backup-validation";
 import { upgradeMarkerChecksum, upgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup, type UpgradeBackupSource } from "./upgrade-maintenance";
+import { takeBoundBackup } from "./backup-binding";
 import {
   assertUpgradeAvailable, canonicalJson, describeUpgradeActs, executeUpgradeActs, parseUpgradePlan, proposeUpgradeActs, readUpgradePlan, structuralSteps,
   UPGRADE_ACT_KINDS, UPGRADE_PLAN_LIMITS, upgradePlanHash, upgradePlanPath, upgradePlanRoot, writeUpgradePlan,
@@ -543,6 +544,70 @@ describe("explicit offline upgrade: apply refusals change nothing", () => {
     const result = await apply(paths, noted);
     expect(result).toMatchObject({ alreadyApplied: false, planHash: noted });
     expect(parseManifest(readBoundedJson(join(result.backup!, "manifest.json"), BACKUP_LIMITS.manifestBytes, true), TARGET).database.schemaVersion).toBe(49);
+  });
+
+  /**
+   * This run's own tree, with its snapshot written straight into the tree's
+   * database file and a manifest made before the snapshot finished: the bytes it
+   * will have are those of a reference copy taken first, through another
+   * read-only connection to the same unchanged source, into a new empty file as
+   * the snapshot is (two Backup API copies of an unchanged database are
+   * byte-identical). The file keeps the bytes the Backup API writes (no
+   * journal-mode switch, which needs the finished file). With `wait` false the
+   * callback returns while its snapshot is still running; `observed` records the
+   * root and whether the snapshot had completed when the callback returned.
+   */
+  const ownTree = (wait: boolean, observed: { root?: string; completedAtReturn?: boolean } = {}): UpgradeBackup => async (source, context) => {
+    const root = join(temporary("upgrade-own-"), "backup"), file = join(root, "state.sqlite3");
+    const reference = join(temporary("upgrade-reference-"), "reference.sqlite3"); closeSync(openSync(reference, "wx", 0o600));
+    const live = unmanagedFixtureDatabase(context.database, { readonly: true, fileMustExist: true });
+    try { await live.backup(reference); } finally { live.close(); }
+    mkdirSync(join(root, "attachments"), { recursive: true, mode: 0o700 });
+    const manifest = { formatVersion: 1, applicationVersion: "test", createdAt: new Date().toISOString(), database: { file: "state.sqlite3", ...hashFile(reference), schemaVersion: context.schemaVersion }, attachments: [] };
+    writeFileSync(join(root, "manifest.json"), JSON.stringify(manifest), { mode: 0o600 });
+    closeSync(openSync(file, "wx", 0o600));
+    let completed = false;
+    const snapshot = source.backup(file).then(() => { completed = true; });
+    if (wait) await snapshot; else snapshot.catch(() => undefined);
+    observed.root = root; observed.completedAtReturn = completed;
+    return { root, manifest };
+  };
+  it("refuses this run's own tree whose snapshot was still running when the callback returned, by the completion guard alone", async () => {
+    // The variant above returns a tree unrelated to its snapshot, which the file
+    // identity check refuses too. Here the tree is the one the snapshot is
+    // written into, so only the completion guard tells.
+    const paths = installation(true), noted = inspect(paths).planHash!, content = read(paths, all);
+    const unfinished: { root?: string; completedAtReturn?: boolean } = {};
+    const { result } = await refused(paths, () => apply(paths, noted, ownTree(false, unfinished)));
+    expect(result).toMatchObject({ code: "upgrade_backup_failed", nextStep: "upgrade apply", committed: false });
+    expect(unfinished.completedAtReturn).toBe(false);
+    // The refusal drained the copy before refusing: the refused tree is now
+    // complete and passes every later check. Its file is the one the snapshot
+    // was written into; its stored manifest is the returned one and validates
+    // at the target ceiling; the copy holds the source's schema version, its
+    // content and its checkpoint.
+    const root = unfinished.root!, manifest = parseManifest(readBoundedJson(join(root, "manifest.json"), BACKUP_LIMITS.manifestBytes, true), TARGET);
+    expect(manifest.database).toMatchObject({ schemaVersion: 49, ...hashFile(join(root, "state.sqlite3")) });
+    expect(() => validateBackup(root, manifest, true, TARGET)).not.toThrow();
+    const copy = new Database(join(root, "state.sqlite3"), { readonly: true, fileMustExist: true });
+    try { expect(inspectSchema(copy, TARGET).version).toBe(49); expect(all(copy)).toEqual(content); } finally { copy.close(); }
+    // The helper itself refuses with the completion guard's message. The
+    // callback took exactly one snapshot and it completed, so of the guard's
+    // three conditions only "still running when the callback returned" holds.
+    const owner = new OwnedSqliteDatabase(paths.databasePath, false, TARGET);
+    try {
+      const direct: { root?: string; completedAtReturn?: boolean } = {}, waited: { root?: string; completedAtReturn?: boolean } = {};
+      await expect(takeBoundBackup(owner, owner.canonicalPath, owner.inspection.version, TARGET, ownTree(false, direct))).rejects.toThrow("The backup is not this run's single completed snapshot.");
+      expect(direct.completedAtReturn).toBe(false);
+      expect(() => validateBackup(direct.root!, parseManifest(readBoundedJson(join(direct.root!, "manifest.json"), BACKUP_LIMITS.manifestBytes, true), TARGET), true, TARGET)).not.toThrow();
+      // The same callback, waiting for its snapshot, is accepted.
+      expect(await takeBoundBackup(owner, owner.canonicalPath, owner.inspection.version, TARGET, ownTree(true, waited))).toBe(waited.root);
+      expect(waited.completedAtReturn).toBe(true);
+    } finally { owner.close(); }
+    // And applies the same plan.
+    const waited: { root?: string; completedAtReturn?: boolean } = {};
+    expect(await apply(paths, noted, ownTree(true, waited))).toMatchObject({ alreadyApplied: false, planHash: noted, backup: waited.root });
+    expect(waited.completedAtReturn).toBe(true);
   });
 
   it("refuses as base changed a raw change to the database made while the backup callback runs, with nothing written", async () => {

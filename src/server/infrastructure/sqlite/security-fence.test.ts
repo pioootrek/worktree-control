@@ -21,11 +21,11 @@ import { securityTriggers } from "./security-fence-migration";
 import { inspectSchema } from "./schema-inspection";
 import { applyRegistryMigration } from "./migration-registry";
 import { establishSqliteSecurityFence, maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
-import type { MaintenanceBackup } from "./backup-binding";
+import { takeBoundBackup, type MaintenanceBackup } from "./backup-binding";
 import { OwnedSqliteDatabase } from "./owned-database";
-import { BACKUP_LIMITS, parseManifest, readBoundedJson, validateBackup } from "./backup-validation";
+import { BACKUP_LIMITS, hashFile, parseManifest, readBoundedJson, validateBackup } from "./backup-validation";
 import { initializeSchema } from "./migrations";
-import { PROVISIONAL_SCHEMA_VERSION } from "./migration-registry";
+import { PROVISIONAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { enableProvisionalSchema, provisionalSchemaEnabled } from "./provisional-schema-gate";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
 
@@ -663,6 +663,8 @@ describe("establishment with a pre-establishment backup (default target)",()=>{
       db.exec(`CREATE INDEX IF NOT EXISTS knowledge_import_sources_target ON knowledge_import_sources(project_id,target_kind,target_id);
         INSERT INTO schema_migrations(version,applied_at) VALUES(27,'2026-11-01T00:00:00.000Z')`);
       applyRegistryMigration(db);
+      // Step 28 records the time it ran; a fixed past instant keeps every historical timestamp fixed.
+      db.prepare("UPDATE schema_migrations SET applied_at=? WHERE version=28").run("2026-11-01T00:00:01.000Z");
       db.exec("INSERT INTO remote_principals VALUES('historical-owner','owner','active')");
       db.prepare(`INSERT INTO principal_credentials(id,principal_id,kind,label,token_prefix,verifier_hash,status,created_at)
         VALUES('historical-credential','historical-owner','owner_session','fixture','fixture',?,'active','2026-11-01T00:00:00.000Z')`).run("a".repeat(64));
@@ -692,33 +694,92 @@ describe("establishment with a pre-establishment backup (default target)",()=>{
     const owner=new OwnedSqliteDatabase(paths.databasePath),destination=join(paths.dataDirectory,"..",`prior-${randomUUID()}`);
     try{return {root:destination,manifest:await createControllerBackup(owner,destination,{applicationVersion:"test",attachmentDirectory:paths.knowledgeAttachmentDirectory})};}finally{owner.close();}
   }
+  /**
+   * This run's own tree, with its snapshot written straight into the tree's
+   * database file and a manifest made before the snapshot finished: the bytes it
+   * will have are those of a reference copy taken first, through another
+   * read-only connection to the same unchanged source, into a new empty file as
+   * the snapshot is (two Backup API copies of an unchanged database are
+   * byte-identical). The file keeps the bytes the Backup API writes (no
+   * journal-mode switch, which needs the finished file). With `wait` false the
+   * function returns while its snapshot is still running; `observed` records
+   * the root and whether the snapshot had completed when the function returned.
+   * Once the copy has finished, the tree passes every check that follows the
+   * completion guard in `takeBoundBackup`.
+   */
+  const ownTree=(paths:ReturnType<typeof resolveAppPaths>,wait:boolean,observed:{root?:string;completedAtReturn?:boolean}={}):MaintenanceBackup=>async(source,context)=>{
+    const root=join(paths.dataDirectory,"..",`own-${randomUUID()}`),file=join(root,"state.sqlite3");
+    const scratch=mkdtempSync(join(tmpdir(),"security-establish-reference-"));roots.push(scratch);
+    const reference=join(scratch,"reference.sqlite3");fs.closeSync(fs.openSync(reference,"wx",0o600));
+    const live=unmanagedFixtureDatabase(context.database,{readonly:true,fileMustExist:true});
+    try{await live.backup(reference);}finally{live.close();}
+    mkdirSync(join(root,"attachments"),{recursive:true,mode:0o700});
+    const manifest={formatVersion:1,applicationVersion:"test",createdAt:new Date().toISOString(),
+      database:{file:"state.sqlite3",...hashFile(reference),schemaVersion:context.schemaVersion},attachments:[]};
+    writeFileSync(join(root,"manifest.json"),JSON.stringify(manifest),{mode:0o600});
+    fs.closeSync(fs.openSync(file,"wx",0o600));
+    let completed=false;
+    const snapshot=source.backup(file).then(()=>{completed=true;});
+    if(wait)await snapshot;else snapshot.catch(()=>undefined);
+    observed.root=root;observed.completedAtReturn=completed;
+    return {root,manifest};
+  };
   /** Takes this run's snapshot into a scratch file, then returns another tree. */
   const substitute=(tree:{root:string;manifest:unknown}):MaintenanceBackup=>async source=>{
     const scratch=mkdtempSync(join(tmpdir(),"security-establish-scratch-"));roots.push(scratch);
     await source.backup(join(scratch,"snapshot.sqlite3"));return tree;
   };
   const ISO=/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/;
-  /** The established database and witness, with timestamps, the receipt and the random checkpoint
-   * named by column; the same value in the database and the witness gets the same name. */
-  const established=(paths:ReturnType<typeof resolveAppPaths>)=>{
+  /** The instants just before and just after a run. */
+  type Window={from:string;to:string};
+  const timed=async<T,>(operation:()=>Promise<T>|T)=>{const from=new Date().toISOString(),value=await operation();return {value,window:{from,to:new Date().toISOString()}};};
+  type Generated=(value:unknown,row:Record<string,unknown>,run:{source:number;window:Window;name:(kind:string,value:unknown)=>unknown})=>unknown;
+  /**
+   * The only values establishment generates, by table and column: the
+   * `applied_at` of each step the run applied (above the source version), which
+   * must be an instant of that run, and the checkpoint's random installation
+   * and epoch, named by first appearance so that the witness's copies of them
+   * get the same names. Every other value of every table, the `applied_at` of
+   * the historical steps and every other historical timestamp included,
+   * compares exactly.
+   */
+  const GENERATED:Readonly<Record<string,Readonly<Record<string,Generated>>>>={
+    schema_migrations:{applied_at:(value,row,{source,window})=>(row.version as number)<=source?value
+      :typeof value==="string"&&ISO.test(value)&&value>=window.from&&value<=window.to?"<applied by this run>":value},
+    security_checkpoint:{installation:(value,_row,{name})=>name("installation",value),epoch:(value,_row,{name})=>name("epoch",value)},
+  };
+  /** The established database (see GENERATED) and witness of a run from `source` within `window`. */
+  const established=(paths:ReturnType<typeof resolveAppPaths>,source:number,window:Window)=>{
     const ids=new Map<string,string>();
     const name=(kind:string,value:unknown)=>{if(typeof value!=="string")return value;if(!ids.has(value))ids.set(value,`${kind}#${ids.size+1}`);return ids.get(value);};
-    const normal=(table:string,column:string,value:unknown)=>table==="security_checkpoint"&&(column==="installation"||column==="epoch")?name(column,value)
-      :/(_at|At)$/.test(column)&&typeof value==="string"&&ISO.test(value)?"<time>":value;
     const database=read(paths,db=>{const {catalogue,rows}=all(db);return {catalogue,rows:Object.fromEntries(Object.entries(rows).map(([table,list])=>[table,
-      (list as Array<Record<string,unknown>>).map(row=>Object.fromEntries(Object.entries(row).map(([column,value])=>[column,normal(table,column,value)])))]))};});
+      (list as Array<Record<string,unknown>>).map(row=>Object.fromEntries(Object.entries(row).map(([column,value])=>[column,GENERATED[table]?.[column]?GENERATED[table][column](value,row,{source,window,name}):value])))]))};});
     const {payload}=JSON.parse(readFileSync(witness(paths.databasePath),"utf8")),stat=fs.lstatSync(paths.databasePath);
     return {database,witness:{...payload,installation:name("installation",payload.installation),epoch:name("epoch",payload.epoch),receipt:typeof payload.receipt==="string"?"<receipt>":payload.receipt,
       binding:payload.binding===securityFenceBinding(paths.databasePath)?"<this database>":payload.binding,
       file:payload.file.device===stat.dev&&payload.file.inode===stat.ino?"<this file>":payload.file}};
   };
+  /** Historical timestamps the fixtures write as fixed past instants, in authority and settings tables. */
+  const HISTORICAL=[["principal_credentials","created_at"],["authentication_provider_subjects","linked_at"],["authentication_passkey_trust","trusted_at"],
+    ["reservations","created_at"],["controller_settings","updated_at"]] as const;
+  /** The `applied_at` of the steps up to `source`, and each HISTORICAL column of `tables` (default: those the database has). */
+  const historical=(paths:ReturnType<typeof resolveAppPaths>,source:number,tables?:readonly string[])=>read(paths,db=>({
+    migrations:db.prepare("SELECT version,applied_at FROM schema_migrations WHERE version<=? ORDER BY version").all(source) as Array<{version:number;applied_at:string}>,
+    columns:Object.fromEntries(HISTORICAL.filter(([table])=>tables?tables.includes(table):has(db,table))
+      .map(([table,column])=>[`${table}.${column}`,db.prepare(`SELECT "${column}" FROM "${table}" ORDER BY rowid`).pluck().all() as string[]])),
+  }));
   /** A maintenance result without this run's receipt, the preflight and the backup root. */
   const outcome=(value:object)=>Object.fromEntries(Object.entries(value).filter(([key])=>!["receipt","preflight","backup"].includes(key)));
 
   it.each([["schema 28 (the public 0.1.1 release)",()=>baseline28(),28],["schema 40 with authority",()=>genuine40(),40]] as const)
   ("establishes %s with this run's validated backup exactly as without one",async(_name,build,version)=>{
-    const paths=build(),twin=build(),before=read(paths,all);
-    const result=await establish(paths,controllerBackup(paths));
+    const paths=build(),twin=build(),before=read(paths,all),past=historical(paths,version);
+    // The fixture's historical timestamps are fixed past instants, distinct from any run's.
+    expect(past.migrations.map(row=>row.version)).toEqual(Array.from({length:version},(_,index)=>index+1));
+    expect(past.columns["principal_credentials.created_at"]).toContain("2026-11-01T00:00:00.000Z");
+    const start=new Date().toISOString();
+    for(const value of [...past.migrations.map(row=>row.applied_at),...Object.values(past.columns).flat()])expect(value<start&&ISO.test(value),value).toBe(true);
+    const {value:result,window}=await timed(()=>establish(paths,controllerBackup(paths)));
     expect(result).toMatchObject({trusted:true,changed:true,quarantined:false,schemaVersion:49,backup:expect.any(String)});
     // The backup holds the pre-establishment schema and content, and validates against its own manifest.
     const manifest=parseManifest(readBoundedJson(join(result.backup!,"manifest.json"),BACKUP_LIMITS.manifestBytes,true));
@@ -727,9 +788,19 @@ describe("establishment with a pre-establishment backup (default target)",()=>{
     const copy=new Database(join(result.backup!,"state.sqlite3"),{readonly:true,fileMustExist:true});
     try{expect(inspectSchema(copy).version).toBe(version);expect(all(copy)).toEqual(before);expect(has(copy,"security_checkpoint")).toBe(false);}finally{copy.close();}
     // The fence is the one the synchronous establishment produces.
-    const plain=maintainSecurityFence(twin,{action:"establish",expect:inspect(twin).preflight});
+    const {value:plain,window:plainWindow}=await timed(()=>maintainSecurityFence(twin,{action:"establish",expect:inspect(twin).preflight}));
     expect(outcome(result)).toEqual(outcome(plain));
-    expect(established(paths)).toEqual(established(twin));
+    const fenced=established(paths,version,window);
+    expect(fenced).toEqual(established(twin,version,plainWindow));
+    // Every step above the source was applied by this run, at an instant of it.
+    expect((fenced.database.rows.schema_migrations as Array<Record<string,unknown>>).filter(row=>(row.version as number)>version).map(row=>row.applied_at))
+      .toEqual(Array.from({length:SUPPORTED_SCHEMA_VERSION-version},()=>"<applied by this run>"));
+    // The checkpoint the witness holds is the database's.
+    expect(fenced.database.rows.security_checkpoint).toEqual([{singleton:1,installation:fenced.witness.installation,epoch:fenced.witness.epoch}]);
+    // The historical timestamps are still there, unchanged.
+    const now=historical(paths,version,Object.keys(past.columns).map(key=>key.split(".")[0]!));
+    expect(now.migrations).toEqual(past.migrations);
+    for(const [key,values] of Object.entries(past.columns))expect(now.columns[key],key).toEqual(expect.arrayContaining(values));
     expect(witnessState(paths)).toBe("confirmed");
     expect(inspect(paths)).toMatchObject({trusted:true,code:"security_fence_current"});
   });
@@ -762,6 +833,46 @@ describe("establishment with a pre-establishment backup (default target)",()=>{
       expect(inspect(paths),name).toMatchObject({trusted:false,establishmentAllowed:true,preflight});
     }
     expect(await establish(paths,controllerBackup(paths))).toMatchObject({trusted:true,changed:true,backup:expect.any(String)});
+    expect(inspect(paths).trusted).toBe(true);
+  });
+
+  it("refuses this run's own tree whose snapshot was still running when the function returned, by the completion guard alone",async()=>{
+    // The case above returns a tree unrelated to its snapshot, which the file
+    // identity check refuses too. Here the tree is the one the snapshot is
+    // written into, so only the completion guard tells.
+    const paths=baseline28(),content=read(paths,all),before=untouched(paths),preflight=inspect(paths).preflight;
+    const unfinished:{root?:string;completedAtReturn?:boolean}={};
+    expect(await refusal(()=>establishSqliteSecurityFence(paths,{action:"establish",expect:preflight},HANDOFF,ownTree(paths,false,unfinished)))).toEqual(BACKUP_REFUSED);
+    expect(unfinished.completedAtReturn).toBe(false);
+    expect(untouched(paths)).toEqual(before);
+    expect(inspect(paths)).toMatchObject({trusted:false,establishmentAllowed:true,preflight});
+    // The refusal drained the copy before refusing: the refused tree is now
+    // complete and passes every later check. Its file is the one the snapshot
+    // was written into; its stored manifest is the returned one and validates;
+    // the copy holds the source's schema version and content and, like the
+    // source, no checkpoint.
+    const root=unfinished.root!,manifest=parseManifest(readBoundedJson(join(root,"manifest.json"),BACKUP_LIMITS.manifestBytes,true));
+    expect(manifest.database).toMatchObject({schemaVersion:28,...hashFile(join(root,"state.sqlite3"))});
+    expect(()=>validateBackup(root,manifest,true)).not.toThrow();
+    const copy=new Database(join(root,"state.sqlite3"),{readonly:true,fileMustExist:true});
+    try{expect(inspectSchema(copy).version).toBe(28);expect(all(copy)).toEqual(content);expect(has(copy,"security_checkpoint")).toBe(false);}finally{copy.close();}
+    // The helper itself refuses with the completion guard's message. The
+    // function took exactly one snapshot and it completed, so of the guard's
+    // three conditions only "still running when the function returned" holds.
+    const owner=new OwnedSqliteDatabase(paths.databasePath);
+    try{
+      const direct:{root?:string;completedAtReturn?:boolean}={},waited:{root?:string;completedAtReturn?:boolean}={};
+      await expect(takeBoundBackup(owner,owner.canonicalPath,owner.inspection.version,SUPPORTED_SCHEMA_VERSION,ownTree(paths,false,direct))).rejects.toThrow("The backup is not this run's single completed snapshot.");
+      expect(direct.completedAtReturn).toBe(false);
+      expect(()=>validateBackup(direct.root!,parseManifest(readBoundedJson(join(direct.root!,"manifest.json"),BACKUP_LIMITS.manifestBytes,true)),true)).not.toThrow();
+      // The same function, waiting for its snapshot, is accepted.
+      expect(await takeBoundBackup(owner,owner.canonicalPath,owner.inspection.version,SUPPORTED_SCHEMA_VERSION,ownTree(paths,true,waited))).toBe(waited.root);
+      expect(waited.completedAtReturn).toBe(true);
+    }finally{owner.close();}
+    // And establishes.
+    const waited:{root?:string;completedAtReturn?:boolean}={};
+    expect(await establish(paths,ownTree(paths,true,waited))).toMatchObject({trusted:true,changed:true,backup:waited.root});
+    expect(waited.completedAtReturn).toBe(true);
     expect(inspect(paths).trusted).toBe(true);
   });
 
