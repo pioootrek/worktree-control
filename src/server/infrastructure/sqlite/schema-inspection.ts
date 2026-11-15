@@ -1,6 +1,6 @@
 import { securityFenceMigration, securityFenceChecksum } from "./security-fence-migration";
 import { upgradeMarkerMigration, upgradeMarkerChecksum } from "./upgrade-marker-migration";
-import { securityTriggersAt } from "./security-coverage";
+import { SECURITY_COVERAGE } from "./security-coverage";
 import { humanConfigurationMigration, humanConfigurationChecksum } from "./human-configuration-migration";
 import { humanTestRunMigration, humanTestRunChecksum } from "./human-test-run-migration";
 import { humanRuntimeMigration, humanRuntimeChecksum } from "./human-runtime-migration";
@@ -90,8 +90,13 @@ const historicalLeaseCheck = "(kind='human'andexpires_atisnull)or(kind='agent'an
 interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: string[]; uniqueKeys: string[]; indexes: string[] }
 // Tables from migration 38 on are never in bootstrap DDL; their explicit indexes are part of the contract.
 const STRICT_TABLES_FROM = 38;
-// Tables from migration 50 on must also match their reference CREATE TABLE text exactly.
-const EXACT_TABLES_FROM = 50;
+// Tables and fence triggers from migration 50 on must also match their reference
+// CREATE text byte for byte. SQLite stores that text as the step executed it
+// (normalising only the leading keywords), and only our own step creates these
+// objects, so no normalisation is needed; normalizedSql would also fold the case
+// and whitespace inside string literals such as CHECK(state IN ('pending',...)).
+const EXACT_FROM = 50;
+// Released recognition below EXACT_FROM: whitespace removed and lowercased, literals included.
 const normalizedSql = (sql: string) => sql.replace(/\s+/g, "").toLowerCase();
 const knownTables = (ceiling: number) => Object.fromEntries(Object.entries(tableVersions).filter(([, introduced]) => introduced <= ceiling));
 function explicitIndexes(database: Database.Database, table: string): string[] {
@@ -136,7 +141,7 @@ function knownStructure(ceiling: number): Map<string, TableShape & { sql: string
       checks: checks((database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql),
       uniqueKeys: uniqueKeys(database, table),
       indexes: explicitIndexes(database, table),
-      sql: normalizedSql((database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql),
+      sql: (database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql,
     }]));
     references.set(ceiling, reference);
     return reference;
@@ -198,7 +203,7 @@ export function inspectSchema(database: Database.Database, ceiling?: number): Sc
     if (!tables.has(table)) { if (version >= introduced) refuse(); continue; }
     if (introduced >= STRICT_TABLES_FROM && version < introduced) refuse(`${table} precedes its migration`);
     const expected = knownStructure(maximum).get(table)!;
-    if (introduced >= EXACT_TABLES_FROM && normalizedSql((database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql) !== expected.sql) refuse(`shape of ${table}`);
+    if (introduced >= EXACT_FROM && (database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql !== expected.sql) refuse(`shape of ${table}`);
     const columns = database.prepare(`PRAGMA table_info("${table}")`).all() as Column[];
     for (const column of columns) {
       if (table === "reservations" && column.name === "provider_bound" && version < 46) refuse("human lease marker precedes migration 46");
@@ -271,9 +276,13 @@ export function inspectSchema(database: Database.Database, ceiling?: number): Sc
   if (!ownershipIndex || !/createuniqueindex(?:ifnotexists)?one_active_reservation_per_projectonreservations\(project_id\)wherereleased_atisnull/i.test(ownershipIndex.sql.replace(/\s+/g,""))) refuse();
   const actualTriggers = database.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all() as Array<{name:string;sql:string}>;
   // The expected set is a function of the version: schema-49 coverage, then each later step's.
-  const expectedTriggers = new Map(securityTriggersAt(version).map(trigger => [trigger.name, normalizedSql(trigger.sql)]));
-  if (actualTriggers.length !== expectedTriggers.size
-    || actualTriggers.some(actual => expectedTriggers.get(actual.name)!==normalizedSql(actual.sql))) refuse("security triggers");
+  // Schema-49 triggers keep the released normalised comparison; later steps' compare exactly.
+  const expectedTriggers = new Map(SECURITY_COVERAGE.filter(step => step.version <= version).flatMap(step => step.triggers
+    .map(trigger => [trigger.name, { sql: step.version >= EXACT_FROM ? trigger.sql : normalizedSql(trigger.sql), exact: step.version >= EXACT_FROM }] as const)));
+  if (actualTriggers.length !== expectedTriggers.size || actualTriggers.some(actual => {
+    const expected = expectedTriggers.get(actual.name);
+    return !expected || expected.sql !== (expected.exact ? actual.sql : normalizedSql(actual.sql));
+  })) refuse("security triggers");
   return { version, fresh: false };
 }
 

@@ -1,10 +1,12 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PROVISIONAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
+import { enableProvisionalSchema } from "./provisional-schema-gate";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { validateDatabase } from "./database-validation";
@@ -16,7 +18,10 @@ import { rewindUpgradeMarker } from "./fixtures/schema-rewind";
 import { SqliteStateStore } from "./sqlite-state-store";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+// Every test here needs target 50; the switch is restored after each one.
+let restoreGate: () => void;
+beforeEach(() => { restoreGate = enableProvisionalSchema(); });
+afterEach(() => { restoreGate(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const temporary = () => { const root = mkdtempSync(join(tmpdir(), "upgrade-marker-")); roots.push(root); return root; };
 
 const TARGET = PROVISIONAL_SCHEMA_VERSION;
@@ -36,6 +41,23 @@ const byName = (list: Array<{ name: string; sql: string }>) => [...list].sort((a
 const message = (operation: () => unknown) => { try { operation(); } catch (error) { return (error as Error).message; } throw new Error("expected a refusal"); };
 const UNKNOWN_NEWER = "INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(50,'2026-11-15T00:00:00.000Z','unknown-newer','" + "0".repeat(64) + "')";
 const SCHEMA_REFUSAL = /^Unsupported or unrecognized database schema/;
+/** The tables of released step 49, in their frozen order. */
+const STEP_49_TABLES = ["reservations", "test_runs", "human_runtime_leases", "human_runtime_intents", "human_test_run_requesters", "human_test_run_intents",
+  "test_run_requesters", "remote_verification_requests", "remote_verification_attempts", "remote_verification_cancellations", "remote_verification_reports",
+  "remote_worker_receipts", "projects", "knowledge_projects", "controller_settings", "remote_principals", "principal_credentials", "remote_workers",
+  "remote_project_identities", "remote_principal_project_grants", "remote_worker_project_grants", "knowledge_project_grants", "knowledge_role_bindings",
+  "knowledge_project_runtime_links", "runtime_delegations", "runtime_credential_scopes", "runtime_human_memberships", "authentication_provider_subjects",
+  "authentication_ba_user", "authentication_ba_account", "authentication_ba_session", "authentication_ba_verification", "authentication_ba_two_factor",
+  "authentication_ba_passkey", "authentication_account_policies", "authentication_totp_steps", "authentication_passkey_trust", "authentication_passkey_staged",
+  "authentication_factor_contexts", "authentication_factor_budgets", "authentication_factor_receipts", "authentication_session_evidence",
+  "authentication_session_issuance", "dev_environment_vaults"];
+/** The marker table exactly as step 50 creates it; SQLite stores this text unchanged. */
+const MARKER_TABLE = `CREATE TABLE upgrade_marker (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  state TEXT NOT NULL CHECK(state IN ('pending','complete')),
+  changed_at TEXT NOT NULL
+)`;
+const COMPLETE_ROW = "INSERT INTO upgrade_marker VALUES(1,'complete','2026-11-15T00:00:00.000Z')";
 /** Replace the marker table (and drop its triggers) for structural or invalid-row fixtures. */
 function rebuildMarker(database: Database.Database, ddl: string, rows = "", restoreTriggers = false) {
   for (const trigger of upgradeMarkerTriggers) database.exec(`DROP TRIGGER ${trigger.name}`);
@@ -80,7 +102,17 @@ describe("provisional schema step 50: upgrade marker", () => {
     for (const trigger of upgradeMarkerTriggers) expect(upgradeMarkerMigration.sql).toContain(trigger.sql);
     expect(upgradeMarkerChecksum).toMatch(/^[0-9a-f]{64}$/);
     expect(securityFenceMigration).toMatchObject({ version: 49, name: "external-security-checkpoint" });
-    expect(securityFenceChecksum).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("pins released step 49: checksum, covered tables and every trigger name and body", () => {
+    // Values of the released step as it is; any change to SECURITY_TABLES or the trigger body fails here.
+    expect(securityFenceChecksum).toBe("320f46981c17c44f4d14ee48298bd91f43d01ab78bf4162c607d2118f29486ae");
+    expect(SECURITY_TABLES).toEqual(STEP_49_TABLES);
+    expect(securityTriggers).toHaveLength(132);
+    expect(securityTriggers.map(trigger => trigger.name)).toEqual(STEP_49_TABLES.flatMap(table => ["insert", "update", "delete"].map(event => `security_${table}_${event}`)));
+    expect(createHash("sha256").update(securityTriggers.map(trigger => `${trigger.name}\0${trigger.sql}`).join("\n")).digest("hex"))
+      .toBe("368a47d2ee6e8f2bcf5aeb9d59edecd62fc357b3e577971d90c4e1b1490cd8c6");
+    expect(securityTriggers[0].sql).toBe("CREATE TRIGGER security_reservations_insert BEFORE INSERT ON reservations BEGIN SELECT worktree_security_pending(); UPDATE security_checkpoint SET epoch=lower(hex(randomblob(32))) WHERE singleton=1; END");
   });
 
   it("does not apply or recognise step 50 by default, and refuses a step-50 database like an unknown newer schema", () => {
@@ -199,6 +231,57 @@ describe("provisional schema step 50: upgrade marker", () => {
       mutate(database);
       expect(() => inspectSchema(database, TARGET)).toThrow(SCHEMA_REFUSAL);
     } finally { database.close(); }
+  });
+
+  it.each([
+    ["state literals differing only in case", "('PENDING','complete')"],
+    ["a state literal differing only in inner whitespace", "('pend ing','complete')"],
+    ["an extra accepted state", "('pending','complete','skipped')"],
+  ])("refuses a marker table with %s at ceiling 50, also with a complete row and the triggers restored", (_name, states) => {
+    const ddl = MARKER_TABLE.replace("('pending','complete')", states);
+    expect(ddl).not.toBe(MARKER_TABLE);
+    const database = fresh50(unmanagedFixtureDatabase(":memory:"));
+    try {
+      rebuildMarker(database, ddl, COMPLETE_ROW, true);
+      // The row itself is valid; only recognition can refuse the table.
+      expect(() => validateDatabase(database, 50)).not.toThrow();
+      expect(message(() => inspectSchema(database, TARGET))).toMatch(/^Unsupported or unrecognized database schema \(shape of upgrade_marker\)/);
+    } finally { database.close(); }
+    // A backup of it is refused at the ceiling 50 as well.
+    // The rebuild drops the triggers before it writes, so an ordinary connection suffices.
+    const backup = backupTree(database => { fresh50(database); rebuildMarker(database, ddl, COMPLETE_ROW, true); }, 50);
+    expect(() => validateBackup(backup.root, parseManifest(backup.manifest, TARGET), false, TARGET)).toThrow(SCHEMA_REFUSAL);
+  });
+
+  it("recognises the marker table and its triggers by their exact text, on a fresh and on a migrated database", () => {
+    const fresh = fresh50(), migrated = fresh49(), rebuilt = fresh50(unmanagedFixtureDatabase(":memory:")), reformatted = fresh50(unmanagedFixtureDatabase(":memory:"));
+    try {
+      initializeSchema(migrated, false, atTarget, { target: TARGET });
+      for (const database of [fresh, migrated]) {
+        // SQLite stores the CREATE text as the step executed it, byte for byte.
+        expect(database.prepare("SELECT sql FROM sqlite_master WHERE name='upgrade_marker'").pluck().get()).toBe(MARKER_TABLE);
+        for (const trigger of upgradeMarkerTriggers) expect(database.prepare("SELECT sql FROM sqlite_master WHERE name=?").pluck().get(trigger.name)).toBe(trigger.sql);
+        expect(inspectSchema(database, TARGET)).toEqual({ version: 50, fresh: false });
+      }
+      expect(upgradeMarkerMigration.sql.startsWith(`${MARKER_TABLE};\n`)).toBe(true);
+      // A rebuild with the identical text is the genuine table.
+      rebuildMarker(rebuilt, MARKER_TABLE, COMPLETE_ROW, true);
+      expect(inspectSchema(rebuilt, TARGET)).toEqual({ version: 50, fresh: false });
+      // Exact means exact: a reformatted table is not the step's, nor a recased step-50 trigger.
+      rebuildMarker(reformatted, MARKER_TABLE.replace(/\n\s*/g, " "), COMPLETE_ROW, true);
+      expect(() => inspectSchema(reformatted, TARGET)).toThrow(SCHEMA_REFUSAL);
+      const recased = upgradeMarkerTriggers[2];
+      rebuilt.exec(`DROP TRIGGER ${recased.name}; ${recased.sql.replace("SELECT worktree_security_pending()", "select worktree_security_pending()")}`);
+      expect(() => inspectSchema(rebuilt, TARGET)).toThrow(SCHEMA_REFUSAL);
+      // Released recognition of the schema-49 triggers is unchanged (normalised): a recased body is still accepted.
+      const released = securityTriggers[0];
+      migrated.close();
+      const current = fresh49(unmanagedFixtureDatabase(":memory:"));
+      try {
+        current.exec(`DROP TRIGGER ${released.name}; ${released.sql.replace("SELECT worktree_security_pending()", "select worktree_security_pending()")}`);
+        expect(inspectSchema(current)).toEqual({ version: 49, fresh: false });
+      } finally { current.close(); }
+    } finally { for (const database of [fresh, migrated, rebuilt, reformatted]) if (database.open) database.close(); }
   });
 
   it("recognises a schema-49 database at ceiling 50 unchanged", () => {

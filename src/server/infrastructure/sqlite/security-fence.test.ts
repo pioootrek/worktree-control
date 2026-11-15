@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { resolveAppPaths } from "../../paths";
 import { maintainSecurityFence } from "../../bootstrap/security-maintenance";
@@ -23,6 +23,7 @@ import { applyRegistryMigration } from "./migration-registry";
 import { maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
 import { initializeSchema } from "./migrations";
 import { PROVISIONAL_SCHEMA_VERSION } from "./migration-registry";
+import { enableProvisionalSchema, provisionalSchemaEnabled } from "./provisional-schema-gate";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
 
 vi.mock("node:fs", async original=>({...await original<typeof import("node:fs")>()}));
@@ -522,6 +523,9 @@ describe("external security checkpoint",()=>{
 });
 
 describe("provisional upgrade marker under the security fence (target 50)",()=>{
+  let restoreGate:()=>void;
+  beforeEach(()=>{restoreGate=enableProvisionalSchema();});
+  afterEach(()=>{restoreGate();});
   it("publishes a pending witness for every marker write exactly as for a schema-49 authority table",()=>{
     const root=mkdtempSync(join(tmpdir(),"security-marker-"));roots.push(root);
     const paths=resolveAppPaths(join(root,"data"));mkdirSync(paths.dataDirectory,{mode:0o700});
@@ -608,5 +612,37 @@ describe("provisional upgrade marker under the security fence (target 50)",()=>{
     const status=inspect50(paths);expect(status).toMatchObject({establishmentAllowed:true,schemaVersion:40});
     expect(maintainSqliteSecurityFence(paths,{action:"establish",expect:status.preflight},HANDOFF,TARGET)).toMatchObject({trusted:true,quarantined:false,schemaVersion:50});
     read(paths,db=>{expect(inspectSchema(db,TARGET).version).toBe(50);expect(upgradeMarker(db)).toEqual(["pending"]);});
+  });
+});
+
+describe("default maintenance of a step-50 database (provisional switch off)",()=>{
+  const UNKNOWN_NEWER="INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(50,'2026-11-15T00:00:00.000Z','unknown-newer','"+"0".repeat(64)+"')";
+  let provisional:ReturnType<typeof resolveAppPaths>,unknown:ReturnType<typeof resolveAppPaths>;
+  // Only building the step-50 fixture needs the switch; every test body runs with it off.
+  beforeEach(()=>{
+    provisional=current49();unknown=current49();
+    const restore=enableProvisionalSchema();
+    try{const db=unmanagedFixtureDatabase(provisional.databasePath);try{initializeSchema(db,false,current=>{inspectSchema(current,TARGET);},{target:TARGET});}finally{db.close();}}
+    finally{restore();}
+    const db=unmanagedFixtureDatabase(unknown.databasePath);try{db.exec(UNKNOWN_NEWER);}finally{db.close();}
+  });
+  /** The database rows and catalogue, the database file bytes and the fence witness. */
+  const state=(paths:ReturnType<typeof resolveAppPaths>)=>({database:read(paths,all),file:createHash("sha256").update(readFileSync(paths.databasePath)).digest("hex"),witness:readFileSync(witness(paths.databasePath),"utf8")});
+  const failure=(operation:()=>unknown)=>{try{operation();}catch(error){return {name:(error as Error).name,code:(error as {code?:unknown}).code,committed:(error as {committed?:unknown}).committed};}throw new Error("expected a refusal");};
+  it.each([
+    ["inspect",{action:"inspect"}],
+    ["establish",{action:"establish",expect:"0".repeat(64)}],
+    ["resume",{action:"resume",expect:"0".repeat(64),mode:"token"}],
+  ] as const)("refuses %s without a target, changes nothing and reports what the base reports for an unknown newer schema",(_name,command)=>{
+    expect(provisionalSchemaEnabled()).toBe(false);
+    read(provisional,db=>{expect(db.prepare("SELECT max(version) FROM schema_migrations").pluck().get()).toBe(50);expect(db.prepare("SELECT state FROM upgrade_marker").pluck().all()).toEqual(["pending"]);});
+    const before=state(provisional),beforeUnknown=state(unknown);
+    const refused=failure(()=>maintainSqliteSecurityFence(provisional,command,HANDOFF));
+    expect(refused).toEqual({name:"SecurityFenceError",code:"security_fence_pending",committed:undefined});
+    expect(failure(()=>maintainSqliteSecurityFence(unknown,command,HANDOFF))).toEqual(refused);
+    // The production composition gives the same answer.
+    expect(failure(()=>maintainSecurityFence(provisional,command))).toEqual(refused);
+    expect(state(provisional)).toEqual(before);
+    expect(state(unknown)).toEqual(beforeUnknown);
   });
 });

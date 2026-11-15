@@ -6,6 +6,7 @@ import { privateDirectory, privateFile, syncDirectory } from "../../private-stor
 import { inspectSchema, snapshotAttachments, type SchemaInspection } from "./schema-inspection";
 import { getOwnedRestoreStatus, recoverOwnedRestore } from "./restore-recovery";
 import { validateDatabase } from "./database-validation";
+import { schemaTarget } from "./migration-registry";
 
 /** Canonical parent aliases are supported; file symlinks and hardlinks are refused. */
 export function acquireDatabaseOwnership(input: string, options?: { inspectOnly: true; inspect?: (canonicalPath: string) => void }): { path: string; lock: ControllerLock } {
@@ -48,6 +49,8 @@ export class OwnedSqliteDatabase {
 
   /** `ceiling` (default `SUPPORTED_SCHEMA_VERSION`) is the highest schema version {@link inspectSchema} recognises. */
   constructor(path: string, create = false, ceiling?: number) {
+    // Refuse an unsupported ceiling before any lock or file is touched.
+    schemaTarget(ceiling);
     this.ownership = acquireDatabaseOwnership(path);
     this.provenance = databaseProvenance(this.ownership.path);
     let connection: Database.Database | undefined;

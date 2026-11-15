@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
+import { schemaTarget } from "./migration-registry";
 
 /**
  * Provisional step 50 (integration branch): the explicit upgrade marker. It is
@@ -48,6 +49,8 @@ export const upgradeMarkerChecksum = createHash("sha256")
  * `fresh` is true only when the schema transaction began on an empty database.
  */
 export function applyUpgradeMarkerMigration(database: Database.Database, fresh: boolean): void {
+  // A direct call passes the provisional gate too, not only initializeSchema's target.
+  schemaTarget(UPGRADE_MARKER_VERSION);
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=50").get()) return;
   database.exec(table);
   database.prepare(initialRow).run(fresh ? "complete" : "pending");

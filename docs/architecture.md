@@ -1063,9 +1063,26 @@ it, and a step-50 database is refused like any unknown newer schema.
 `PROVISIONAL_SCHEMA_VERSION` (50) is the highest step the code knows.
 `initializeSchema`, `inspectSchema`, the owned database, offline fence
 maintenance, the quarantine and backup manifest validation take an optional
-target or ceiling that defaults to `SUPPORTED_SCHEMA_VERSION`. A guard test
-allows a non-default target only in the SQLite adapter files that implement
-it. Activation raises `SUPPORTED_SCHEMA_VERSION`.
+target or ceiling that defaults to `SUPPORTED_SCHEMA_VERSION`. Each target and
+ceiling passes through `schemaTarget`. That function refuses any value above
+`SUPPORTED_SCHEMA_VERSION` unless a process-wide switch in
+`provisional-schema-gate.ts` is on. The switch is off by default and only tests
+turn it on, so a target of 50 has no effect in production, whichever alias,
+re-export or wrapper passes it. Activation raises `SUPPORTED_SCHEMA_VERSION`;
+the switch then no longer matters for that step.
+
+The guard test `provisional-schema.test.ts` checks module imports. No non-test
+script file under `src/` may import the gate module, except
+`migration-registry.ts`, which may only import the read function by name. The
+test recognises static imports (type-only and side-effect imports included),
+`export ... from`, `import x = require()`, `import()` types, and `import()`
+or `require()` calls with a literal specifier. It resolves relative, `@/`,
+absolute and `file:` specifiers to a file. A second rule allows imports of the
+step-50 modules only in a listed set of adapter files. The guard does not cover
+non-literal specifiers, files outside `src/`, test files, or files that are not
+scripts. It also does not see code that reaches the switch without importing
+the module. Non-literal specifiers under `src` fail the separate unmounted
+guard, outside its own allow-list.
 
 Step 50 adds the single-row `upgrade_marker` table: state `pending` or
 `complete`, and the time of its last change. The upgrade marker is separate from
@@ -1077,3 +1094,9 @@ fence triggers of step 49 for this table. That coverage is a separate list by
 version; the schema-49 list is unchanged. The step writes its row before those
 triggers exist and writes no fenced table, so it can run in ordinary startup
 before the fence attaches. No reader or command uses the marker yet.
+
+Inspection at ceiling 50 compares the stored `CREATE` text of the marker table
+and of its three triggers with the text the step executes, byte for byte.
+SQLite stores that text unchanged, and the comparison keeps the case and spacing
+inside string literals. Recognition of schema 49 and earlier, including the
+schema-49 triggers, is unchanged.

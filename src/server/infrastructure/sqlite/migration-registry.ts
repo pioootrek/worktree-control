@@ -1,18 +1,26 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
+import { provisionalSchemaEnabled } from "./provisional-schema-gate";
 
 export const SUPPORTED_SCHEMA_VERSION = 49;
 /**
  * Highest schema step this code knows. Steps above SUPPORTED_SCHEMA_VERSION are
- * provisional (integration branch only) and apply or are recognised only where a
- * caller passes an explicit target; every default stays SUPPORTED_SCHEMA_VERSION.
+ * provisional (integration branch only): they apply or are recognised only with
+ * an explicit target AND the process-wide switch of `provisional-schema-gate.ts`
+ * turned on, which only tests do. Every default stays SUPPORTED_SCHEMA_VERSION.
  * Activation raises SUPPORTED_SCHEMA_VERSION; no call site changes.
  */
 export const PROVISIONAL_SCHEMA_VERSION = 50;
 
-/** A schema target or recognition ceiling: from the supported version up to the provisional one. */
+/**
+ * A schema target or recognition ceiling: from the supported version up to the
+ * provisional one. Every target and ceiling passes through here, so a value
+ * above SUPPORTED_SCHEMA_VERSION is refused while the provisional switch is off,
+ * whichever alias, re-export or wrapper passed it.
+ */
 export function schemaTarget(target: number = SUPPORTED_SCHEMA_VERSION): number {
-  if (!Number.isSafeInteger(target) || target < SUPPORTED_SCHEMA_VERSION || target > PROVISIONAL_SCHEMA_VERSION) throw new Error("Unsupported schema target.");
+  const highest = provisionalSchemaEnabled() ? PROVISIONAL_SCHEMA_VERSION : SUPPORTED_SCHEMA_VERSION;
+  if (!Number.isSafeInteger(target) || target < SUPPORTED_SCHEMA_VERSION || target > highest) throw new Error("Unsupported schema target.");
   return target;
 }
 // Versions 1–27 predate checksums. NULL means provenance was not recorded,
