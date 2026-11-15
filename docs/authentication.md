@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-11-08"
+last_reviewed: "2026-11-15"
 source_of_truth: "authentication modes, identities, optional account mode and protected recovery for the 0.2.0 release candidate"
 status: "active"
 ---
@@ -1273,7 +1273,8 @@ worktree-control auth fence inspect --data-dir /private/installation
 worktree-control auth fence resume --expect <preflight-hash> --mode token --data-dir /private/installation
 ```
 
-Resume first publishes a pending receipt. One sole-connection transaction removes
+Resume first publishes a pending receipt. One sole-connection transaction applies
+any pending schema steps and, in the same commit, removes
 all restored provider passwords/tokens, native sessions, TOTP/passkeys and
 challenge authority; revokes principal credentials and all project/role/runtime
 and worker grants; advances account generations and membership revisions; releases
@@ -1282,6 +1283,12 @@ cancels pending remote work. It retains IDs, kinds, roles, membership rows, audi
 run/intention attribution, TOTP steps, budgets and encrypted vault content.
 The same existing owner is preserved, and a readable external owner anchor must
 match. No owner, credential, project permission or ENV grant is created.
+
+No committed state has the current schema with the restored authority still
+intact. A failure before that commit leaves the schema and the authority as they
+were. A failure after it reports `committed:true`; the transaction's
+`authentication.security_quarantined` audit event carries the run's receipt and
+proves the commit even when the schema version did not change.
 
 Only after quarantine and handoff acknowledgement does the owner publish the
 confirmed receipt. Repeated resume on that unchanged confirmed state is a no-op.
