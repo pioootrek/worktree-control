@@ -1,5 +1,6 @@
 import { rmSync } from "node:fs";
 import { securityTriggers } from "../security-fence-migration";
+import { upgradeMarkerTriggers } from "../upgrade-marker-migration";
 import type Database from "better-sqlite3";
 import { rebuildTable } from "../verification-project-migration";
 
@@ -18,8 +19,16 @@ export const WITHOUT_AUTHENTICATION_PROVIDER_STORAGE = `DROP TABLE authenticatio
   DROP TABLE "authentication_ba_verification"; DROP TABLE "authentication_ba_user";
   DELETE FROM schema_migrations WHERE version >= 38;`;
 
+/** Removes provisional step 50 from a synthetic fixture; a no-op below it. */
+export function rewindUpgradeMarker(database: Database.Database): void {
+  if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=50").get()) return;
+  for (const trigger of upgradeMarkerTriggers) database.exec(`DROP TRIGGER IF EXISTS ${trigger.name}`);
+  database.exec("DROP TABLE upgrade_marker; DELETE FROM schema_migrations WHERE version=50");
+}
+
 /** Only synthetic fixture databases; production migrations and checksums stay immutable. */
 export function rewindHumanConfiguration(database: Database.Database): void {
+  rewindUpgradeMarker(database);
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=49").get()) {
     for(const trigger of securityTriggers) database.exec(`DROP TRIGGER IF EXISTS ${trigger.name}`);
     database.exec("DROP TABLE security_checkpoint; DELETE FROM schema_migrations WHERE version=49");

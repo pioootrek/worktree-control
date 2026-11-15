@@ -1052,3 +1052,28 @@ See [operator flow and crash protocol](authentication.md#external-security-fence
 A5 implements validated account selection/public mounting, explicit agent diagnostics
 and the transport deny inventory. Independent review and verified live/client
 migration remain release gates. The five historical factor negatives remain visible.
+
+### Provisional upgrade marker, schema step 50 (integration branch only)
+
+This section describes `integration/auth-unification`, not a release. Step 50 is
+provisional until the release candidate and is not activated: the supported
+schema version stays 49, ordinary startup applies and recognises nothing beyond
+it, and a step-50 database is refused like any unknown newer schema.
+
+`PROVISIONAL_SCHEMA_VERSION` (50) is the highest step the code knows.
+`initializeSchema`, `inspectSchema`, the owned database, offline fence
+maintenance, the quarantine and backup manifest validation take an optional
+target or ceiling that defaults to `SUPPORTED_SCHEMA_VERSION`. A guard test
+allows a non-default target only in the SQLite adapter files that implement
+it. Activation raises `SUPPORTED_SCHEMA_VERSION`.
+
+Step 50 adds the single-row `upgrade_marker` table: state `pending` or
+`complete`, and the time of its last change. The upgrade marker is separate from
+the schema version. A database initialised from empty starts `complete`. A
+database migrated from an earlier schema starts `pending`, and resume sets it to
+`pending` again inside its quarantine. Both have the same structure. Whoever can
+set the marker to `complete` skips the data upgrade, so the step adds the three
+fence triggers of step 49 for this table. That coverage is a separate list by
+version; the schema-49 list is unchanged. The step writes its row before those
+triggers exist and writes no fenced table, so it can run in ordinary startup
+before the fence attaches. No reader or command uses the marker yet.

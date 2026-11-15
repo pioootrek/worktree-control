@@ -46,7 +46,8 @@ export class OwnedSqliteDatabase {
   private closed = false;
   readonly provenance: DatabaseProvenance;
 
-  constructor(path: string, create = false) {
+  /** `ceiling` (default `SUPPORTED_SCHEMA_VERSION`) is the highest schema version {@link inspectSchema} recognises. */
+  constructor(path: string, create = false, ceiling?: number) {
     this.ownership = acquireDatabaseOwnership(path);
     this.provenance = databaseProvenance(this.ownership.path);
     let connection: Database.Database | undefined;
@@ -72,7 +73,7 @@ export class OwnedSqliteDatabase {
         initializing = true;
       }
       connection = new Database(this.ownership.path, { readonly: true, fileMustExist: true });
-      this.inspection = inspectSchema(connection);
+      this.inspection = inspectSchema(connection, ceiling);
       if (this.inspection.fresh && !(create && initializing)) throw new Error("Unrecognized empty database without a verified initialization marker; startup stopped.");
       validateDatabase(connection, this.inspection.version);
       this.connection = connection;

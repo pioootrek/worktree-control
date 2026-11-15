@@ -2,6 +2,19 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 
 export const SUPPORTED_SCHEMA_VERSION = 49;
+/**
+ * Highest schema step this code knows. Steps above SUPPORTED_SCHEMA_VERSION are
+ * provisional (integration branch only) and apply or are recognised only where a
+ * caller passes an explicit target; every default stays SUPPORTED_SCHEMA_VERSION.
+ * Activation raises SUPPORTED_SCHEMA_VERSION; no call site changes.
+ */
+export const PROVISIONAL_SCHEMA_VERSION = 50;
+
+/** A schema target or recognition ceiling: from the supported version up to the provisional one. */
+export function schemaTarget(target: number = SUPPORTED_SCHEMA_VERSION): number {
+  if (!Number.isSafeInteger(target) || target < SUPPORTED_SCHEMA_VERSION || target > PROVISIONAL_SCHEMA_VERSION) throw new Error("Unsupported schema target.");
+  return target;
+}
 // Versions 1–27 predate checksums. NULL means provenance was not recorded,
 // including when these frozen transformations run during a later upgrade.
 export const registryMigration = {
