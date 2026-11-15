@@ -56,7 +56,7 @@ const MARKER_TABLE = `CREATE TABLE upgrade_marker (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   state TEXT NOT NULL CHECK(state IN ('pending','complete')),
   changed_at TEXT NOT NULL,
-  plan_hash TEXT CHECK(plan_hash IS NULL OR (typeof(plan_hash)='text' AND length(plan_hash)=64 AND NOT plan_hash GLOB '*[^0-9a-f]*')),
+  plan_hash TEXT CHECK(plan_hash IS NULL OR (typeof(plan_hash)='text' AND length(plan_hash)=64 AND length(CAST(plan_hash AS BLOB))=64 AND NOT plan_hash GLOB '*[^0-9a-f]*')),
   CHECK(state='complete' OR plan_hash IS NULL)
 )`;
 const COMPLETE_ROW = "INSERT INTO upgrade_marker VALUES(1,'complete','2026-11-15T00:00:00.000Z',NULL)";
@@ -106,6 +106,9 @@ describe("provisional schema step 50: upgrade marker", () => {
     expect(upgradeMarkerMigration.sql).toContain("INSERT INTO upgrade_marker(singleton,state,changed_at) VALUES(1,?,");
     for (const trigger of upgradeMarkerTriggers) expect(upgradeMarkerMigration.sql).toContain(trigger.sql);
     expect(upgradeMarkerChecksum).toMatch(/^[0-9a-f]{64}$/);
+    // Pinned while provisional: a change to the step's text is a visible edit here.
+    expect(upgradeMarkerChecksum).toBe("d720c5eef040ff328401426cc18fefb560a6be7460cc355a789f169d5d07315c");
+    expect(upgradeMarkerMigration.sql.startsWith(`${MARKER_TABLE};\n`)).toBe(true);
     expect(securityFenceMigration).toMatchObject({ version: 49, name: "external-security-checkpoint" });
   });
 
@@ -342,6 +345,13 @@ describe("provisional schema step 50: upgrade marker", () => {
         `UPDATE upgrade_marker SET plan_hash='${"g".repeat(64)}'`]) {
         expect(() => database.exec(statement), statement).toThrow(/CHECK constraint failed/);
       }
+      // SQLite's text length and GLOB stop at NUL: the byte length makes the table
+      // refuse what validateDatabase refuses, also through a bound parameter.
+      for (const value of [`${PLAN}\0`, `${PLAN}\0suffix`, `${PLAN.slice(4)}\0abc`, "\u00e9".repeat(64)]) {
+        expect(() => database.prepare("UPDATE upgrade_marker SET plan_hash=?").run(value), JSON.stringify(value)).toThrow(/CHECK constraint failed/);
+        expect(() => database.prepare("INSERT OR REPLACE INTO upgrade_marker(singleton,state,changed_at,plan_hash) VALUES(1,'complete',strftime('%Y-%m-%dT%H:%M:%fZ','now'),?)").run(value)).toThrow(/CHECK constraint failed/);
+      }
+      expect(database.prepare("SELECT plan_hash FROM upgrade_marker").pluck().get()).toBe(PLAN);
       database.exec("UPDATE upgrade_marker SET state='pending',plan_hash=NULL");
       expect(() => validateDatabase(database, 50)).not.toThrow();
       expect(() => database.exec(`UPDATE upgrade_marker SET plan_hash='${PLAN}'`)).toThrow(/CHECK constraint failed/);

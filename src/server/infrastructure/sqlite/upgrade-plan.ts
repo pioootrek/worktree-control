@@ -12,18 +12,20 @@ import { UPGRADE_MARKER_VERSION, upgradeMarkerChecksum, upgradeMarkerMigration }
  * The plan of the explicit offline upgrade (integration branch, provisional).
  * `upgrade inspect` writes one plan beside the database; `upgrade apply --expect
  * <hash>` executes exactly that plan (see `upgrade-maintenance.ts`). Nothing here
- * is registered or reachable from production: every entry point needs a schema
- * target of at least 50, which only the provisional switch allows.
+ * is registered or reachable from production: every entry point that reads or
+ * writes a file needs a schema target of at least 50, which only the provisional
+ * switch allows ({@link assertUpgradeAvailable}).
  */
 
 /** The four states of an installation's database; see `docs/architecture.md`. */
 export type UpgradeState = "current" | "upgrade_needed" | "pre_fence" | "fenced";
 /** The operator's next step, named by its command. */
-export type UpgradeNextStep = "none" | "upgrade inspect" | "upgrade apply" | "auth fence establish" | "auth fence resume" | "stop the controller";
+export type UpgradeNextStep = "none" | "upgrade inspect" | "upgrade apply" | "auth fence inspect" | "auth fence establish" | "auth fence resume" | "stop the controller";
 export type UpgradeErrorCode =
   | "upgrade_unsupported" | "upgrade_invalid_input" | "upgrade_owner_running" | "upgrade_wrong_state" | "upgrade_owner_changed"
   | "upgrade_plan_missing" | "upgrade_plan_invalid" | "upgrade_plan_foreign" | "upgrade_plan_mismatch" | "upgrade_base_changed"
-  | "upgrade_step_mismatch" | "upgrade_plan_storage" | "upgrade_backup_failed" | "upgrade_outcome_uncertain";
+  | "upgrade_step_mismatch" | "upgrade_plan_storage" | "upgrade_backup_failed" | "upgrade_restore_unfinished" | "upgrade_witness_unchanged"
+  | "upgrade_source_changed" | "upgrade_outcome_uncertain";
 const MESSAGES: Readonly<Record<UpgradeErrorCode, string>> = {
   upgrade_unsupported: "Unsupported schema target.",
   upgrade_invalid_input: "The upgrade command is invalid.",
@@ -38,6 +40,9 @@ const MESSAGES: Readonly<Record<UpgradeErrorCode, string>> = {
   upgrade_step_mismatch: "The plan's schema steps differ from this release's.",
   upgrade_plan_storage: "The upgrade plan directory is unsafe or holds unexpected entries.",
   upgrade_backup_failed: "The pre-upgrade backup could not be written or validated; nothing was changed.",
+  upgrade_restore_unfinished: "An interrupted restore must be completed first; nothing was changed.",
+  upgrade_witness_unchanged: "The pending security witness could not be published; the witness and the database are unchanged.",
+  upgrade_source_changed: "The database reopened for writing is not the one inspected; nothing was written to it.",
   upgrade_outcome_uncertain: "The upgrade stopped after the security witness was set to pending.",
 };
 
@@ -64,6 +69,14 @@ export function upgradeTarget(target?: number): number {
   try { version = schemaTarget(target); } catch { throw new UpgradeError("upgrade_unsupported", "none"); }
   if (version < UPGRADE_MARKER_VERSION) throw new UpgradeError("upgrade_unsupported", "none");
   return version;
+}
+/**
+ * Refuses, as {@link upgradeTarget} does, unless the upgrade's schema target is
+ * allowed. Every upgrade-specific helper that reads or writes a file calls it
+ * first, including those of `security-fence.ts`.
+ */
+export function assertUpgradeAvailable(): void {
+  upgradeTarget(UPGRADE_MARKER_VERSION);
 }
 
 const hex = z.string().regex(/^[0-9a-f]{64}$/);
@@ -166,7 +179,15 @@ export function canonicalJson(value: unknown): string {
     if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new UpgradeError("upgrade_plan_invalid", "upgrade inspect");
     return String(value);
   }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (Array.isArray(value)) {
+    // Every index, so a hole is refused rather than skipped (map skips holes).
+    const items: string[] = [];
+    for (let index = 0; index < value.length; index++) {
+      if (!Object.prototype.hasOwnProperty.call(value, index)) throw new UpgradeError("upgrade_plan_invalid", "upgrade inspect");
+      items.push(canonicalJson(value[index]));
+    }
+    return `[${items.join(",")}]`;
+  }
   if (typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
     const entries = Object.entries(value as Record<string, unknown>);
     if (entries.some(([, entry]) => entry === undefined)) throw new UpgradeError("upgrade_plan_invalid", "upgrade inspect");
@@ -234,6 +255,7 @@ function assertPrivateEntry(path: string): void {
  * Returns the plan hash.
  */
 export function writeUpgradePlan(database: string, plan: UpgradePlan): string {
+  assertUpgradeAvailable();
   const checked = parseUpgradePlan(plan);
   const hash = upgradePlanHash(checked);
   const envelope = { payload: JSON.parse(canonicalJson(checked)) as unknown, sha256: hash };
@@ -265,6 +287,7 @@ export function writeUpgradePlan(database: string, plan: UpgradePlan): string {
  * through a link, with the envelope hash verified against the canonical payload.
  */
 export function readUpgradePlan(database: string, kinds: ReadonlyArray<UpgradeActKind> = UPGRADE_ACT_KINDS): { plan: UpgradePlan; hash: string } {
+  assertUpgradeAvailable();
   const path = upgradePlanPath(database);
   let present: boolean;
   try { lstatSync(path); present = true; } catch (error) {
@@ -287,8 +310,9 @@ export function readUpgradePlan(database: string, kinds: ReadonlyArray<UpgradeAc
   return { plan, hash };
 }
 
-/** Removes the executed plan. Returns false (and keeps the result) when that fails. */
+/** Removes the executed plan. Returns false (and keeps the result) when that fails; the gate refuses before. */
 export function removeUpgradePlan(database: string): boolean {
+  assertUpgradeAvailable();
   const path = upgradePlanPath(database);
   try {
     if (!existsSync(path)) return true;

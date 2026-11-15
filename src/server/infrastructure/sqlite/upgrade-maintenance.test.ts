@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -13,6 +13,8 @@ import { maintainSecurityFence } from "../../bootstrap/security-maintenance";
 import { AuthenticationService } from "../../modules/authentication";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
 import { SqliteStateStore } from "./sqlite-state-store";
+import { OwnedSqliteDatabase } from "./owned-database";
+import { getOwnedRestoreStatus, restoreRoot } from "./restore-recovery";
 import { SecurityFence, SecurityFenceError, securityFenceBinding, securityFenceRoot, securityRecoveryBoundary } from "./security-fence";
 import { maintainSqliteSecurityFence } from "./security-maintenance";
 import { configureDurability, validateDatabase } from "./database-validation";
@@ -24,7 +26,7 @@ import { hashFile, parseManifest, readBoundedJson, validateBackup, BACKUP_LIMITS
 import { upgradeMarkerChecksum, upgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup, type UpgradeBackupSource } from "./upgrade-maintenance";
 import {
-  canonicalJson, describeUpgradeActs, executeUpgradeActs, parseUpgradePlan, proposeUpgradeActs, readUpgradePlan, structuralSteps,
+  assertUpgradeAvailable, canonicalJson, describeUpgradeActs, executeUpgradeActs, parseUpgradePlan, proposeUpgradeActs, readUpgradePlan, structuralSteps,
   UPGRADE_ACT_KINDS, UPGRADE_PLAN_LIMITS, upgradePlanHash, upgradePlanPath, upgradePlanRoot, writeUpgradePlan,
   type UpgradeActKind, type UpgradePlan,
 } from "./upgrade-plan";
@@ -49,13 +51,46 @@ const marker = (db: Database.Database) => db.prepare("SELECT 1 FROM sqlite_maste
   ? db.prepare("SELECT state,plan_hash FROM upgrade_marker").all() : "absent";
 const all = (db: Database.Database) => ({ catalogue: db.prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").all(),
   rows: Object.fromEntries((db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").pluck().all() as string[]).map(name => [name, db.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all()])) });
-const TIME = /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z/g, UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, HEX = /[0-9a-f]{64}/g, RANDOM = /[A-Za-z0-9+/_-]{32,}={0,2}/g;
-const scrub = (value: unknown) => typeof value === "string" ? value.replace(TIME, "<time>").replace(UUID, "<uuid>").replace(HEX, "<hex>").replace(RANDOM, "<random>") : value;
-/** Everything that is not a timestamp, receipt, hash or random epoch. */
-const normal = (db: Database.Database) => {
+/**
+ * Names each generated value by its kind and order of first appearance, across
+ * the database and the witness of one installation: the same value in two
+ * places gets the same name, so relationships between identifiers compare.
+ */
+const aliases = () => {
+  const names = new Map<string, string>(), counts = new Map<string, number>();
+  return (kind: string, value: unknown) => {
+    if (value === null || typeof value !== "string") return value;
+    let name = names.get(value);
+    if (!name) { const count = (counts.get(kind) ?? 0) + 1; counts.set(kind, count); name = `${kind}#${count}`; names.set(value, name); }
+    return name;
+  };
+};
+type Alias = ReturnType<typeof aliases>;
+/** A timestamp column: only a canonical ISO time is replaced, anything else stays visible. */
+const time = (value: unknown) => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) ? "<time>" : value;
+/** Audit details: this run's receipt and plan hash are named; every other field is exact. */
+const details = (value: unknown, alias: Alias) => {
+  if (typeof value !== "string") return value;
+  const parsed = JSON.parse(value) as Record<string, unknown>;
+  return { ...parsed, ...("receipt" in parsed ? { receipt: alias("receipt", parsed.receipt) } : {}), ...("plan" in parsed ? { plan: alias("plan", parsed.plan) } : {}) };
+};
+/**
+ * The only columns that legitimately differ between two installations taken
+ * through the same operator steps: timestamps, this run's receipts and plan
+ * hashes, and the checkpoint's random installation and epoch. Every other
+ * column of every table, and the catalogue, compare exactly.
+ */
+const NORMALISED: Readonly<Record<string, Readonly<Record<string, (value: unknown, alias: Alias) => unknown>>>> = {
+  schema_migrations: { applied_at: time },
+  controller_settings: { updated_at: time },
+  controller_audit_events: { created_at: time, details_json: details },
+  security_checkpoint: { installation: (value, alias) => alias("installation", value), epoch: (value, alias) => alias("epoch", value) },
+  upgrade_marker: { changed_at: time, plan_hash: (value, alias) => alias("plan", value) },
+};
+const normal = (db: Database.Database, alias: Alias) => {
   const { catalogue, rows } = all(db);
-  delete rows.security_checkpoint;
-  return { catalogue, rows: Object.fromEntries(Object.entries(rows).map(([name, list]) => [name, (list as Array<Record<string, unknown>>).map(row => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, scrub(value)])))])) };
+  return { catalogue, rows: Object.fromEntries(Object.entries(rows).map(([name, list]) => [name, (list as Array<Record<string, unknown>>)
+    .map(row => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, NORMALISED[name]?.[key] ? NORMALISED[name][key](value, alias) : value])))])) };
 };
 /**
  * The database and WAL bytes, the witness and the plan file: what a refusal must leave unchanged.
@@ -280,6 +315,13 @@ describe("explicit offline upgrade: plan and act mechanism", () => {
     for (const change of [{ base: "d".repeat(64) }, { binding: "d".repeat(64) }, { installation: "d".repeat(64) }, { source: 50, steps: [] }, { steps: [{ version: 50, name: "x", checksum: "0".repeat(64) }] }]) {
       expect(upgradePlanHash({ ...plan(), ...change })).not.toBe(upgradePlanHash(plan()));
     }
+    // Every index is visited: a hole is refused, not skipped as Array.prototype.map would.
+    const late: unknown[] = ["a"]; late[2] = "c";
+    for (const value of [late, new Array(2), { a: new Array(1) }, [[1], late], [undefined]]) {
+      expect(() => canonicalJson(value)).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
+    }
+    expect(canonicalJson(["a", null, "c"])).toBe('["a",null,"c"]');
+    expect(() => upgradePlanHash({ ...plan(), acts: new Array(1) as UpgradePlan["acts"] })).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
     expect(structuralSteps(50, 50)).toEqual([]);
     expect(() => structuralSteps(48, 50)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
     expect(() => structuralSteps(49, 51)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
@@ -444,6 +486,129 @@ describe("explicit offline upgrade: apply refusals change nothing", () => {
     // The same plan still applies afterwards.
     expect(await apply(paths, noted)).toMatchObject({ alreadyApplied: false, planHash: noted });
   });
+
+  /** A valid backup tree of an installation, written through ordinary ownership before the upgrade runs. */
+  async function priorBackup(paths: AppPaths) {
+    const owner = new OwnedSqliteDatabase(paths.databasePath), destination = join(paths.dataDirectory, "..", `prior-${randomUUID()}`);
+    try { return { root: destination, manifest: await createControllerBackup(owner, destination, { applicationVersion: "test", attachmentDirectory: paths.knowledgeAttachmentDirectory }) }; }
+    finally { owner.close(); }
+  }
+  /** Takes this run's snapshot into a scratch file, then returns another tree. */
+  const substitute = (tree: { root: string; manifest: unknown }): UpgradeBackup => async source => {
+    await source.backup(join(temporary("upgrade-scratch-"), "snapshot.sqlite3"));
+    return tree;
+  };
+  it("accepts only a backup of this source made by this run's single snapshot", async () => {
+    const paths = installation(true), twin = installation(true);
+    // (a) A valid backup of another database.
+    const foreign = await priorBackup(twin);
+    // (b) A valid older backup of this database, then a further authority write.
+    const older = await priorBackup(paths);
+    const store = new SqliteStateStore(paths.databasePath);
+    try { new AuthenticationService(store).rotateToken("local-cli"); } finally { store.close(); }
+    const noted = inspect(paths).planHash!;
+    // (c) A valid current backup of this database that the run did not take.
+    const current = await priorBackup(paths);
+    expect(() => validateBackup(current.root, parseManifest(current.manifest), true)).not.toThrow();
+    const variants: Array<[string, UpgradeBackup]> = [
+      ["another database", substitute(foreign)],
+      ["an older backup of this database", substitute(older)],
+      ["a tree without calling backup", async () => current],
+      ["a tree after calling backup twice", async (source, context) => {
+        const first = await backups(paths)(source, context);
+        await expect(backups(paths)(source, context)).rejects.toThrow();
+        return first;
+      }],
+      // This run's snapshot file, overwritten in place (same device and inode) with the
+      // older backup's bytes and a manifest that matches them: only the checkpoint tells.
+      ["this run's snapshot file holding an older state", async (source, context) => {
+        const created = await backups(paths)(source, context);
+        const file = join(created.root, "state.sqlite3");
+        writeFileSync(file, readFileSync(join(older.root, "state.sqlite3")));
+        const manifest = { ...(created.manifest as { database: Record<string, unknown> }), database: { ...(created.manifest as { database: Record<string, unknown> }).database, ...hashFile(file) } };
+        writeFileSync(join(created.root, "manifest.json"), JSON.stringify(manifest));
+        expect(() => validateBackup(created.root, parseManifest(manifest), true)).not.toThrow();
+        return { root: created.root, manifest };
+      }],
+      ["a snapshot left running when the callback returned", async source => {
+        void source.backup(join(temporary("upgrade-scratch-"), "snapshot.sqlite3"));
+        return current;
+      }],
+    ];
+    for (const [name, backup] of variants) {
+      const { result } = await refused(paths, () => apply(paths, noted, backup));
+      expect(result, name).toMatchObject({ code: "upgrade_backup_failed", nextStep: "upgrade apply", committed: false });
+    }
+    // The run's own backup, through createControllerBackup, is accepted.
+    const result = await apply(paths, noted);
+    expect(result).toMatchObject({ alreadyApplied: false, planHash: noted });
+    expect(parseManifest(readBoundedJson(join(result.backup!, "manifest.json"), BACKUP_LIMITS.manifestBytes, true), TARGET).database.schemaVersion).toBe(49);
+  });
+
+  it("refuses as base changed a raw change to the database made while the backup callback runs, with nothing written", async () => {
+    // The callback runs under both singleton locks, so no cooperating owner can
+    // write; what remains is a write outside them, here a raw change of the file.
+    const paths = installation(), noted = inspect(paths).planHash!;
+    let changed: ReturnType<typeof files> | undefined;
+    const result = await failure(() => apply(paths, noted, async (source, context) => {
+      const created = await backups(paths)(source, context);
+      const bytes = readFileSync(paths.databasePath); bytes.writeUInt32BE((bytes.readUInt32BE(24) + 7) >>> 0, 24); writeFileSync(paths.databasePath, bytes);
+      changed = files(paths);
+      return created;
+    }));
+    expect(result).toMatchObject({ code: "upgrade_base_changed", nextStep: "upgrade inspect", committed: false });
+    expect(files(paths)).toEqual(changed);
+    expect(witness(paths)).toMatchObject({ format: 1, state: "confirmed" });
+    expect(read(paths, db => inspectSchema(db, TARGET).version)).toBe(49);
+  });
+
+  it("refuses inspect and apply over an interrupted restore without recovering or normalising anything; auth fence inspect completes it", async () => {
+    const root = temporary("upgrade-restore-interrupted-");
+    const paths = resolveAppPaths(join(root, "data")), backup = join(root, "restore-source");
+    const store = new SqliteStateStore(paths.databasePath);
+    try {
+      await createControllerBackup(store, backup, { applicationVersion: "test", attachmentDirectory: paths.knowledgeAttachmentDirectory });
+      new AuthenticationService(store).generateToken("local-cli");
+    } finally { store.close(); }
+    const noted = inspect(paths).planHash!, path = canonical(paths), attachments = join(realpathSync(paths.dataDirectory), "knowledge-attachments");
+    mkdirSync(attachments, { recursive: true, mode: 0o700 }); writeFileSync(join(attachments, "retained"), "old bytes", { mode: 0o600 });
+    // Interrupt the restore at its first move: the journal is written, nothing is moved yet.
+    const rename = fs.renameSync;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === join(restoreRoot(path), "previous", "0")) throw Object.assign(new Error("fixture restore interruption"), { code: "EIO" });
+      rename(from, to);
+    });
+    expect(() => restoreControllerBackup(backup, paths.databasePath)).toThrow("fixture restore interruption");
+    vi.restoreAllMocks();
+    expect(getOwnedRestoreStatus(path)?.state).toBe("prepared");
+    // A mode ordinary ownership would normalise.
+    chmodSync(path, 0o640);
+    /** Kind, bytes and mode of a file, or of every entry of a tree. */
+    const image = (target: string): unknown => {
+      const entry = (file: string) => { const stat = lstatSync(file); return stat.isFile() ? `${sha(readFileSync(file))}:${(stat.mode & 0o777).toString(8)}` : stat.isDirectory() ? `directory:${(stat.mode & 0o777).toString(8)}` : "other"; };
+      if (!existsSync(target)) return "missing";
+      if (!lstatSync(target).isDirectory()) return entry(target);
+      return Object.fromEntries((fs.readdirSync(target, { recursive: true, encoding: "utf8" }) as string[]).sort().map(name => [name, entry(join(target, name))]));
+    };
+    const state = () => ({ database: image(path), wal: image(`${path}-wal`), shm: image(`${path}-shm`), attachments: image(attachments), restore: image(restoreRoot(path)),
+      witness: image(witnessPath(paths)), plan: image(planFile(paths)) });
+    const before = state();
+    expect(before.plan).not.toBe("missing");
+    expect(before.restore).toHaveProperty(["journal.json"]);
+    const refusal = { name: "UpgradeError", code: "upgrade_restore_unfinished", nextStep: "auth fence inspect", committed: false, state: "fenced" };
+    expect(await failure(() => inspect(paths))).toEqual(refusal);
+    expect(state()).toEqual(before);
+    const calls: string[] = [];
+    expect(await failure(() => apply(paths, noted, backups(paths, calls)))).toEqual(refusal);
+    expect(calls).toEqual([]);
+    expect(state()).toEqual(before);
+    expect(getOwnedRestoreStatus(path)?.state).toBe("prepared");
+    // The step the refusal names completes the restore (its ownership recovers it)
+    // and reports the restored database as fenced, for the resume that follows.
+    expect(fenceInspect(paths)).toMatchObject({ trusted: false });
+    expect(getOwnedRestoreStatus(path)?.state).toBe("verified");
+    expect(inspect(paths)).toMatchObject({ state: "fenced", nextStep: "auth fence resume" });
+  });
 });
 
 /** Everything a completed upgrade must show. */
@@ -527,9 +692,21 @@ describe("explicit offline upgrade: apply", () => {
 });
 
 describe("explicit offline upgrade: interrupted apply", () => {
-  /** The final state the operator's recovery must reach, for comparison with an uninterrupted twin. */
-  const final = (paths: AppPaths) => ({ database: read(paths, normal), marker: read(paths, db => (db.prepare("SELECT state FROM upgrade_marker").pluck().get())),
-    witness: (({ format, state, policy, owner, restore, receipt, recoveredAt, upgrade }) => ({ format, state, policy, owner, restore: restore !== null, receipt: receipt !== null, recoveredAt: recoveredAt !== null, upgrade: Boolean(upgrade) }))(witness(paths)) });
+  /**
+   * The final state the operator's recovery must reach, for comparison with an
+   * uninterrupted twin: the database (see NORMALISED) and the witness, whose
+   * generated values share names with the database's, so its installation,
+   * epoch, receipts and plan must be the ones the rows carry.
+   */
+  const final = (paths: AppPaths) => {
+    const alias = aliases(), database = read(paths, db => normal(db, alias)), path = canonical(paths), stat = lstatSync(path);
+    const { format, binding, installation, epoch, state, file, policy, owner, restore, receipt, recoveredAt, upgrade } = witness(paths);
+    return { database, witness: { format, state, policy, owner,
+      binding: binding === securityFenceBinding(path) ? "<this database>" : binding,
+      file: JSON.stringify(file) === JSON.stringify({ device: stat.dev, inode: stat.ino }) ? "<this file>" : file,
+      installation: alias("installation", installation), epoch: alias("epoch", epoch), restore: alias("restore", restore), receipt: alias("receipt", receipt), recoveredAt: time(recoveredAt),
+      upgrade: upgrade ? { receipt: alias("receipt", upgrade.receipt), plan: alias("plan", upgrade.plan), at: time(upgrade.at) } : upgrade } };
+  };
   const auditFault = () => {
     let injected = false;
     const prepare = Database.prototype.prepare;
@@ -552,22 +729,30 @@ describe("explicit offline upgrade: interrupted apply", () => {
     });
     return () => injected;
   };
-  const confirmedFsyncFault = (paths: AppPaths) => {
+  /**
+   * A fault inside the witness publication of the given record state: at its
+   * rename (nothing replaced) or at the directory sync after it (replaced, not
+   * durable). The pending record of an upgrade is format 2.
+   */
+  const witnessFault = (paths: AppPaths, state: "pending" | "confirmed", stage: "rename" | "sync") => {
     let injected = false, published: string | undefined;
     const sync = fs.fsyncSync, rename = fs.renameSync;
     vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
-      const state = String(to) === witnessPath(paths) ? JSON.parse(readFileSync(String(from), "utf8")).payload.state : undefined;
-      rename(from, to); if (state) published = state;
+      const payload = String(to) === witnessPath(paths) ? JSON.parse(readFileSync(String(from), "utf8")).payload as { state: string; format: number } : undefined;
+      const target = payload?.state === state && (state === "confirmed" || payload.format === 2);
+      if (target && stage === "rename" && !injected) { injected = true; throw Object.assign(new Error("fixture rename fault"), { code: "EIO" }); }
+      rename(from, to); if (payload) published = target ? state : undefined;
     });
     vi.spyOn(fs, "fsyncSync").mockImplementation(fd => {
-      // The directory sync that would make the confirmed rename durable.
-      if (!injected && published === "confirmed" && fs.realpathSync(`/proc/self/fd/${fd}`) === securityFenceRoot(canonical(paths))) {
+      // The directory sync that would make the rename durable.
+      if (stage === "sync" && !injected && published === state && fs.realpathSync(`/proc/self/fd/${fd}`) === securityFenceRoot(canonical(paths))) {
         injected = true; throw Object.assign(new Error("fixture fsync fault"), { code: "EIO" });
       }
       sync(fd);
     });
     return () => injected;
   };
+  const confirmedFsyncFault = (paths: AppPaths) => witnessFault(paths, "confirmed", "sync");
   /** The uninterrupted run with the same operator steps as the recovery: `resume` first when the fault needs it. */
   async function twin(resumed: "none" | "before" | "after") {
     const paths = installation();
@@ -609,12 +794,15 @@ describe("explicit offline upgrade: interrupted apply", () => {
 
   it.each([["after the SQL commit, before the confirmed witness", "post-commit"], ["confirmed witness written but not durable", "fsync"]] as const)
   ("%s: upgraded, witness pending, reported committed; resume makes the marker pending, and inspect and apply succeed", async (_name, stage) => {
-    const paths = installation(), noted = inspect(paths).planHash!;
+    const paths = installation(), noted = inspect(paths).planHash!, plan = files(paths).plan;
+    expect(plan).not.toBe("missing");
     const injected = stage === "post-commit" ? postCommitFault() : confirmedFsyncFault(paths);
     expect(await failure(() => apply(paths, noted))).toEqual({ name: "UpgradeError", code: "upgrade_outcome_uncertain", nextStep: "auth fence resume", committed: true, state: "fenced" });
     expect(injected()).toBe(true); vi.restoreAllMocks();
     read(paths, db => { expect(inspectSchema(db, TARGET).version).toBe(50); expect(marker(db)).toEqual([{ state: "complete", plan_hash: noted }]); });
     expect(witness(paths)).toMatchObject({ format: 2, state: "pending", upgrade: { plan: noted } });
+    // The plan is removed only after the confirmed witness is durable.
+    expect(files(paths).plan).toBe(plan);
     const fenced = files(paths);
     expect(await failure(() => apply(paths, noted))).toMatchObject({ code: "upgrade_wrong_state", nextStep: "auth fence resume", state: "fenced" });
     expect(files(paths)).toEqual(fenced);
@@ -624,6 +812,97 @@ describe("explicit offline upgrade: interrupted apply", () => {
     expect(status).toMatchObject({ state: "upgrade_needed", plan: { source: 50, steps: [] } });
     assertUpgraded(paths, await apply(paths, status.planHash!), recovery(paths));
     expect(final(paths)).toEqual(await twin("after"));
+  });
+
+  it.each([["in the transaction, rolled back", "audit", false], ["after the SQL commit", "post-commit", true]] as const)
+  ("from a step-50 pending source, a fault %s is reported with committed=%s from the audit event alone", async (_name, stage, committed) => {
+    const paths = pending50(), noted = inspect(paths).planHash!, before = read(paths, all), plan = files(paths).plan;
+    expect(read(paths, db => inspectSchema(db, TARGET).version)).toBe(50);
+    const injected = stage === "audit" ? auditFault() : postCommitFault();
+    expect(await failure(() => apply(paths, noted))).toEqual({ name: "UpgradeError", code: "upgrade_outcome_uncertain", nextStep: "auth fence resume", committed, state: "fenced" });
+    expect(injected()).toBe(true); vi.restoreAllMocks();
+    // No schema version changes from step 50: only the marker and the audit event tell.
+    read(paths, db => {
+      expect(inspectSchema(db, TARGET).version).toBe(50);
+      expect(marker(db)).toEqual([committed ? { state: "complete", plan_hash: noted } : { state: "pending", plan_hash: null }]);
+    });
+    if (!committed) expect(read(paths, all)).toEqual(before);
+    expect(witness(paths)).toMatchObject({ format: 2, state: "pending", upgrade: { plan: noted } });
+    expect(files(paths).plan).toBe(plan);
+    expect(resume(paths)).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 50 });
+    assertUpgraded(paths, await apply(paths, inspect(paths).planHash!), recovery(paths));
+  });
+
+  it("a failed publication of the pending witness before its rename leaves the trusted witness: retryable, and the same plan applies", async () => {
+    const paths = installation(), noted = inspect(paths).planHash!, before = files(paths);
+    const injected = witnessFault(paths, "pending", "rename");
+    expect(await failure(() => apply(paths, noted))).toEqual({ name: "UpgradeError", code: "upgrade_witness_unchanged", nextStep: "upgrade apply", committed: false, state: "upgrade_needed" });
+    expect(injected()).toBe(true); vi.restoreAllMocks();
+    expect(files(paths)).toEqual(before);
+    expect(witness(paths)).toMatchObject({ format: 1, state: "confirmed" });
+    expect(fs.readdirSync(securityFenceRoot(canonical(paths)))).toEqual(["witness.json"]);
+    expect(inspect(paths)).toMatchObject({ state: "upgrade_needed", planHash: noted });
+    const result = await apply(paths, noted);
+    assertUpgraded(paths, result, recovery(paths));
+    expect(final(paths)).toEqual(await twin("none"));
+  });
+
+  it("a failed directory sync after the pending witness was renamed into place is uncertain: the witness is pending and resume is required", async () => {
+    const paths = installation(), noted = inspect(paths).planHash!, before = read(paths, all), plan = files(paths).plan;
+    const injected = witnessFault(paths, "pending", "sync");
+    expect(await failure(() => apply(paths, noted))).toEqual({ name: "UpgradeError", code: "upgrade_outcome_uncertain", nextStep: "auth fence resume", committed: false, state: "fenced" });
+    expect(injected()).toBe(true); vi.restoreAllMocks();
+    expect(read(paths, all)).toEqual(before);
+    expect(witness(paths)).toMatchObject({ format: 2, state: "pending", upgrade: { plan: noted } });
+    expect(files(paths).plan).toBe(plan);
+    expect(inspect(paths)).toMatchObject({ state: "fenced", nextStep: "auth fence resume" });
+    expect(resume(paths)).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 50 });
+    assertUpgraded(paths, await apply(paths, inspect(paths).planHash!), recovery(paths));
+    expect(final(paths)).toEqual(await twin("before"));
+  });
+
+  /**
+   * Runs `replace` once, right after the inspected read-only connection closed
+   * for the reopen (armed only once the pending witness was published).
+   */
+  const reopenFault = (paths: AppPaths, replace: () => void) => {
+    let armed = false, injected = false;
+    const begin = SecurityFence.beginUpgrade, close = Database.prototype.close;
+    vi.spyOn(SecurityFence, "beginUpgrade").mockImplementation((...args) => { begin.apply(SecurityFence, args); armed = true; });
+    vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
+      const inspected = this.readonly && this.name === canonical(paths);
+      const result = close.call(this);
+      if (armed && !injected && inspected) { injected = true; replace(); }
+      return result;
+    } as typeof close);
+    return () => injected;
+  };
+  it.each([
+    ["another valid database with its own installation, renamed into place", "other"],
+    ["a byte-different copy with the same installation, written in place", "in-place"],
+  ] as const)("refuses %s at the reopen: nothing is written to it and the pending witness stays", async (_name, kind) => {
+    const paths = installation(), path = canonical(paths), noted = inspect(paths).planHash!, plan = files(paths).plan;
+    let replacement: Buffer | undefined;
+    const replace = kind === "other"
+      ? (() => {
+        const other = installation(), staged = join(paths.dataDirectory, "replacement.sqlite3");
+        copyFileSync(other.databasePath, staged); chmodSync(staged, 0o600);
+        expect(read(other, db => db.prepare("SELECT installation FROM security_checkpoint").pluck().get())).not.toBe(read(paths, db => db.prepare("SELECT installation FROM security_checkpoint").pluck().get()));
+        return () => { replacement = readFileSync(staged); renameSync(staged, path); };
+      })()
+      : () => { const bytes = readFileSync(path); bytes.writeUInt32BE((bytes.readUInt32BE(24) + 7) >>> 0, 24); writeFileSync(path, bytes); replacement = bytes; };
+    const inode = lstatSync(path).ino;
+    const injected = reopenFault(paths, replace);
+    expect(await failure(() => apply(paths, noted))).toEqual({ name: "UpgradeError", code: "upgrade_source_changed", nextStep: "auth fence resume", committed: false, state: "fenced" });
+    expect(injected()).toBe(true); vi.restoreAllMocks();
+    // The replacement is untouched: its bytes (no checkpoint into it, no upgrade), its schema and no marker.
+    expect(sha(readFileSync(path))).toBe(sha(replacement!));
+    expect(lstatSync(path).ino === inode).toBe(kind === "in-place");
+    expect(!existsSync(`${path}-wal`) || lstatSync(`${path}-wal`).size === 0).toBe(true);
+    read(paths, db => { expect(inspectSchema(db, TARGET).version).toBe(49); expect(marker(db)).toBe("absent"); });
+    expect(witness(paths)).toMatchObject({ format: 2, state: "pending", upgrade: { plan: noted } });
+    expect(files(paths).plan).toBe(plan);
+    expect(inspect(paths)).toMatchObject({ state: "fenced", nextStep: "auth fence resume" });
   });
 
   it("success not seen by the operator: the same --expect answers already applied with the plan hash", async () => {
@@ -689,5 +968,41 @@ describe("explicit offline upgrade: witness compatibility", () => {
     expect(after).toMatchObject({ format: 2, state: "confirmed", ...previous, upgrade: upgraded.upgrade });
     expect(after.epoch).not.toBe(upgraded.epoch);
     expect(inspect(paths)).toMatchObject({ state: "current", appliedPlan: result.planHash });
+  });
+
+  it("reads, verifies and carries a format-2 witness with the provisional switch off; only the upgrade helpers refuse", async () => {
+    const paths = installation(), result = await apply(paths, inspect(paths).planHash!), path = canonical(paths);
+    const bytes = readFileSync(witnessPath(paths), "utf8"), boundary = securityRecoveryBoundary(paths.databasePath);
+    restoreGate();
+    expect(() => assertUpgradeAvailable()).toThrowError(expect.objectContaining({ code: "upgrade_unsupported" }));
+    expect(securityRecoveryBoundary(paths.databasePath)).toEqual(boundary);
+    read(paths, db => {
+      expect(() => SecurityFence.inspect(path, db, false)).not.toThrow();
+      expect(SecurityFence.preflight(path, db, 50)).toMatchObject({ trusted: true, code: "security_fence_current" });
+      expect(() => SecurityFence.upgradeReceipt(path, db, result.receipt!, "confirmed")).toThrowError(expect.objectContaining({ code: "upgrade_unsupported" }));
+    });
+    expect(readFileSync(witnessPath(paths), "utf8")).toBe(bytes);
+    expect(witness(paths)).toMatchObject({ format: 2, state: "confirmed", upgrade: { receipt: result.receipt, plan: result.planHash } });
+  });
+
+  it("confirms an upgrade only for the database its pending witness was published for", () => {
+    const paths = installation(), other = installation(), path = canonical(paths), receipt = randomUUID();
+    SecurityFence.beginUpgrade(path, { receipt, plan: "a".repeat(64), at: new Date().toISOString() });
+    const pending = readFileSync(witnessPath(paths), "utf8");
+    const refuses = (database: Database.Database) => {
+      for (const phase of ["pending", "confirmed"] as const) {
+        expect(() => SecurityFence.upgradeReceipt(path, database, receipt, phase), phase).toThrowError(expect.objectContaining({ code: "security_fence_recovery_required" }));
+        expect(() => SecurityFence.registerUpgradeObserver(path, database, receipt), phase).toThrowError(expect.objectContaining({ code: "security_fence_recovery_required" }));
+      }
+      expect(readFileSync(witnessPath(paths), "utf8")).toBe(pending);
+    };
+    // Another installation's database, read through the canonical path's witness.
+    const foreign = unmanagedFixtureDatabase(other.databasePath, { readonly: true });
+    try { refuses(foreign); } finally { foreign.close(); }
+    // The same installation in another file at the pathname (a copy renamed into place).
+    const copy = join(paths.dataDirectory, "copy.sqlite3");
+    copyFileSync(path, copy); chmodSync(copy, 0o600); renameSync(copy, path);
+    const moved = unmanagedFixtureDatabase(paths.databasePath, { readonly: true });
+    try { refuses(moved); } finally { moved.close(); }
   });
 });

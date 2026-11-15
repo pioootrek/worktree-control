@@ -18,6 +18,11 @@ import { schemaTarget } from "./migration-registry";
  * "already applied" after the plan file is gone. `pending` has none; a
  * `complete` without one is a fresh installation, which never needed a plan.
  * The quarantine clears it together with setting `pending`.
+ *
+ * SQLite's text `length` and `GLOB` stop at the first NUL character, so the
+ * CHECK also bounds the stored bytes: 64 characters in 64 bytes are 64 ASCII
+ * characters with no NUL, which `GLOB` then limits to lowercase hex, as
+ * `validateDatabase` requires.
  */
 export const UPGRADE_MARKER_VERSION = 50;
 /** Fence coverage added by step 50. The frozen schema-49 list is not extended. */
@@ -30,7 +35,7 @@ const table = `CREATE TABLE upgrade_marker (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   state TEXT NOT NULL CHECK(state IN ('pending','complete')),
   changed_at TEXT NOT NULL,
-  plan_hash TEXT CHECK(plan_hash IS NULL OR (typeof(plan_hash)='text' AND length(plan_hash)=64 AND NOT plan_hash GLOB '*[^0-9a-f]*')),
+  plan_hash TEXT CHECK(plan_hash IS NULL OR (typeof(plan_hash)='text' AND length(plan_hash)=64 AND length(CAST(plan_hash AS BLOB))=64 AND NOT plan_hash GLOB '*[^0-9a-f]*')),
   CHECK(state='complete' OR plan_hash IS NULL)
 )`;
 /** The only part that differs between a fresh and a migrated database is the bound state. */

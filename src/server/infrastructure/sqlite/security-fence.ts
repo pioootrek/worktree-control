@@ -8,6 +8,7 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import { durableJson, privateDirectory, privateBoundedFileReader, readPrivateBoundedFile, syncDirectory, validateSensitivePath } from "../../private-storage";
 import { getOwnedRestoreStatus } from "./restore-recovery";
+import { assertUpgradeAvailable } from "./upgrade-plan";
 
 const hex = z.string().regex(/^[0-9a-f]{64}$/);
 const policySchema = z.object({ mode: z.enum(["legacy", "token", "open", "better-auth"]), generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict();
@@ -26,6 +27,12 @@ const upgradeSchema = z.object({ receipt: z.uuid(), plan: hex, at: z.iso.datetim
  * recovery required; it never reads it as format 1 without the upgrade.
  * `receipt` and `recoveredAt` keep their meaning (the last establish/resume) in
  * both formats; an upgrade never writes them.
+ *
+ * Decoding is not gated: a format-2 record once written is read, verified and
+ * carried forward by ordinary fenced writes whether or not the provisional
+ * switch is on. Only the helpers that start or finish an upgrade
+ * ({@link SecurityFence.beginUpgrade}, {@link SecurityFence.registerUpgradeObserver},
+ * {@link SecurityFence.upgradeReceipt}) refuse unless the upgrade is available.
  */
 const recordV2 = recordV1.extend({ format: z.literal(2), upgrade: upgradeSchema }).strict();
 const recordSchema = z.discriminatedUnion("format", [recordV1, recordV2]);
@@ -194,6 +201,7 @@ export class SecurityFence implements SqliteExecutionBoundary {
    * database until {@link upgradeReceipt} confirms it.
    */
   static beginUpgrade(path: string, upgrade: SecurityUpgradeReceipt): void {
+    assertUpgradeAvailable();
     const previous = read(path);
     if (!previous || previous.state !== "confirmed") throw new SecurityFenceError("security_fence_recovery_required");
     const parsed = upgradeSchema.parse(upgrade);
@@ -202,16 +210,35 @@ export class SecurityFence implements SqliteExecutionBoundary {
       policy: previous.policy, owner: previous.owner, restore: previous.restore, receipt: previous.receipt, recoveredAt: previous.recoveredAt,
       upgrade: { receipt: parsed.receipt, plan: parsed.plan, at: parsed.at } });
   }
+  /**
+   * Called on the connection reopened for writing, before anything else uses it.
+   * The pending witness must be this run's, and the database must be the one it
+   * was published for: the same file (device and inode), the same checkpoint
+   * (installation and epoch: nothing has changed it since the trusted record
+   * the pending witness copied), policy, owner and restore. Only then is the
+   * observer registered. Nothing here writes.
+   */
   static registerUpgradeObserver(path: string, database: Database.Database, receipt: string): void {
-    const record = read(path);
-    if (!record || record.state !== "pending" || record.format !== 2 || record.upgrade.receipt !== receipt) throw new SecurityFenceError("security_fence_recovery_required");
+    assertUpgradeAvailable();
+    try {
+      const record = read(path);
+      if (!record || record.state !== "pending" || record.format !== 2 || record.upgrade.receipt !== receipt) throw new Error();
+      const point = checkpoint(database);
+      if (hash(record.file) !== hash(fileIdentity(path)) || record.installation !== point.installation || record.epoch !== point.epoch
+        || hash(record.policy) !== hash(policy(database)) || record.owner !== ownerIdentity(database) || record.restore !== restore(path)) throw new Error();
+    } catch { throw new SecurityFenceError("security_fence_recovery_required"); }
     database.function("worktree_security_pending", () => 0);
   }
   /** The upgrade's counterpart of {@link maintenanceReceipt}: the witness of the
-   * upgraded database, keeping the earlier recovery receipt and this run's upgrade. */
+   * upgraded database, keeping the earlier recovery receipt and this run's upgrade.
+   * It confirms only the database the pending witness was published for: the
+   * epoch changes in the upgrade's transaction, the installation and the file
+   * identity never do. */
   static upgradeReceipt(path: string, database: Database.Database, receipt: string, phase: "pending" | "confirmed"): void {
+    assertUpgradeAvailable();
     const previous = read(path);
-    if (!previous || previous.format !== 2 || previous.upgrade.receipt !== receipt) throw new SecurityFenceError("security_fence_recovery_required");
+    if (!previous || previous.format !== 2 || previous.state !== "pending" || previous.upgrade.receipt !== receipt
+      || previous.installation !== checkpoint(database).installation || hash(previous.file) !== hash(fileIdentity(path))) throw new SecurityFenceError("security_fence_recovery_required");
     const payload: Record = {format:2,binding:binding(path),...checkpoint(database),state:phase,file:fileIdentity(path),policy:policy(database),owner:ownerIdentity(database),restore:restore(path),
       receipt:previous.receipt,recoveredAt:previous.recoveredAt,upgrade:previous.upgrade};
     try { publish(path,payload); }

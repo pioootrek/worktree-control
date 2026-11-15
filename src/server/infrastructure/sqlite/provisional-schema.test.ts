@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +16,8 @@ import { maintainSqliteSecurityFence, quarantineAuthority } from "./security-mai
 import { hashFile, parseManifest, validateBackup, validateSnapshot } from "./backup-validation";
 import { applyUpgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applySqliteUpgrade, inspectSqliteUpgrade } from "./upgrade-maintenance";
-import { upgradeTarget, UpgradeError } from "./upgrade-plan";
+import { assertUpgradeAvailable, readUpgradePlan, removeUpgradePlan, structuralSteps, upgradeTarget, UpgradeError, writeUpgradePlan } from "./upgrade-plan";
+import { SecurityFence } from "./security-fence";
 
 /**
  * Provisional schema steps stay switched off (C1b).
@@ -232,6 +234,43 @@ describe("provisional schema steps stay switched off", () => {
     const owner = new OwnedSqliteDatabase(fixture.paths.databasePath);
     try { expect(owner.inspection.version).toBe(49); } finally { owner.close(); }
     expect(() => validateBackup(fixture.backup, parseManifest(fixture.manifest))).not.toThrow();
+  });
+
+  it("refuses every upgrade-specific helper of the fence and the plan while the switch is off, before any file is read or written", () => {
+    expect(provisionalSchemaEnabled()).toBe(false);
+    const fixture = current49(), data = realpathSync(fixture.paths.dataDirectory), path = join(data, "state.sqlite3");
+    /** Every entry under the data directory: kind, bytes, mode and modification time. */
+    const tree = (root: string): Record<string, string> => Object.fromEntries(readdirSync(root, { recursive: true, encoding: "utf8" }).sort().map(name => {
+      const entry = join(root, name), stat = lstatSync(entry, { bigint: true });
+      return [name, [stat.isFile() ? createHash("sha256").update(readFileSync(entry)).digest("hex") : stat.isDirectory() ? "directory" : "other", stat.mode, stat.mtimeNs].join(":")];
+    }));
+    const database = new Database(path);
+    try {
+      // A trusted schema-49 witness: what beginUpgrade would replace with a format-2 pending one.
+      SecurityFence.attach(path, database, true);
+      const before = tree(data);
+      expect(Object.keys(before)).toContain(join("state.sqlite3.security", "witness.json"));
+      const receipt = "00000000-0000-4000-8000-000000000000";
+      const plan = { kind: "worktree-control/upgrade-plan" as const, format: 1 as const, binding: "a".repeat(64), installation: "b".repeat(64), base: "c".repeat(64), source: 49, target: 49, steps: structuralSteps(49, 49), acts: [] };
+      const refusals = {
+        assertUpgradeAvailable: () => assertUpgradeAvailable(),
+        beginUpgrade: () => SecurityFence.beginUpgrade(path, { receipt, plan: "0".repeat(64), at: new Date().toISOString() }),
+        registerUpgradeObserver: () => SecurityFence.registerUpgradeObserver(path, database, receipt),
+        upgradeReceiptPending: () => SecurityFence.upgradeReceipt(path, database, receipt, "pending"),
+        upgradeReceiptConfirmed: () => SecurityFence.upgradeReceipt(path, database, receipt, "confirmed"),
+        writeUpgradePlan: () => writeUpgradePlan(path, plan),
+        readUpgradePlan: () => readUpgradePlan(path),
+        removeUpgradePlan: () => removeUpgradePlan(path),
+      };
+      for (const [entry, refusal] of Object.entries(refusals)) {
+        expect(refusal, entry).toThrowError(expect.objectContaining({ name: "UpgradeError", code: "upgrade_unsupported", message: UNSUPPORTED }));
+      }
+      expect(tree(data)).toEqual(before);
+      expect(existsSync(`${path}.upgrade`)).toBe(false);
+      // The witness is still the trusted format-1 record.
+      expect(() => SecurityFence.inspect(path, database, false)).not.toThrow();
+      expect(JSON.parse(readFileSync(join(`${path}.security`, "witness.json"), "utf8")).payload).toMatchObject({ format: 1, state: "confirmed" });
+    } finally { database.close(); }
   });
 
   it("finds no gate import outside the reader, and no step-module import outside the listed files", () => {
