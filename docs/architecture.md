@@ -1328,9 +1328,11 @@ behaviour. The order is:
    `takeBoundBackup`). A pre-fence source has no checkpoint, so its copy must
    have none either. Only the snapshot's origin binds it: this run wrote it
    through the owned connection under both locks, and the second preflight
-   shows that the source did not move. Nothing can show that the snapshot file
-   was not overwritten in place with an older state of the same database at the
-   same schema version.
+   shows that the source did not move. The current binding does not detect an
+   in-place overwrite of the snapshot file with an older state of the same
+   database at the same schema version. A digest of the snapshot's logical
+   content, taken before control of the snapshot returns to the backup function
+   and compared afterwards, would detect it; that is possible later work.
 3. The preflight again, which must equal `--expect`.
 4. The pending witness, the migration and the receipts, as without a backup.
 
@@ -1338,6 +1340,13 @@ A backup that fails, does not validate or is not this run's is refused as
 `SecurityFenceBackupError`. Its code is `security_fence_establishment_required`,
 the state the database is still in, and its message names the backup. A moved
 preflight after the backup is `security_fence_preflight_changed`. In both cases
-the database, its sidecars and the absent witness are unchanged, and establish
-can run again. A failure after the pending witness leaves the backup in place.
-`inspect` and `resume` take no backup.
+the database file and its WAL are unchanged, no witness is written, and
+establish can run again. A failure after the pending witness leaves the backup
+in place. `inspect` and `resume` take no backup.
+
+Establish without a backup guarantees the same, and in both, other files may
+change. Before the status is checked, ordinary ownership may create its lock
+files, recover an interrupted restore and narrow file modes. A read-only SQLite
+open may create an empty WAL and a shared-memory file. A refused run with a
+backup may also leave output of the backup function behind, such as a complete
+or partial backup tree.

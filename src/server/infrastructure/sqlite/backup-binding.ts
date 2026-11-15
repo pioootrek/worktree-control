@@ -55,11 +55,13 @@ function sameCheckpoint(copy: ReturnType<typeof checkpoint>, live: ReturnType<ty
  * What binds its snapshot is its provenance alone: it was written through this
  * owner's connection in this run, under both locks, into the file the tree
  * holds, and the caller proves with a second preflight that the source did not
- * move meanwhile. What cannot be checked is the content of that file after the
- * snapshot: the callback could overwrite it in place (same device and inode)
- * with an older state of the same database at the same schema version and a
- * manifest that matches, and nothing in a pre-fence database tells the two
- * states apart.
+ * move meanwhile. This binding does not check the content of that file after
+ * the snapshot: the callback could overwrite it in place (same device and
+ * inode) with an older state of the same database at the same schema version
+ * and a manifest that matches, and the checks here would not detect it. A
+ * digest of the snapshot's logical content, taken before control of the
+ * snapshot returns to the callback and compared with the returned tree, would;
+ * that is possible later work, not part of this binding.
  */
 export async function takeBoundBackup(owner: OwnedSqliteDatabase, path: string, source: number, ceiling: number, backup: MaintenanceBackup): Promise<string> {
   const taken: { calls: number; settled: boolean; snapshot?: { device: number; inode: number }; running?: Promise<void> } = { calls: 0, settled: false };

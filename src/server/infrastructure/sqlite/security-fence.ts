@@ -49,8 +49,10 @@ export class SecurityFenceError extends AuthenticationProviderError {
 }
 /**
  * Establishment refused because its pre-establishment backup failed, did not
- * validate or is not this run's copy of the source. Nothing was changed and
- * nothing is pending: the database still needs establishment, so the code is
+ * validate or is not this run's copy of the source. The database and its WAL
+ * are unchanged and nothing is pending (what ownership and a read-only open may
+ * create or normalise happens as in every establish, and the backup function's
+ * own output may remain): the database still needs establishment, so the code is
  * the one `auth fence inspect` and startup report for it, and the closed set of
  * codes is unchanged. Only the message and the class tell the cause.
  */

@@ -121,10 +121,14 @@ const establishSchema=z.object({action:z.literal("establish"),expect:z.string().
  * published.
  *
  * A backup that fails, does not validate or is not this run's is refused as
- * {@link SecurityFenceBackupError} with nothing changed and nothing pending; a
- * moved preflight after it is `security_fence_preflight_changed`. Either way
- * establish can be run again. The result is the establishment's, with the
- * accepted backup's root (null for the trusted no-op).
+ * {@link SecurityFenceBackupError} with the database and its WAL unchanged and
+ * nothing pending; a moved preflight after it is
+ * `security_fence_preflight_changed`. Either way establish can be run again.
+ * As in every establish, ordinary ownership may already have created its lock
+ * files, recovered an interrupted restore and narrowed file modes, and a
+ * read-only open may have created an empty WAL and a shared-memory file; the
+ * backup function's own output may remain. The result is the establishment's,
+ * with the accepted backup's root (null for the trusted no-op).
  *
  * The command and the target are checked synchronously, before any lock or file.
  */
