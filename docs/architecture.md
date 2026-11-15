@@ -466,9 +466,12 @@ The controller opens one database connection, enables foreign keys and WAL,
 uses prepared statements, and runs numbered migrations before accepting
 requests. All schema steps share one immediate transaction with foreign keys
 off and a foreign-key check before commit. A caller may add data acts to that
-transaction after the steps and before validation; SQLite cannot enable foreign
-keys inside a transaction, so the ON DELETE CASCADE and SET NULL actions of the
-acts' deletes are applied explicitly before the same check.
+transaction after the steps and before validation. SQLite cannot enable foreign
+keys inside a transaction, so no ON DELETE action runs for the acts: an act
+deletes or updates every dependent row its statements would leave without a
+parent. Nothing is repaired for it. Any violation left after the acts fails the
+check before commit and rolls back the steps and the acts. Acts start only from
+a database without a violation.
 
 A state-directory lock prevents two controller instances with the same runtime
 configuration from owning the process set. Stored PIDs are hints

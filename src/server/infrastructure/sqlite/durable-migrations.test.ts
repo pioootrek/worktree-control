@@ -356,43 +356,35 @@ describe("schema initialization data acts", () => {
     let acted = false;
     expect(() => initializeSchema(db, false, inspectSchema, { acts: () => { acted = true; } })).toThrow(/foreign key check failed/);
     expect(acted).toBe(false);
-    // The pre-existing orphan is never removed as if an act had deleted its parent.
+    // Acts never start from a violation, and the pre-existing orphan is left as found.
     expect(db.prepare("SELECT count(*) FROM audit_events WHERE project_id='missing'").pluck().get()).toBe(1);
     owned.close();
   });
 
-  it("applies the ON DELETE actions enforcement would have applied to the acts' deletes", () => {
-    const source = unmanagedFixtureDatabase(":memory:");
-    initializeSchema(source); source.pragma("foreign_keys = ON");
-    const deadline = "2026-12-01T00:00:00.000Z";
-    source.exec(`INSERT INTO remote_principals VALUES('owner','owner','active');
-      INSERT INTO authentication_ba_user(id,name,email,emailVerified,createdAt,updatedAt) VALUES('subject','Owner','owner@fixture.invalid',0,'now','now');
-      INSERT INTO authentication_provider_subjects(provider_id,subject,principal_id,status,linked_at,revoked_at) VALUES('better-auth','subject','owner','active','now',NULL);
-      INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
-        VALUES('removed','Removed','/code/removed',3214,'pnpm','["run","dev"]','/',45000,'now','now'),('kept','Kept','/code/kept',3215,'pnpm','["run","dev"]','/',45000,'now','now');
-      INSERT INTO audit_events(project_id,event_type,actor,details_json,created_at) VALUES('removed','fixture','fixture','{}','now'),('kept','fixture','fixture','{}','now');
-      INSERT INTO knowledge_projects VALUES('linked','Linked','active',1,'now','now');
-      INSERT INTO knowledge_project_runtime_links VALUES('linked','removed','now',NULL);`);
-    for (const id of ["removed", "kept"]) source.exec(`INSERT INTO authentication_ba_session(id,expiresAt,token,createdAt,updatedAt,userId) VALUES('${id}','${deadline}','token-${id}','now','now','subject');
-      INSERT INTO authentication_session_evidence(session_id,provider_id,subject,method,authenticated_at,original_deadline,generation,policy_revision,credential,credential_binding,attempt_id) VALUES('${id}','better-auth','subject','password','2026-11-15T00:00:00.000Z','${deadline}',1,1,NULL,NULL,'attempt-${id}');
-      INSERT INTO authentication_session_issuance(session_id,state,original_deadline) VALUES('${id}','may_publish','${deadline}');`);
-    const deletes = "DELETE FROM authentication_ba_session WHERE id='removed'; DELETE FROM projects WHERE id='removed';";
-    const emulated = unmanagedFixtureDatabase(source.serialize()), enforced = unmanagedFixtureDatabase(source.serialize());
-    try {
-      emulated.pragma("foreign_keys = ON");
-      initializeSchema(emulated, false, inspectSchema, { acts: current => current.exec(deletes) });
-      enforced.pragma("foreign_keys = ON"); enforced.transaction(() => enforced.exec(deletes))();
-      // The checkpoint epoch is random on every covered write.
-      expect(contents(emulated, ["security_checkpoint"])).toEqual(contents(enforced, ["security_checkpoint"]));
-      // Two cascade levels (session -> evidence -> issuance), a cascade and a SET NULL from projects.
-      expect(emulated.prepare("SELECT session_id FROM authentication_session_issuance").pluck().all()).toEqual(["kept"]);
-      expect(emulated.prepare("SELECT session_id FROM authentication_session_evidence").pluck().all()).toEqual(["kept"]);
-      expect(emulated.prepare("SELECT project_id FROM audit_events").pluck().all()).toEqual(["kept"]);
-      expect(emulated.prepare("SELECT runtime_project_id FROM knowledge_project_runtime_links").pluck().all()).toEqual([null]);
-      // A RESTRICT parent still refuses the acts and rolls them back.
-      const before = contents(emulated);
-      expect(() => initializeSchema(emulated, false, inspectSchema, { acts: current => current.exec("DELETE FROM authentication_ba_user") })).toThrow(/foreign key check failed/);
-      expect(contents(emulated)).toEqual(before);
-    } finally { source.close(); emulated.close(); enforced.close(); }
+  // Acts run with enforcement off and nothing repairs them: each violation an act
+  // leaves fails the check before commit, and steps and acts roll back together.
+  it.each([
+    ["inserts a child without a parent", "INSERT INTO audit_events(project_id,event_type,actor,details_json,created_at) VALUES('missing','fixture','fixture','{}','now')"],
+    ["points a child at a missing parent", "UPDATE audit_events SET project_id='missing' WHERE project_id='kept'"],
+    ["deletes a parent and leaves its child", "DELETE FROM projects WHERE id='kept'"],
+  ] as const)("rolls back the steps and acts when an act %s; nothing is repaired", (_, statement) => {
+    const f = fixture(26);
+    raw(f.path, db => db.exec(`INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
+        VALUES('kept','Kept','/code/kept',3214,'pnpm','["run","dev"]','/',45000,'now','now');
+      INSERT INTO audit_events(project_id,event_type,actor,details_json,created_at) VALUES('kept','fixture','fixture','{}','now');`));
+    const before = snapshot(f.path), { owned, db } = writable(f.path);
+    let acted = false;
+    expect(() => initializeSchema(db, false, inspectSchema, { acts: current => {
+      audit(current, "fixture.act"); current.exec(statement); acted = true;
+    } })).toThrow(/foreign key check failed/);
+    expect(acted).toBe(true); expect(db.inTransaction).toBe(false); expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+    owned.close(); released(f.path);
+    // The schema stays at 26, the parent and child are as seeded, and no row was deleted or nulled for the act.
+    expect(snapshot(f.path)).toEqual(before);
+    raw(f.path, check => {
+      expect(version(check)).toBe(26);
+      expect(check.prepare("SELECT project_id FROM audit_events").pluck().all()).toEqual(["kept"]);
+      expect(check.prepare("SELECT id FROM projects").pluck().all()).toEqual(["kept"]);
+    });
   });
 });

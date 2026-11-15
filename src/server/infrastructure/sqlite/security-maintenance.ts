@@ -22,8 +22,9 @@ export type SecurityMaintenanceCommand =
   | { action: "resume"; expect: string; mode: "token" | "open" | "better-auth" };
 
 /** Runs as the acts of the schema transaction, so the structure becomes current
- * only together with the quarantine. */
-function quarantineAuthority(database: Database.Database, receipt: string, mode: "token" | "open" | "better-auth"): void {
+ * only together with the quarantine. Exported for the differential test that
+ * runs the same statements under foreign-key enforcement. */
+export function quarantineAuthority(database: Database.Database, receipt: string, mode: "token" | "open" | "better-auth"): void {
   const now = new Date().toISOString();
   const old=JSON.parse((database.prepare("SELECT value_json FROM controller_settings WHERE key='authentication'").get() as {value_json:string}).value_json);
   if(!Number.isSafeInteger(old.generation) || old.generation>=Number.MAX_SAFE_INTEGER
@@ -31,6 +32,9 @@ function quarantineAuthority(database: Database.Database, receipt: string, mode:
   // Quarantine ALL restored authentication material. Keep principals, IDs,
   // roles, membership rows, attribution, intent/run history, budgets and TOTP
   // steps. Regrant/reissue/recover are subsequent explicit protected acts.
+  // Foreign keys are off here (see initializeSchema's acts): every row whose
+  // parent a statement deletes is deleted explicitly, before that parent. All
+  // sessions and passkeys go, so all their dependents go.
   database.exec(`
     UPDATE principal_credentials SET status='revoked', revoked_at=coalesce(revoked_at,'${now}');
     UPDATE knowledge_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
@@ -40,8 +44,12 @@ function quarantineAuthority(database: Database.Database, receipt: string, mode:
     UPDATE remote_principal_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
     UPDATE remote_worker_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
     UPDATE authentication_ba_account SET password=NULL,accessToken=NULL,refreshToken=NULL,idToken=NULL;
+    DELETE FROM authentication_session_issuance;
+    DELETE FROM authentication_session_evidence;
     DELETE FROM authentication_ba_session;
     DELETE FROM authentication_ba_verification;
+    DELETE FROM authentication_passkey_staged;
+    DELETE FROM authentication_passkey_trust;
     DELETE FROM authentication_ba_passkey;
     DELETE FROM authentication_ba_two_factor;
     UPDATE authentication_ba_user SET twoFactorEnabled=0;
@@ -56,6 +64,7 @@ function quarantineAuthority(database: Database.Database, receipt: string, mode:
   // All shared and legacy verifier material is removed; first-run issuance is fresh.
   database.prepare("UPDATE controller_settings SET value_json=?,updated_at=? WHERE key='authentication'")
     .run(JSON.stringify({mode,generation:old.generation+1,token:null}),now);
+  // Its trimming deletes the requester rows of the runs it trims.
   new TestRunQueries(database).markInterruptedTestRuns();
   // The last act and this run's durable commit evidence (see the catch below).
   database.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('authentication.security_quarantined','local-cli',?,?)")
@@ -64,7 +73,10 @@ function quarantineAuthority(database: Database.Database, receipt: string, mode:
 
 /** True only when this run's quarantine committed: its audit event carries the receipt. */
 function quarantineCommitted(database: Database.Database, receipt: string): boolean {
-  return Boolean(database.prepare("SELECT 1 FROM controller_audit_events WHERE event_type='authentication.security_quarantined' AND json_extract(details_json,'$.receipt')=? LIMIT 1").get(receipt));
+  // details_json has no JSON constraint: a malformed historical event must not
+  // make this lookup throw (the caller would then report a commit as absent).
+  return Boolean(database.prepare(`SELECT 1 FROM controller_audit_events WHERE event_type='authentication.security_quarantined'
+    AND CASE WHEN json_valid(details_json) THEN json_extract(details_json,'$.receipt') END=? LIMIT 1`).get(receipt));
 }
 
 /** Offline only. This function acquires BOTH singleton locks; no transport boolean grants trust.
