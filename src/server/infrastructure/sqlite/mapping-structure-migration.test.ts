@@ -543,7 +543,7 @@ describe("step 51 guard triggers", () => {
         ["a link for a remote identity", { kind: "remote_identity", basis: "accepted_link" }], ["a binding for a registration", { basis: "accepted_binding" }],
         ["incarnation 0", { incarnation: 0 }], ["a text incarnation", { incarnation: "one" }], ["a fractional incarnation", { incarnation: 1.5 }],
         ["an empty ID", { id: "" }], ["an ID with NUL", { id: "registration\0a" }], ["an ID of 161 characters", { id: "r".repeat(161) }], ["a BLOB project", { project: Buffer.from("project-a") }],
-        ["an uppercase plan hash", { plan: PLAN.toUpperCase() }], ["a plan hash with NUL", { plan: `${PLAN}\0` }], ["an uppercase receipt", { receipt: RECEIPT.toUpperCase() }],
+        ["an uppercase plan hash", { plan: PLAN.toUpperCase() }], ["a plan hash with NUL", { plan: `${PLAN}\0` }], ["an uppercase receipt", { receipt: "0000000A-0000-4000-8000-00000000000B" }],
         ["a receipt without dashes", { receipt: RECEIPT.replaceAll("-", "0").slice(0, 36) }], ["a time without milliseconds", { at: "2026-11-15T00:00:00Z" }],
         ["an impossible date", { at: "2026-02-30T00:00:00.000Z" }], ["a numeric time", { at: 2461000 }],
       ] as const) expect(() => journal(database, row as Parameters<typeof journal>[1]), name).toThrow(/CHECK constraint failed/);
@@ -622,15 +622,15 @@ describe("step 51 recognition at ceiling 51", () => {
     try { replaceColumns(database, table, PROJECT_MAPPING_COLUMN_DEFINITIONS); expect(inspectSchema(database, TARGET)).toEqual({ version: 51, fresh: false }); } finally { database.close(); }
   });
 
-  it("recognises the added columns' defaults although released recognition skips them", () => {
-    // Only the default differs: type, nullability, key, CHECK and the column order are the step's.
+  it("recognises the added columns by their exact text, beyond what table_info reports", () => {
+    // SQLite reports `DEFAULT (0)` as the default '0', like `DEFAULT 0`: type, nullability, key,
+    // default and CHECK all compare equal by PRAGMA, and only the exact column text tells them apart.
     const database = fresh51(observed());
     try {
-      const definitions = alteredColumns(1, "DEFAULT 0", "DEFAULT (0)");
-      replaceColumns(database, "projects", definitions);
-      const columns = database.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string; dflt_value: string | null }>;
-      expect(columns.find(column => column.name === "incarnation")?.dflt_value).toBe("(0)");
-      expect(message(() => inspectSchema(database, TARGET))).toMatch(SCHEMA_REFUSAL);
+      const reference = database.prepare("PRAGMA table_info(projects)").all();
+      replaceColumns(database, "projects", alteredColumns(1, "DEFAULT 0", "DEFAULT (0)"));
+      expect(database.prepare("PRAGMA table_info(projects)").all()).toEqual(reference);
+      expect(message(() => inspectSchema(database, TARGET))).toBe("Unsupported or unrecognized database schema (columns of projects). Use a compatible release or inspect an isolated copy; the source was not migrated.");
     } finally { database.close(); }
   });
 
