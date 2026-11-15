@@ -83,12 +83,18 @@ function genuine40() {
   try{db.exec(readFileSync(new URL("./fixtures/schema-v40.sql",import.meta.url),"utf8"));db.exec(authority(false));}finally{db.close();}
   chmodSync(paths.databasePath,0o600);return paths;
 }
+const HISTORICAL_EVENT_AT="2026-01-01T00:00:00.000Z";
+/** Older quarantine events that are not this code's JSON text. details_json is TEXT NOT NULL
+ * without a JSON constraint in a non-STRICT table: malformed text, a non-JSON BLOB, a BLOB of
+ * JSON text bytes and a JSONB BLOB (another receipt each) stay as stored; the integer becomes
+ * text by column affinity; NULL is refused by NOT NULL. */
+const MALFORMED_DETAILS=["'{receipt:'","x'ff00133780'",`CAST('{"receipt":"historical-blob"}' AS BLOB)`,`jsonb('{"receipt":"historical-jsonb"}')`,"42"];
 /** A current-schema store whose authority was written outside its owner, so it needs resume.
- * `malformed` adds an older quarantine event whose details are not JSON (the column has no JSON constraint). */
+ * `malformed` adds the older quarantine events of MALFORMED_DETAILS. */
 function current49(malformed=false) {
   const f=fixture();f.store.close();
   const db=unmanagedFixtureDatabase(f.paths.databasePath);try{db.exec(authority(true));
-    if(malformed)db.exec("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('authentication.security_quarantined','local-cli','{receipt:','2026-01-01T00:00:00.000Z')");
+    if(malformed)for(const details of MALFORMED_DETAILS)db.exec(`INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('authentication.security_quarantined','local-cli',${details},'${HISTORICAL_EVENT_AT}')`);
   }finally{db.close();}
   return f.paths;
 }
@@ -134,7 +140,7 @@ function injectResumeFault(stage:string,paths:ReturnType<typeof resolveAppPaths>
   if(stage==="post-commit"){const pragma=Database.prototype.pragma;vi.spyOn(Database.prototype,"pragma").mockImplementation(function(this:Database.Database,source,options){
     const result=pragma.call(this,source,options);
     // initializeSchema's finally fails AFTER the one transaction committed the quarantine.
-    if(source==="foreign_keys = ON" && !this.inTransaction && this.prepare("SELECT 1 FROM controller_audit_events WHERE event_type='authentication.security_quarantined' AND json_valid(details_json)").get())throw fault();
+    if(source==="foreign_keys = ON" && !this.inTransaction && this.prepare("SELECT 1 FROM controller_audit_events WHERE event_type='authentication.security_quarantined' AND created_at<>?").get(HISTORICAL_EVENT_AT))throw fault();
     return result;});}
   if(stage==="confirmed-receipt"){const receipt=SecurityFence.maintenanceReceipt;vi.spyOn(SecurityFence,"maintenanceReceipt").mockImplementation((...args)=>{if(args[3]==="confirmed")throw fault();receipt(...args);});}
   const run=()=>maintainSqliteSecurityFence(paths,{action:"resume",expect:status.preflight,mode:"token"},{
@@ -279,7 +285,7 @@ describe("external security checkpoint",()=>{
     expect(read(paths,quarantine)).toEqual(expected);expect(read(paths,counters)).toEqual(expectedCounters);
     new SqliteStateStore(paths.databasePath).close();
   });
-  it.each([["quarantine",false,false],["quarantine",false,true],["validation",false,false],["post-commit",true,false],["post-commit",true,true],["handoff",true,false],["confirmed-receipt",true,false]] as const)
+  it.each([["quarantine",false,false],["quarantine",false,true],["validation",false,false],["validation",false,true],["post-commit",true,false],["post-commit",true,true],["handoff",true,false],["confirmed-receipt",true,false]] as const)
   ("reports a resume fault at %s on a current-schema database as committed=%s (malformed older event: %s) and recovers to the same quarantine",(stage,committed,malformed)=>{
     const paths=current49(malformed),twin=current49(malformed);resume(twin);
     const expected=read(twin,quarantine),initial=read(paths,counters),before=read(paths,quarantine);
@@ -287,7 +293,10 @@ describe("external security checkpoint",()=>{
       // Requester rows of trimmed runs (history-00, history-01) go with them; those of kept runs stay.
       requesters:[{run_id:"history-50",principal_id:"agent",credential_id:"agent-credential"}],
       humanRequesters:[{run_id:"running-run",principal_id:"human",fingerprint:"c".repeat(64)}]});
-    expect(initial.events).toBe(malformed?1:0);
+    expect(initial.events).toBe(malformed?MALFORMED_DETAILS.length:0);
+    // The commit-evidence lookup must not parse or match any of these historical values.
+    expect(read(paths,db=>db.prepare("SELECT typeof(details_json) FROM controller_audit_events WHERE event_type='authentication.security_quarantined' ORDER BY id").pluck().all()))
+      .toEqual(malformed?["text","blob","blob","blob","text"]:[]);
     expect(before).toMatchObject({credentials:[{id:"agent-credential",status:"active",revoked:0},{id:"owner-credential",status:"active",revoked:0}],
       removed:[1,1,1,1,2,1,1,0],summaries:[],
       runs:[...history.map(id=>({id,phase:"passed",queue_position:null,finished:0})),{id:"queued-run",phase:"queued",queue_position:1,finished:0},{id:"running-run",phase:"running",queue_position:null,finished:0}],

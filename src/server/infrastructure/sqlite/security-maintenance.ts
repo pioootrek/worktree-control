@@ -73,10 +73,14 @@ export function quarantineAuthority(database: Database.Database, receipt: string
 
 /** True only when this run's quarantine committed: its audit event carries the receipt. */
 function quarantineCommitted(database: Database.Database, receipt: string): boolean {
-  // details_json has no JSON constraint: a malformed historical event must not
-  // make this lookup throw (the caller would then report a commit as absent).
+  // details_json has no JSON constraint and the table is not STRICT: a historical
+  // event may hold malformed text or a BLOB, and must not make this lookup throw
+  // (the caller would then report a commit as absent). The receipt written above
+  // is always JSON text, so only text values are parsed; the CASE tests the
+  // storage class before json_valid/json_extract can see the value.
   return Boolean(database.prepare(`SELECT 1 FROM controller_audit_events WHERE event_type='authentication.security_quarantined'
-    AND CASE WHEN json_valid(details_json) THEN json_extract(details_json,'$.receipt') END=? LIMIT 1`).get(receipt));
+    AND CASE WHEN typeof(details_json)<>'text' THEN NULL
+      WHEN json_valid(details_json) THEN json_extract(details_json,'$.receipt') END=? LIMIT 1`).get(receipt));
 }
 
 /** Offline only. This function acquires BOTH singleton locks; no transport boolean grants trust.
