@@ -984,8 +984,8 @@ describe("explicit offline upgrade: interrupted apply", () => {
       const statement = prepare.call(this, source);
       if (closed && !guardRead && this.readonly && this.name === path) {
         guardRead = true;
-        const get = statement.get.bind(statement);
-        statement.get = ((...args: unknown[]) => { const row = get(...args); fire("guard-read"); return row; }) as typeof statement.get;
+        const get = statement.get;
+        statement.get = function (this: typeof statement, ...args: unknown[]) { const row = Reflect.apply(get, this, args) as unknown; fire("guard-read"); return row; } as typeof statement.get;
       }
       return statement;
     } as typeof prepare);
