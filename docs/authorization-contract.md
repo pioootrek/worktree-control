@@ -343,9 +343,10 @@ of these forms:
   needs all of them);
 - `any_project(permission)`, for aggregates (see
   [Aggregates](#aggregates));
-- `same_project(slots)`: every named slot resolves to one and the same
-  project (a parentless slot never satisfies it, not even with another
-  parentless slot);
+- `same_project(slots)`: every named slot is present and all resolve to one
+  value, the same project or all no project (parentless); a missing slot,
+  different projects and parentless and project slots mixed do not satisfy
+  it;
 - a named predicate: `claim_holder`, `run_originating_session`,
   `worker_assignment`, `claim_holder_if_claimed`, `schedule_owner`,
   `request_submitter` or `intent_origin`.
@@ -369,9 +370,9 @@ adapter and runs in this order:
    resource. It does not depend on the flags or on the order of conjunction
    branches. Ownership masking follows: a schedule of another owner
    (`schedule_owner`), an intent of another principal or credential
-   (`intent_origin`) and slots bound by `same_project` that resolve to
-   different projects are `not_found` too, decided before every other part of
-   the requirement.
+   (`intent_origin`) and slots bound by `same_project` that do not all resolve
+   to one value are `not_found` too, decided before every other part of the
+   requirement.
 2. The human-only flag: `forbidden`/`human_only` for an agent.
 3. The requirement: `forbidden`/`permission_denied`, or a predicate's own
    denial. Predicates are evaluated only on visible resources.
@@ -416,9 +417,17 @@ for it and never puts another ID in its place.
   checks every own slot, so a parentless slot masks the whole call whatever
   the other slots are and whichever slot the requirement names. Ownership and
   relation predicates never run for an account on it.
-- `same_project` never holds for a parentless slot. A saved intent always
-  names its project, so a parentless `test_intent` resolution never matches
-  its origin and is masked by `intent_origin` for every caller.
+- `same_project` holds for slots that are all parentless, as for slots that
+  are all in one project; only full authority reaches it, because an account
+  is masked by the parentless slots first. A mix of parentless and project
+  slots never satisfies it.
+- A saved test-run intent on a parentless resource has the origin project
+  `null`. `intent_origin` compares the origin's project with the resolved
+  project strictly: `null` matches only `null`, a project only the same
+  project. The intent's own full-authority origin (an installation caller
+  under the credential it was saved with) can look it up; an account is
+  masked by visibility, and an operator or a stored principal, which has no
+  credential, never adopts it.
 - `copyResolution`, retained idempotency records, transition results
   (`changed` with `projectId: null`) and `sameResolution` keep the state
   exactly. A change from no project to a project, or back, is a mapping
@@ -427,7 +436,8 @@ for it and never puts another ID in its place.
 - `ReleaseContext.visible(null)` and `can(permission, null)` hold for full
   authority only; `filter` and `page` keep an item whose `projectOf` is `null`
   for full authority only. `any_project` counts only real projects from
-  `listProjects`, and `session.describe` lists only those, so a parentless
+  `listProjects`, and `session.describe` lists only those, skipping any
+  entry that is not a project ID even for full authority, so a parentless
   resource is never listed among projects.
 
 Decision X. `resolveAll` handles the references in three passes, so that no
@@ -963,7 +973,8 @@ unchanged. `intent_origin` holds when:
 
 - the origin's principal is the caller's durable principal, the credential
   identifier and generation are the caller's, and the origin's project is the
-  resource's project. Otherwise the answer is `not_found`, masked like a
+  resource's project: the same project ID, or `null` for both (an intent on a
+  parentless resource). Otherwise the answer is `not_found`, masked like a
   missing intent. A new coordination session under the same credential
   passes; a rotated credential or another principal does not, and an operator,
   which has no credential, never adopts an intent;
@@ -971,7 +982,14 @@ unchanged. `intent_origin` holds when:
   otherwise `forbidden`/`intent_digest_unsupported`;
 - the digest equals `intentOriginDigest(version, origin)`, otherwise
   `forbidden`/`intent_digest_mismatch`. Version 1 is SHA-256 of a JSON array
-  binding the other fields.
+  binding the other fields. A parentless origin's project is the JSON `null`,
+  which no project ID produces (the string `"null"` is encoded as a string),
+  so the digest of an origin with a project is unchanged.
+
+An origin states its project explicitly. A missing project, like any value
+that is neither `null` nor a non-empty string, makes the relation malformed,
+and `intentOriginDigest` refuses it with a `TypeError` rather than encode it
+as `null`.
 
 The version 1 digest is defined here, because no existing digest of task
 `6d680061` was found in this repository. An adapter that stores intents must

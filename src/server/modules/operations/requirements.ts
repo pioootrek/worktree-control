@@ -44,7 +44,13 @@ export interface IntentOrigin {
   principal: StoredPrincipal;
   credentialId: string;
   credentialGeneration: number;
-  projectId: ProjectId;
+  /**
+   * The project the intent was saved in, or `null` for an intent on a
+   * parentless resource. Always stated explicitly: a missing value is
+   * malformed. `intent_origin` requires it to equal the resolved project
+   * exactly (`null` matches only `null`).
+   */
+  projectId: ProjectId | null;
   worktree: string;
   preset: string;
   key: string;
@@ -113,7 +119,11 @@ export type Requirement =
    * authority passes, also on an installation without projects.
    */
   | { kind: "any_project"; permission: ProjectPermission }
-  /** Every named slot resolves to one and the same project; otherwise `not_found`. */
+  /**
+   * Every named slot is present and all resolve to one value: the same
+   * project, or all no project (parentless, reachable for full authority
+   * only). Otherwise `not_found`.
+   */
   | { kind: "same_project"; resources: readonly string[] }
   | { kind: "predicate"; predicate: PredicateName; resource: string };
 

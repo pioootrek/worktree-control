@@ -8,7 +8,7 @@ import {
   allOf, anyProject, claimHolder, collection, intentOrigin, onProject, requestSubmitter, runOriginatingSession, sameProject, scheduleOwner,
   workerAssignment, type OperationRequirement, type ResourceRef, type ResourceRelation,
 } from "./requirements";
-import { copyResolution, resolveAll, sameResolution } from "./resolver";
+import { copyRelation, copyResolution, resolveAll, sameResolution } from "./resolver";
 import { OperationRunner } from "./runner";
 import { deferred, fakeStart, tick } from "./runner-fixture";
 import { sessionDescribe } from "./session-describe";
@@ -115,16 +115,34 @@ describe("parentless resources through the runner", () => {
     }
   });
 
-  it("same_project never holds for a parentless slot, not even for full authority or two parentless slots", async () => {
-    const { fixture, runner, full } = world();
+  it("same_project holds for full authority when every slot is parentless, never for mixed, split or missing slots", async () => {
+    const { fixture, runner, full, accounts } = world();
     const other = { kind: "registration" as const, id: "reg-loose-2" };
-    fixture.resolver.put(other, null);
+    const looseClaim = { kind: "claim" as const, id: "claim-loose" };
+    fixture.resolver.put(other, null).put(looseClaim, null, { kind: "claim", holder: null });
     const requirement = { require: sameProject("first", "second") };
+    // A parentless registration and its claim bound together, as a claim operation binds them.
+    const claimOnLoose = { require: allOf(onProject("claims:manage", "registration"), sameProject("registration", "claim")) };
     for (const [name, context] of Object.entries(full)) {
-      expect(await runner.run(guarded(requirement, { first: LOOSE, second: other }), context, {}), name).toEqual(notFound(null));
+      // All parentless: one value, so the binding holds.
+      expect(await runner.run(guarded(requirement, { first: LOOSE, second: other }), context, {}), name).toMatchObject({ ok: true });
+      expect(await runner.run(guarded(claimOnLoose, { registration: LOOSE, claim: looseClaim }), context, {}), name).toMatchObject({ ok: true });
+      // Parentless and project slots mixed, in either order: no shared value.
       expect(await runner.run(guarded(requirement, { first: LOOSE, second: IN_A }), context, {}), name).toEqual(notFound(null));
+      expect(await runner.run(guarded(requirement, { first: IN_A, second: LOOSE }), context, {}), name).toEqual(notFound(null));
+      expect(await runner.run(guarded(claimOnLoose, { registration: IN_A, claim: looseClaim }), context, {}), name).toEqual(notFound(null));
+      // Different projects, and a missing slot.
+      expect(await runner.run(guarded(requirement, { first: IN_A, second: { kind: "project", id: projectB } }), context, {}), name).toEqual(notFound(null));
+      expect(await runner.run(guarded(requirement, { first: LOOSE, second: MISSING }), context, {}), name).toEqual(notFound(null));
       expect(await runner.run(guarded(requirement, { first: IN_A, second: { kind: "project", id: projectA } }), context, {}), name).toMatchObject({ ok: true });
     }
+    // No account reaches the binding: visibility masks the parentless slots first, admin and agent included.
+    const counter = { reads: 0 };
+    for (const [name, context] of Object.entries(accounts)) {
+      expect(await runner.run(guarded(requirement, { first: LOOSE, second: other }, counter), context, {}), name).toEqual(notFound(null));
+      expect(await runner.run(guarded(claimOnLoose, { registration: LOOSE, claim: looseClaim }, counter), context, {}), name).toEqual(notFound(null));
+    }
+    expect(counter.reads).toBe(0);
   });
 
   it("a parentless claim, run, schedule, request or attempt is refused for its own holder, owner or assignee", async () => {
@@ -154,15 +172,59 @@ describe("parentless resources through the runner", () => {
     }
   });
 
-  it("a parentless test intent never matches its origin, for any caller", async () => {
-    const { fixture, runner, maintainer, full } = world();
+  it("intent_origin compares the origin's project with the resolved project exactly, parentless included", async () => {
+    const { fixture, runner, accounts, full } = world();
+    // A live installation caller whose own credential and principal the saved origin names, so only the projects can differ.
+    const caller = fixture.installation();
     const INTENT = { kind: "test_intent" as const, id: "intent-1" };
-    const bound = { principal: { kind: "account" as const, accountId: maintainer.id }, credentialId: maintainer.credentialId, credentialGeneration: 1,
-      projectId: projectA, worktree: "/w/main", preset: "node:test", key: "k-1" };
-    fixture.resolver.put(INTENT, null, { kind: "test_intent", origin: { ...bound, digestVersion: 1, digest: intentOriginDigest(1, bound) } });
+    const saved = (projectId: ProjectId | null): ResourceRelation => {
+      const bound = { principal: { kind: "installation" as const }, credentialId: caller.credentialId, credentialGeneration: 1,
+        projectId, worktree: "/w/main", preset: "node:test", key: "k-1" };
+      return { kind: "test_intent", origin: { ...bound, digestVersion: 1, digest: intentOriginDigest(1, bound) } };
+    };
     const lookup = { require: allOf(onProject("tests:run", "item"), intentOrigin("item")) };
-    expect(await runner.run(guarded(lookup, { item: INTENT }), maintainer.context, {})).toEqual(notFound(null));
-    expect(await runner.run(guarded(lookup, { item: INTENT }), full.operator, {})).toEqual(notFound(null));
+    const look = (context: AuthenticationContext) => runner.run(guarded(lookup, { item: INTENT }), context, {});
+    const missing = await runner.run(guarded(lookup, { item: { kind: "test_intent", id: "missing" } }), caller.context, {});
+    expect(missing).toEqual(notFound(null));
+
+    fixture.resolver.put(INTENT, projectA, saved(projectA));
+    expect(await look(caller.context), "project origin, same project").toMatchObject({ ok: true });
+    fixture.resolver.put(INTENT, null, saved(null));
+    expect(await look(caller.context), "parentless origin, parentless resolution").toMatchObject({ ok: true });
+    fixture.resolver.put(INTENT, projectA, saved(null));
+    expect(await look(caller.context), "parentless origin, project resolution").toEqual(missing);
+    fixture.resolver.put(INTENT, null, saved(projectA));
+    expect(await look(caller.context), "project origin, parentless resolution").toEqual(missing);
+
+    // On the parentless intent, every account gets the answer for a missing intent, and an operator, without a credential, never adopts it.
+    fixture.resolver.put(INTENT, null, saved(null));
+    for (const [name, context] of Object.entries(accounts)) expect(await look(context), name).toEqual(missing);
+    expect(await look(full.operator), "operator").toEqual(missing);
+  });
+
+  it("the version 1 intent digest of an existing origin is fixed, and a parentless project is bound apart from the string \"null\"", () => {
+    const existing = { principal: { kind: "account" as const, accountId: A("alice") }, credentialId: "provider-alice", credentialGeneration: 1,
+      projectId: projectA, worktree: "/w/main", preset: "node:test", key: "k-1" };
+    // Computed with the version 1 algorithm as of ecbc00b9, before parentless origins existed; a change to the encoding of existing origins fails here.
+    expect(intentOriginDigest(1, existing)).toBe("67c468b1ee6e5a702f23b94adb53ff4301fb7aa1bab6bc27e4838c3a8e551f62");
+    const parentless = intentOriginDigest(1, { ...existing, projectId: null });
+    expect(parentless).not.toBe(intentOriginDigest(1, { ...existing, projectId: P("null") }));
+    expect(parentless).not.toBe(intentOriginDigest(1, existing));
+    // A missing project is never digested as if it were parentless.
+    expect(() => intentOriginDigest(1, { ...existing, projectId: undefined as unknown as null })).toThrow(TypeError);
+    const withoutProject: Record<string, unknown> = { ...existing };
+    delete withoutProject.projectId;
+    expect(() => intentOriginDigest(1, withoutProject as unknown as typeof existing)).toThrow(TypeError);
+  });
+
+  it("a saved origin states its project explicitly: null or a non-empty string, never missing", () => {
+    const origin = { principal: { kind: "installation" }, credentialId: "c", credentialGeneration: 1, worktree: "/w", preset: "p", key: "k", digest: "d", digestVersion: 1 };
+    expect(copyRelation({ kind: "test_intent", origin: { ...origin, projectId: null } })).toMatchObject({ origin: { projectId: null } });
+    expect(copyRelation({ kind: "test_intent", origin: { ...origin, projectId: "project-a" } })).toMatchObject({ origin: { projectId: "project-a" } });
+    expect(copyRelation({ kind: "test_intent", origin }), "missing").toBeUndefined();
+    for (const value of [undefined, "", 7, false, { id: "project-a" }]) {
+      expect(copyRelation({ kind: "test_intent", origin: { ...origin, projectId: value } }), String(value)).toBeUndefined();
+    }
   });
 
   it("releases parentless items to full authority only and never lists them among projects", async () => {

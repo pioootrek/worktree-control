@@ -128,13 +128,26 @@ function samePrincipal(left: StoredPrincipal, right: StoredPrincipal): boolean {
 export const INTENT_DIGEST_VERSIONS: readonly number[] = Object.freeze([1]);
 
 /**
+ * The project of an intent origin as this module accepts one: a project ID or
+ * the explicit parentless `null`. A missing (`undefined`) or any other value
+ * is not.
+ */
+const isOriginProject = (value: unknown): value is ProjectId | null => value === null || isProjectId(value);
+
+/**
  * The saved origin digest of a test-run intent under an explicit version.
  * Version 1: SHA-256 (hex) of a JSON array binding the principal, the
  * credential identity and generation, the project, worktree, preset and key.
- * Throws `TypeError` for an unknown version.
+ * A parentless origin binds its project as JSON `null`, which no project ID
+ * (a string, also `"null"`) produces, so a non-null origin's digest is the one
+ * it always had. Throws `TypeError` for an unknown version and for an origin
+ * project that is neither a project ID nor `null`: `JSON.stringify` would
+ * write a missing (`undefined`) project as `null` and so bind it as if it
+ * were parentless.
  */
 export function intentOriginDigest(version: number, origin: Omit<IntentOrigin, "digest" | "digestVersion">): string {
   if (version !== 1) throw new TypeError("Unknown intent digest version.");
+  if (!isOriginProject(origin.projectId)) throw new TypeError("Invalid intent origin project.");
   const principal = origin.principal;
   const text = JSON.stringify(["intent-origin-v1", principal.kind, principal.kind === "account" ? principal.accountId : null,
     origin.credentialId, origin.credentialGeneration, origin.projectId, origin.worktree, origin.preset, origin.key]);
@@ -145,8 +158,9 @@ export function intentOriginDigest(version: number, origin: Omit<IntentOrigin, "
  * Masking-level ownership (decided before the human-only flag and the
  * requirement, so its answer never depends on the order of conjunction
  * branches): a schedule of another owner, an intent of another principal or
- * credential, and slots that `same_project` binds but that resolve to
- * different projects are all `not_found`, as a missing resource is.
+ * credential or of another project (or of no project, against a project),
+ * and slots that `same_project` binds but that do not all resolve to one
+ * value are all `not_found`, as a missing resource is.
  */
 function ownershipMasked(requirement: Requirement, input: PermittedDecisionInput): boolean {
   const { authority, resources } = input;
@@ -158,26 +172,34 @@ function ownershipMasked(requirement: Requirement, input: PermittedDecisionInput
     if (!resource || !relation) continue;
     if (predicate === "schedule_owner" && relation.kind === "schedule" && !full && !samePrincipal(relation.owner, durablePrincipal(authority))) return true;
     if (predicate === "intent_origin" && relation.kind === "test_intent") {
-      // An intent always originates in a project; a parentless resolution (`null`) never equals the origin's project, so it is masked.
+      // Strict project equality: a parentless origin (`null`) matches only a parentless resolution, a project only the same project.
+      // An origin project that is neither (a missing value included) is masked before it can reach the digest.
       const origin = relation.origin, credential = input.credential ?? null;
       if (!samePrincipal(origin.principal, durablePrincipal(authority)) || !credential || credential.credentialId !== origin.credentialId
-        || credential.generation !== origin.credentialGeneration || origin.projectId !== resource.projectId) return true;
+        || credential.generation !== origin.credentialGeneration || !isOriginProject(origin.projectId) || origin.projectId !== resource.projectId) return true;
     }
   }
   return false;
 }
 
 /**
- * `same_project` holds when every named slot resolves to one and the same
- * project. A parentless slot belongs to no project, so it never satisfies
- * `same_project`, not even together with another parentless slot: "no
- * project" is not a shared project.
+ * `same_project` holds when every named slot is present and all resolve to
+ * the same value: one project ID, or all `null` (parentless). A missing slot,
+ * slots in different projects and a mix of parentless and project slots do
+ * not satisfy it. Only full authority can reach an all-parentless binding:
+ * for an account, visibility masking answers `not_found` for any parentless
+ * slot before this runs.
  */
 function sameProjects(requirement: Requirement, resources: ResolvedResources): boolean {
   if (requirement.kind === "all") return requirement.of.every(part => sameProjects(part, resources));
   if (requirement.kind !== "same_project") return true;
-  const projects = new Set(requirement.resources.map(name => slot(resources, name)?.projectId));
-  return projects.size === 1 && [...projects].every(isProjectId);
+  const projects = new Set<ProjectId | null>();
+  for (const name of requirement.resources) {
+    const resource = slot(resources, name);
+    if (!resource) return false;
+    projects.add(resource.projectId);
+  }
+  return projects.size === 1 && [...projects].every(projectId => projectId === null || isProjectId(projectId));
 }
 
 function predicateHolds(name: PredicateName, authority: CurrentAuthority, resource: ResolvedResource): Denial | null {
@@ -290,7 +312,8 @@ function evaluate(requirement: Requirement, input: PermittedDecisionInput, permi
  *
  * Ownership masking follows visibility: a foreign schedule (`schedule_owner`),
  * a foreign intent (`intent_origin`) and slots bound by `same_project` that
- * resolve to different projects are `not_found` as well.
+ * do not all resolve to one project or all to no project are `not_found` as
+ * well.
  *
  * Full authority passes permissions, `any_project`, the human-only flag and
  * fresh login, and manages every schedule. It does not pass resource

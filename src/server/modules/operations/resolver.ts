@@ -37,15 +37,23 @@ export function copyPrincipal(value: unknown): StoredPrincipal | undefined {
   return isText(accountId) ? Object.freeze({ kind, accountId: accountId as AccountId }) : undefined;
 }
 
+/**
+ * Deep, frozen copy of an intent origin; `undefined` when malformed. The
+ * project is a non-empty string or an explicit `null` (an intent on a
+ * parentless resource); a missing or `undefined` project, like any other
+ * value, is malformed.
+ */
 function copyOrigin(value: unknown): IntentOrigin | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const principal = copyPrincipal(own(value, "principal"));
-  const fields = ["credentialId", "projectId", "worktree", "preset", "key", "digest"].map(name => own(value, name));
+  const fields = ["credentialId", "worktree", "preset", "key", "digest"].map(name => own(value, name));
+  const projectId = own(value, "projectId");
   const credentialGeneration = own(value, "credentialGeneration"), digestVersion = own(value, "digestVersion");
-  if (!principal || !fields.every(isText) || !Number.isSafeInteger(credentialGeneration) || !Number.isSafeInteger(digestVersion)) return undefined;
-  const [credentialId, projectId, worktree, preset, key, digest] = fields as string[];
+  if (!principal || !fields.every(isText) || !(projectId === null || isText(projectId))
+    || !Number.isSafeInteger(credentialGeneration) || !Number.isSafeInteger(digestVersion)) return undefined;
+  const [credentialId, worktree, preset, key, digest] = fields as string[];
   return Object.freeze({
-    principal, credentialId, credentialGeneration: credentialGeneration as number, projectId: projectId as ProjectId,
+    principal, credentialId, credentialGeneration: credentialGeneration as number, projectId: projectId as ProjectId | null,
     worktree, preset, key, digest, digestVersion: digestVersion as number,
   });
 }
