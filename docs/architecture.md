@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-11-15"
+last_reviewed: "2026-11-16"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -1129,7 +1129,7 @@ In the project mapping, `knowledge_projects` is the project (a `ProjectId`),
 `RegistrationId`), and `remote_project_identities` is a project as remote
 workers know it. Step 51 adds structure only: it creates no project, sets no
 parent, stamps no existing row and writes no journal row. Every data decision is
-an act of an operator-approved upgrade plan, which a later change adds.
+an act of an operator-approved upgrade plan (see "Project mapping acts" below).
 
 The step adds these parts, in `mapping-structure-migration.ts`:
 
@@ -1259,7 +1259,7 @@ malformed, behind a stamp, or at its maximum) refuses with
 `security_fence_recovery_required` and rolls back everything, schema steps
 included. At the default target and at 50 the quarantine runs exactly the
 statements it ran before. The explicit offline upgrade lists step 51 among its
-structural steps; it adds no act.
+structural steps, and at target 51 its plan carries the project mapping acts.
 
 The step's operations pass the provisional gate before they touch a database:
 the migration, the validation rule, the quarantine's plan and its statements.
@@ -1298,8 +1298,8 @@ same refusal guards each upgrade-specific helper that reads or writes a file:
 the plan file's write, read and removal, and the fence's `beginUpgrade`,
 `registerUpgradeObserver` and `upgradeReceipt`. Decoding is not gated: a
 format-2 witness once written is read, verified and carried forward by ordinary
-fenced writes with the switch on or off. Later pull requests add its data acts
-and register the commands.
+fenced writes with the switch on or off. The project mapping acts are described
+below; a later pull request registers the commands.
 
 An installation's database is in one of four states. The fence decides trust
 exactly as `SecurityFence.preflight` does. A confirmed witness that carries an
@@ -1332,23 +1332,25 @@ preflight is computed while that connection is open. Only in "upgrade needed"
 it writes one plan, replacing any earlier one, and returns it with its hash. In
 every other state it writes nothing and reports the next step. The plan holds:
 
-- `kind` (`worktree-control/upgrade-plan`) and `format` (1);
+- `kind` (`worktree-control/upgrade-plan`) and `format` (2; a format-1 plan is
+  refused as malformed);
 - `binding`, the fence's binding of the canonical database path, and
   `installation` from `security_checkpoint`, so a plan cannot be applied to
   another database;
 - `base`, the preflight hash over the database, its WAL and the witness;
 - `source` and `target` schema versions;
 - `steps`, the version, name and checksum of every structural step apply runs;
-- `acts`, the ordered data acts.
+- `decisions`, the operator's normalised decisions, by act domain;
+- `acts`, the ordered data acts;
+- `review`, what the operator approves, by act domain.
 
 The plan hash is the SHA-256 of the plan's canonical JSON: keys sorted by
 UTF-16 code units, no whitespace, and only strings, safe integers, booleans,
-null, arrays and plain objects. It carries no timestamp, so two inspects of an
-unchanged database give the same hash. The plan has no act kind yet, so its act
-list is empty, and a plan with any act is refused as malformed. A later kind
-supplies its proposal from the read-only source database, its execution inside
-the schema transaction, the line the operator reads and a strict payload
-schema. The hash covers every act.
+null, arrays and plain objects. It carries no timestamp, and new project IDs are
+reused from an equal earlier plan, so two inspects of an unchanged database with
+the same decisions give the same hash. At target 50 no act domain applies:
+`decisions`, `acts` and `review` are empty, and a plan with any act or decision
+is refused as malformed. The hash covers every field.
 
 The plan file is `plan.json` in the private directory `<database>.upgrade`,
 beside the database and outside the fence's `.security` directory. It is written
@@ -1372,7 +1374,8 @@ and refuses links and unknown entries.
 4. Read the plan. Refuse it when it is missing or malformed, when its hash
    differs from `--expect`, when its binding names another database, when its
    base differs from the current preflight, or when its steps differ from the
-   code's.
+   code's. Then recompute the proposal read-only at the source and refuse a plan
+   whose decisions, acts or review differ from it (`upgrade_plan_unproposed`).
 5. Write the backup through an injected function and accept it only as this
    run's copy of this source. The function receives a Backup API source that
    takes exactly one snapshot, through the read-only connection, and records
@@ -1443,7 +1446,8 @@ and refuses links and unknown entries.
    reader's open and read, or no reader to be able to read the file there (it
    was overwritten in place, or a hot journal was planted beside it). The
    refused file may keep an empty WAL and a shared-memory index.
-9. In one schema transaction, run the structural steps, the plan's acts in
+9. In one schema transaction, run the structural steps, the proposal
+   recomputed at the target (a difference aborts), the plan's acts in
    order, the marker update to `complete` with the plan hash, and last an
    `authentication.upgrade_applied` audit event. That event carries the receipt
    and the plan hash and is this run's commit evidence.
@@ -1480,8 +1484,10 @@ the state), `upgrade_owner_changed`, `upgrade_plan_missing`,
 `upgrade_base_changed`, `upgrade_step_mismatch`, `upgrade_plan_storage`,
 `upgrade_backup_failed`, `upgrade_restore_unfinished`,
 `upgrade_witness_unchanged`, `upgrade_source_changed` and
-`upgrade_outcome_uncertain`. Messages carry no
-secrets, paths or file contents.
+`upgrade_outcome_uncertain`, and for the project mapping
+`upgrade_decisions_invalid`, `upgrade_plan_unproposed`, `upgrade_plan_bounds`
+and the stops listed below. Messages carry no secrets, paths or file contents;
+a refusal about rows names them in its `details` (IDs only, bounded).
 
 The witness gains format 2: format 1 plus a required `upgrade` field (receipt,
 plan hash and start time). Apply writes it, and ordinary fenced writes carry it
@@ -1491,6 +1497,248 @@ hash and compare as before. A binary that knows only format 1 refuses a format-2
 record as recovery required instead of misreading it. An upgrade never writes
 `receipt` or `recoveredAt`. They keep the last establish or resume, and
 `securityRecoveryBoundary` returns the same value before and after an upgrade.
+
+### Project mapping acts (integration branch only)
+
+This section describes `integration/auth-unification`, not a release. Nothing
+here is activated: the supported schema stays 49, every entry point passes the
+provisional gate, and no command is registered. Mapping needs target 51. The
+code is in `mapping-upgrade-acts.ts` (the proposal pass, the review and the act
+kinds), `upgrade-contract.ts` (errors, canonical JSON, limits and the domain
+interface) and `upgrade-plan.ts` (the registry, the plan, its validation and
+execution), all under `src/server/infrastructure/sqlite/`.
+
+Schema steps carry structure only. Every decision about data is an act of an
+operator-approved plan: which registration belongs to which project, which
+projects are created, and where each remote identity maps. Nothing is
+inferred, never from a name, a repository path or a remote URL. A link row
+(`knowledge_project_runtime_links`) and its Knowledge history are not evidence
+of approval: in released versions an agent with `knowledge:write` could link
+any unlinked registration to its own Knowledge project. A link or a worker
+binding becomes parenthood only when the operator accepts it.
+
+#### Decisions
+
+`inspectSqliteUpgrade(paths, target, decisions)` takes the operator's
+decisions. Their shape is checked strictly before any lock or file: unknown
+keys, IDs that are not bounded text (1 to 160 characters, at most 640 bytes,
+no NUL; a linked project ID up to 4096 characters), lists over 50 000 entries
+and duplicates are refused as `upgrade_decisions_invalid`.
+
+- `links: [{ registrationId, projectId }]` accepts an existing link. It must
+  name a current link row: that Knowledge project, that registration, and
+  `unlinked_at` NULL.
+- `bindings: [{ remoteIdentityId, registrationId }]` accepts an existing
+  binding. It must name at least one row of `remote_worker_project_grants` for
+  that identity (`project_id`) and registration (`local_project_id`), revoked
+  or not. Accepting the pair accepts every worker row of it. It never changes
+  or restores a grant.
+- `isolate: { registrations, remoteIdentities }` gives the subject a new
+  project of its own. It declines a journal nomination, and for an identity it
+  resolves divergence.
+
+A subject both accepted and isolated, a registration accepted into two
+projects, and an entry that names no such row are refused, and no plan is
+written. Several binding decisions for one identity are allowed when they lead
+to one project. Without decisions nothing is accepted. At target 50, where no
+act domain applies, any decision is refused. The plan stores the decisions in
+normalised form (every key present, lists sorted) under the hash.
+
+#### Outcomes
+
+One proposal pass computes the complete ordered act list and the review from
+the database, the normalised decisions and a source of new project IDs. It
+gives the same result at the source schema (49 or 50, where step 51's tables
+and columns do not exist and read as an empty journal, stamps 0 and no parent)
+and at 51 inside the upgrade transaction, so apply can recompute it.
+
+Every registration gets exactly one outcome, in this precedence:
+
+1. Its link is accepted: it is attached to that existing project
+   (`accepted_link`).
+2. It is isolated: a new project (`created_project`).
+3. A journal nomination is eligible: it is attached to the nominated project
+   (`journal_reuse`).
+4. Otherwise: a new project (`created_project`).
+
+A nomination is eligible when all of the following hold. The subject's latest
+journal entry (highest sequence) has basis `created_project` or
+`journal_reuse`. Its project still exists. Its incarnation equals the row's
+current, non-zero incarnation, so the row is the same one and not created
+again. The project's creation provenance is exactly one `created_project`
+entry, for this same subject and incarnation. An `accepted_link` or
+`accepted_binding` entry is never reused by default: accepting a pre-existing
+project needs the decision again.
+
+Every remote identity gets exactly one outcome:
+
+1. One or more of its bindings are accepted: every accepted binding's
+   registration must have the same destination in this plan, and the identity
+   maps there (`accepted_binding`); if they differ, the plan stops.
+2. It is isolated: a new project.
+3. Its bindings (every row, revoked ones included) lead to registrations with
+   more than one destination: the plan stops, and the identity needs an
+   explicit decision.
+4. An eligible journal nomination, by the same rule (`journal_reuse`).
+5. Otherwise: a new project. An unaccepted binding never maps an identity to a
+   registration's project.
+
+Knowledge projects without a registration are untouched, and link rows are
+never changed. A new project ID is a random UUID, the form the application
+uses for Knowledge projects. It differs from every ID in `projects`,
+`knowledge_projects` and `remote_project_identities`, from every project of
+the journal and from the other new IDs. A repeated inspect reuses the new IDs
+of the existing plan file when that plan's binding, installation, base,
+source, target, steps and decisions equal the new one's, so an unchanged
+database and the same decisions give the same plan hash. The new project's
+name is copied from the registration's or identity's name, for display only.
+
+The acts are ordered: every `create_project` (registrations, then identities,
+each by subject ID), then every `attach_registration` (by registration ID),
+then every `map_remote_identity` (by identity ID).
+
+#### Stop conditions
+
+A stop writes no plan. An existing plan file stays as it was, and the
+database and the witness are unchanged. The refusal is an `UpgradeError` with
+the next step `upgrade inspect` and `details`: the offending rows by table, ID
+(control characters escaped) and problem, at most 100, with the total count and
+whether the list is cut.
+
+| Code | Stop |
+| --- | --- |
+| `upgrade_mapping_collision` | The same ID in more than one of `projects.id`, `knowledge_projects.id` and `remote_project_identities.id`, linked or not. |
+| `upgrade_mapping_dangling` | A current link whose registration or project is missing, a binding whose worker, identity or registration is missing, or a parent that names a missing project. A link whose registration was removed (`runtime_project_id` NULL) is not dangling. |
+| `upgrade_mapping_divergent` | Accepted bindings that disagree, or an undecided identity whose bindings lead to several projects. |
+| `upgrade_mapping_unexpected` | A registration or identity with a parent while the upgrade is needed. A quarantine clears every parent, so a parent here is a state the protocol does not produce. |
+| `upgrade_mapping_journal` | A project with more than one `created_project` entry, a `created_project` entry for a project accepted by an earlier entry, an incarnation above the clock, or an illegal kind and basis. |
+| `upgrade_mapping_malformed` | A malformed stored value the pass depends on: a non-text or unbounded subject ID, malformed stamps or parent, a malformed link, binding, journal row or clock, a principal of unknown kind, or a name to copy that is not text of at most 1024 characters. |
+| `upgrade_plan_bounds` | More than 50 000 acts, more than 500 000 rows of the read tables, or a plan above 8 MiB. Refused, never truncated. |
+| `upgrade_decisions_invalid` | A decision that is malformed, conflicting, not allowed at this target, or names no such row. |
+
+Ownership validates the database (`PRAGMA foreign_key_check` and step 51's
+rules) before the pass runs. So a dangling reference, malformed stamps and the
+journal rows the table refuses are refused there first, with a generic
+validation error. The pass detects them anyway.
+
+#### The review
+
+The plan carries, under the hash, a `review` computed by the same pass, so
+what the operator read is what the hash names. It holds IDs, counts, statuses,
+timestamps and display names only. Names are escaped: C0 and C1 control
+characters, DEL, the bidirectional controls and the line separators become
+`\u{hex}`, a backslash becomes `\\`, and names over 200 characters are cut with
+`…`. No repository path, remote URL, environment value, ciphertext or stored
+JSON is included.
+
+- **Each registration:** its outcome (destination, basis, whether the project
+  is new) and its incarnation. Its current link, if any: the project, `linked_at`,
+  whether it is accepted, and the attribution of the last link change from
+  Knowledge history (principal, kind, authentication method, time), stated as
+  recorded history and not as approval. The journal nomination, if any, and
+  whether it was used and why not. Its inventory: Vault records (profiles are
+  inside the ciphertext and are not counted), claims and reservations (and the
+  active ones), test runs, and environment profiles.
+- **Each remote identity:** its outcome, status and incarnation; every binding
+  (worker, worker name and status, the worker principal's status,
+  registration, revoked or not, accepted or not); the nomination; and counts of
+  its verification requests and attempts.
+- **Each existing destination project** (an accepted link, binding or journal
+  nomination): its Knowledge inventory (threads, replies, tasks, memories,
+  attachments, history rows, import batches). It lists every registration and
+  identity that this plan attaches to it or that the journal last associated
+  with it, and whether that subject still exists. It also counts the
+  principals that hold authority as stored now, by kind (owner, human, agent,
+  worker, installation) and by active or revoked: Knowledge grants and role
+  bindings on the project; delegations, memberships, credential scopes and
+  worker bindings on the registrations the plan attaches; principal grants on
+  the identities it maps. Grant tables keep only the latest value of each grant,
+  so these counts are not a complete history.
+- The number of other projects, which are not touched.
+
+A journal nomination is shown with its project, sequence and time. It is a
+nomination from history: the operator approves it through the plan hash or
+declines it with `isolate`. The journal authorizes nothing. `describeUpgradeActs`
+returns the operator's lines from the acts and the review. Lists are sorted by
+ID, so the review is deterministic.
+
+#### The acts
+
+The acts run in the upgrade's one schema transaction, after the structural
+steps, with foreign keys off. Each receives the plan's source and target, the
+plan hash, the run's receipt and one time for the run, and re-checks its
+preconditions. A mismatch aborts the whole transaction.
+
+- `create_project { projectId, name }` refuses when the ID exists in any of the
+  three ID tables. Then it inserts one `knowledge_projects` row as the
+  application writes one: `active`, revision 1, both timestamps the run's time.
+  `saveKnowledgeProject` also writes a `knowledge.project_saved` audit event.
+  The act does not: the row alone is a valid, readable project, and the
+  upgrade's audit event and the journal rows record why it exists. It writes no
+  grant, role, membership, link or history row.
+- `attach_registration { registrationId, projectId, basis }` requires the
+  registration with a NULL parent and the project. It advances the clock
+  (`UPDATE project_mapping_clock SET value=value+1`), then in one UPDATE sets
+  `incarnation` to the new clock value when it is still 0, `mapping_version`
+  to the new value, and the parent. It checks the result and appends one
+  journal row with the incarnation after stamping, the project, the basis, the
+  plan hash, the receipt and the time. Step 51's triggers accept this for an
+  unstamped row (the fresh value is held by no other row) and for a stamped
+  one (the version is larger and equals the clock). At an exhausted clock the
+  advance fails the clock's `CHECK`, and the transaction rolls back.
+- `map_remote_identity { remoteIdentityId, projectId, basis }` does the same
+  for a remote identity.
+
+No act reads or writes `dev_environment_vaults`. No act writes a grant, role,
+membership, link, Knowledge content or history row. IDs, provenance and
+history ordinals stay the same, and so do the Vault's authenticated data (the
+registration ID, the profile ID and the revision).
+
+After apply at 51, every registration and remote identity has a parent and
+non-zero stamps. The journal has exactly one row per attach and map act of the
+plan.
+
+#### Validation, twice
+
+The plan's acts are accepted only when they are exactly what the pass produces
+for this database, the plan's decisions and the plan's own new IDs. Apply
+recomputes the pass with the plan's decisions, replays the new IDs for the same
+subjects (generating none), and requires canonical equality of the acts and the
+review:
+
+- before the backup and the pending witness, read-only at the source schema.
+  A difference is `upgrade_plan_unproposed`, next step `upgrade inspect`, with
+  nothing changed;
+- inside the schema transaction, after the structural steps and before the
+  first act, at the target. A difference aborts the transaction, which leaves
+  the database fenced like any failure there.
+
+The decisions must also be in normalised form. So a hand-written or altered
+plan with a consistent hash cannot do any of the following: attach a
+registration to a project the pass would not choose, label as created a
+project that already existed, create a project that nothing attaches to, skip
+or repeat a registration, change the decisions or the review, or order acts
+against their dependencies. A replayed new ID must be a UUID that is still
+free.
+
+#### The plan and the act registry
+
+The plan is format 2. It has the fields of format 1 plus `decisions` and
+`review`, both keyed by act domain and present for exactly the domains that
+apply at the target. At target 50 both are empty objects and `acts` is empty. A
+format-1 plan is refused as malformed. The hash covers every field.
+
+An act domain supplies its decision keys, the strict schemas of its stored
+decisions and review, its act kinds (a strict payload and `execute`), one
+`propose` pass, and `describe`. The domains run in registry order, so the
+grants and revocations of a later change run after the mapping acts. Its
+`minimumTarget` decides at which targets it applies. Mapping is the only
+domain, from 51.
+
+The bounds are 50 000 acts, 8 MiB per plan file, 500 000 rows each of
+`knowledge_projects`, links, bindings, workers and journal rows read by the
+pass, 100 findings per refusal, 1024 characters per copied name and 200 per
+displayed name.
 
 ### Pre-establishment backup (integration branch only)
 
