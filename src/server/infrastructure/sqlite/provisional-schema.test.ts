@@ -272,6 +272,11 @@ function scan(): ScannedSource[] {
  * `export *` of a module that defines or re-exports one. The activation (C3c)
  * deletes or narrows this rule deliberately.
  *
+ * C3c-1 adds the ordinary-admission check (`assertOrdinaryAdmission`), which the
+ * activation will call at every ordinary opening of the store. Until then it is
+ * written only in its declaration: no non-test file imports, re-exports or
+ * calls it.
+ *
  * Limits: the rules above (literal specifiers, files under `src/`, test files
  * excluded); a computed, non-literal access (`sqlite[name]`, a concatenated or
  * template key, `Reflect.get`) cannot be caught by a syntactic guard; nor can a
@@ -285,6 +290,7 @@ const UNMOUNTED_IMPORTERS: Readonly<Record<string, readonly string[]>> = Object.
 });
 const BOOTSTRAP_FENCE = "src/server/bootstrap/security-maintenance.ts";
 const SQLITE_FENCE = `${SQLITE}/security-maintenance.ts`, SQLITE_UPGRADE = `${SQLITE}/upgrade-maintenance.ts`, SQLITE_API = `${SQLITE}/index.ts`;
+const SQLITE_ADMISSION = `${SQLITE}/ordinary-admission.ts`;
 /**
  * The only places a non-test file may write each entry point: file, then the
  * contexts allowed there (see {@link nameContext}). Every pair is one the tree
@@ -296,10 +302,11 @@ const UNMOUNTED_OCCURRENCES: Readonly<Record<string, Readonly<Record<string, rea
   establishSqliteSecurityFence: { [SQLITE_FENCE]: ["declaration"], [SQLITE_API]: ["re-export"], [BOOTSTRAP_FENCE]: ["import", "body of establishSecurityFenceWithBackup"] },
   inspectSqliteUpgrade: { [SQLITE_UPGRADE]: ["declaration"], [SQLITE_API]: ["re-export"], [UPGRADE_COMPOSITION]: ["import", "body of inspectUpgrade"] },
   applySqliteUpgrade: { [SQLITE_UPGRADE]: ["declaration"], [SQLITE_API]: ["re-export"], [UPGRADE_COMPOSITION]: ["import", "body of applyUpgrade"] },
+  assertOrdinaryAdmission: { [SQLITE_ADMISSION]: ["declaration"] },
 });
 const UNMOUNTED_NAMES: ReadonlySet<string> = new Set(Object.keys(UNMOUNTED_OCCURRENCES));
 /** Modules that define or re-export an entry point: an `export *` of one would carry it without naming it. */
-const UNMOUNTED_CARRIERS = Object.freeze([BOOTSTRAP_FENCE, SQLITE_FENCE, SQLITE_UPGRADE, SQLITE_API]);
+const UNMOUNTED_CARRIERS = Object.freeze([BOOTSTRAP_FENCE, SQLITE_FENCE, SQLITE_UPGRADE, SQLITE_API, SQLITE_ADMISSION]);
 /**
  * The context of a name: `string literal`; `import` or `aliased import` (an
  * import specifier with `as`); `re-export`, `aliased export` or `local export`
@@ -535,6 +542,18 @@ describe("provisional schema steps stay switched off", () => {
     // Allowed files are allowed only in their allowed places: a module-level use there is a finding.
     expect(calls(UPGRADE_COMPOSITION, "inspectSqliteUpgrade(paths); applySqliteUpgrade(paths, command, backup);")).toEqual(["inspectSqliteUpgrade (module level)", "applySqliteUpgrade (module level)"]);
     expect(calls(BOOTSTRAP_FENCE, "establishSecurityFenceWithBackup; establishSqliteSecurityFence;")).toEqual(["establishSecurityFenceWithBackup (module level)", "establishSqliteSecurityFence (module level)"]);
+    // The ordinary-admission check: not yet called at an ordinary opening, imported or re-exported anywhere.
+    const store = `${SQLITE}/sqlite-state-store.ts`;
+    expect(calls(store, [
+      'import { assertOrdinaryAdmission } from "./ordinary-admission";',
+      "export class SqliteStateStore { constructor() { assertOrdinaryAdmission(owner); } }",
+      "function open(owner: Owner) { assertOrdinaryAdmission(owner, 52); }",
+    ].join("\n"))).toEqual(["assertOrdinaryAdmission (import)", "assertOrdinaryAdmission (module level)", "assertOrdinaryAdmission (body of open)"]);
+    expect(calls("src/server/controller-storage.ts", "export function openControllerStore(owner: Owner) { return assertOrdinaryAdmission(owner); }"))
+      .toEqual(["assertOrdinaryAdmission (body of openControllerStore)"]);
+    expect(calls(SQLITE_API, ['export { assertOrdinaryAdmission } from "./ordinary-admission";', 'export * from "./ordinary-admission";'].join("\n")))
+      .toEqual(["assertOrdinaryAdmission (re-export)", `export * of ./ordinary-admission (${SQLITE_ADMISSION})`]);
+    expect(calls(SQLITE_ADMISSION, "export function assertOrdinaryAdmission(source: Source, target?: number): void { inspect(source, target); }")).toEqual([]);
     // A string of the same text is refused (see the string-keyed access below); so is a property access.
     expect(calls("src/server/example.ts", 'const text = "establishSecurityFenceWithBackup";')).toEqual(["establishSecurityFenceWithBackup (string literal)"]);
     expect(calls("src/server/example.ts", "bootstrap.establishSecurityFenceWithBackup(paths);")).toEqual(["establishSecurityFenceWithBackup (module level)"]);

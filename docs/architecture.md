@@ -1569,6 +1569,11 @@ the state), `upgrade_owner_changed`, `upgrade_plan_missing`,
 and the stops listed below. Messages carry no secrets, paths or file contents;
 a refusal about rows names them in its `details` (IDs only, bounded).
 
+The contract also defines `upgrade_required` (next step `upgrade inspect`,
+state "upgrade needed"). Only an ordinary-admission check raises it, and that
+check is not called yet: the activation will run it at every ordinary opening
+of the store.
+
 The witness gains format 2: format 1 plus a required `upgrade` field (receipt,
 plan hash and start time). Apply writes it, and ordinary fenced writes carry it
 forward. Establish and resume write format 1 without it. A record without an
