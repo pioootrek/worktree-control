@@ -16,6 +16,9 @@ import { establishSqliteSecurityFence, maintainSqliteSecurityFence, quarantineAu
 import { hashFile, parseManifest, validateBackup, validateSnapshot } from "./backup-validation";
 import { applyUpgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applyMappingQuarantine, applyProjectMappingMigration, planMappingQuarantine, projectMappingViolation } from "./mapping-structure-migration";
+import { accountGrantsViolation, applyAccountGrantsMigration, clearAccountGrants } from "./account-grants-migration";
+import { AUTHORITY_ACT_DOMAIN, normaliseAuthorityDecisions, proposeAuthority } from "./authority-upgrade-acts";
+import { cancelRemoteWork, interruptTestRuns, releaseReservations, revokeCredentials, revokeOldGrants } from "./authority-reset";
 import { ProjectDirectoryQueries } from "./project-directory-queries";
 import { applySqliteUpgrade, inspectSqliteUpgrade } from "./upgrade-maintenance";
 import {
@@ -48,7 +51,14 @@ import { SecurityFence } from "./security-fence";
  * second rule confines imports of the provisional step modules (STEP_MODULES)
  * to the importer and module pairs of STEP_IMPORTS: each listed file may import
  * only the step modules listed for it, and no non-test file may import the
- * project directory.
+ * project directory. STEP_MODULES also holds the authority reset shared by the
+ * quarantine and the upgrade (AUTHORITY_RESET): it is not provisional (the
+ * schema-49 quarantine runs it with the switch off, so it has no gate), but its
+ * revocations may be reached only through its two listed importers; and the
+ * read-only predictor of the test-run recovery (RECOVERY_PREDICTION), whose
+ * only importer is the authority acts: no other code may rely on its copies
+ * of the recovery's rules; and the exact-text check (STORED_TEXT) shared by
+ * the predictor and both act domains, which nothing else may import.
  *
  * Limits, not covered here:
  * - non-literal specifiers (`import(name)`, `require(name)`, `createRequire`
@@ -75,22 +85,35 @@ const SQLITE = "src/server/infrastructure/sqlite";
 const MARKER_STEP = `${SQLITE}/upgrade-marker-migration.ts`, COVERAGE = `${SQLITE}/security-coverage.ts`;
 const MAPPING_STEP = `${SQLITE}/mapping-structure-migration.ts`, DIRECTORY = `${SQLITE}/project-directory-queries.ts`;
 const MAPPING_ACTS = `${SQLITE}/mapping-upgrade-acts.ts`;
-const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY, MAPPING_ACTS]);
+const GRANTS_STEP = `${SQLITE}/account-grants-migration.ts`, AUTHORITY_ACTS = `${SQLITE}/authority-upgrade-acts.ts`;
+const AUTHORITY_RESET = `${SQLITE}/authority-reset.ts`, RECOVERY_PREDICTION = `${SQLITE}/test-run-recovery-prediction.ts`, STORED_TEXT = `${SQLITE}/stored-text.ts`;
+const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY, MAPPING_ACTS, GRANTS_STEP, AUTHORITY_ACTS, AUTHORITY_RESET, RECOVERY_PREDICTION, STORED_TEXT]);
 /**
  * The only non-test importers of the step modules, each with the modules it may
  * import and why. The project directory (step 51) has no importer: it is not mounted.
  */
 const STEP_IMPORTS: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
-  [COVERAGE]: { [MARKER_STEP]: "lists step 50's fence coverage", [MAPPING_STEP]: "lists step 51's fence coverage and its other triggers" },
-  [`${SQLITE}/migrations.ts`]: { [MARKER_STEP]: "applies step 50 when initializeSchema is given the target", [MAPPING_STEP]: "applies step 51 when initializeSchema is given the target" },
+  [COVERAGE]: { [MARKER_STEP]: "lists step 50's fence coverage", [MAPPING_STEP]: "lists step 51's fence coverage and its other triggers",
+    [GRANTS_STEP]: "lists step 52's fence coverage and its other triggers" },
+  [`${SQLITE}/migrations.ts`]: { [MARKER_STEP]: "applies step 50 when initializeSchema is given the target", [MAPPING_STEP]: "applies step 51 when initializeSchema is given the target",
+    [GRANTS_STEP]: "applies step 52 when initializeSchema is given the target" },
   [`${SQLITE}/schema-inspection.ts`]: { [MARKER_STEP]: "recognises step 50 by its text and checksum", [COVERAGE]: "builds the expected triggers of each version",
-    [MAPPING_STEP]: "recognises step 51's tables, columns and checksum at ceiling 51" },
-  [`${SQLITE}/fixtures/schema-rewind.ts`]: { [MARKER_STEP]: "rewinds synthetic step-50 fixtures", [MAPPING_STEP]: "rewinds synthetic step-51 fixtures" },
+    [MAPPING_STEP]: "recognises step 51's tables, columns and checksum at ceiling 51", [GRANTS_STEP]: "recognises step 52's name and checksum at ceiling 52" },
+  [`${SQLITE}/fixtures/schema-rewind.ts`]: { [MARKER_STEP]: "rewinds synthetic step-50 fixtures", [MAPPING_STEP]: "rewinds synthetic step-51 fixtures", [GRANTS_STEP]: "rewinds synthetic step-52 fixtures" },
   [`${SQLITE}/upgrade-plan.ts`]: { [MARKER_STEP]: "names step 50 and its checksum among the structural steps", [MAPPING_STEP]: "names step 51 and its checksum among the structural steps",
-    [MAPPING_ACTS]: "registers the step-51 project-mapping act domain in the upgrade's registry" },
-  [MAPPING_ACTS]: { [MAPPING_STEP]: "passes the step-51 gate with the step's version before reading the mapping columns" },
-  [`${SQLITE}/database-validation.ts`]: { [MAPPING_STEP]: "validates the step-51 clock, stamps, parents and journal at version 51" },
-  [`${SQLITE}/security-maintenance.ts`]: { [MAPPING_STEP]: "plans and applies the step-51 mapping quarantine at target 51" },
+    [MAPPING_ACTS]: "registers the step-51 project-mapping act domain in the upgrade's registry", [GRANTS_STEP]: "names step 52 and its checksum among the structural steps",
+    [AUTHORITY_ACTS]: "registers the step-52 authority act domain in the upgrade's registry, after the mapping domain" },
+  [MAPPING_ACTS]: { [MAPPING_STEP]: "passes the step-51 gate with the step's version before reading the mapping columns",
+    [STORED_TEXT]: "refuses every identifier it compares or an act writes back whose stored bytes do not read back exactly" },
+  [AUTHORITY_ACTS]: { [GRANTS_STEP]: "passes the step-52 gate with the step's version before reading or writing the grants table",
+    [AUTHORITY_RESET]: "runs the quarantine's reset statements as the upgrade's revoke and release acts",
+    [RECOVERY_PREDICTION]: "refuses what the test-run recovery could fail on and checks the recovery's outcome against its prediction",
+    [STORED_TEXT]: "refuses every principal ID whose stored bytes do not read back exactly, the owner's being written into the grant" },
+  [RECOVERY_PREDICTION]: { [STORED_TEXT]: "refuses every identifier and ordered text it reads whose stored bytes do not read back exactly" },
+  [`${SQLITE}/database-validation.ts`]: { [MAPPING_STEP]: "validates the step-51 clock, stamps, parents and journal at version 51",
+    [GRANTS_STEP]: "validates the shape of the step-52 grants at version 52" },
+  [`${SQLITE}/security-maintenance.ts`]: { [MAPPING_STEP]: "plans and applies the step-51 mapping quarantine at target 51",
+    [GRANTS_STEP]: "deletes every step-52 grant in the quarantine at target 52", [AUTHORITY_RESET]: "runs the reset statements it shares with the upgrade, in the quarantine's order, at every target" },
   [DIRECTORY]: { [MAPPING_STEP]: "passes the step-51 gate with the step's version" },
 });
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
@@ -139,6 +162,30 @@ function moduleImports(fileName: string, text: string): ModuleImport[] {
 
 function realOrSelf(path: string): string { try { return realpathSync(path); } catch { return path; } }
 
+/*
+ * Disk lookups, each made once per path. The scan resolves every one of a few
+ * thousand imports against the gate and every step module; uncached, that repeated
+ * the same existence and real-path checks for each module (over half a million
+ * calls, most of the scan's time). Neither the repository nor any path a fixture
+ * names under it changes while this file runs, so a cached answer is the answer.
+ */
+const existingReals = new Map<string, ReadonlySet<string>>(), targetReals = new Map<string, string>();
+/** The real path of every file that `base` names on disk, as written or with its script extension swapped, under each resolved extension. */
+function realsOnDisk(base: string): ReadonlySet<string> {
+  let reals = existingReals.get(base);
+  if (!reals) {
+    reals = new Set([base, base.replace(SCRIPT_EXTENSION, "")].flatMap(candidate => RESOLVE_EXTENSIONS.map(extension => candidate + extension))
+      .filter(path => existsSync(path)).map(realOrSelf));
+    existingReals.set(base, reals);
+  }
+  return reals;
+}
+function targetReal(target: string): string {
+  let real = targetReals.get(target);
+  if (real === undefined) { real = realOrSelf(join(repository, target)); targetReals.set(target, real); }
+  return real;
+}
+
 /** Whether a literal specifier written in `fromFile` (repository-relative) resolves to `target` (repository-relative). */
 function reaches(fromFile: string, specifier: string, target: string): boolean {
   let base: string;
@@ -151,11 +198,7 @@ function reaches(fromFile: string, specifier: string, target: string): boolean {
   const name = relative(repository, base).split(sep).join(posix.sep);
   const targetBase = target.replace(SCRIPT_EXTENSION, "");
   if (name === target || name.replace(SCRIPT_EXTENSION, "") === targetBase) return true;
-  const real = realOrSelf(join(repository, target));
-  return [base, base.replace(SCRIPT_EXTENSION, "")].some(candidate => RESOLVE_EXTENSIONS.some(extension => {
-    const path = candidate + extension;
-    return existsSync(path) && realOrSelf(path) === real;
-  }));
+  return realsOnDisk(base).has(targetReal(target));
 }
 
 /** Gate imports a non-test source file may not make. */
@@ -219,17 +262,17 @@ const tree = (root: string): Record<string, string> => Object.fromEntries(readdi
 }));
 
 describe("provisional schema steps stay switched off", () => {
-  it("keeps schema 49 supported, steps 50 and 51 provisional and the switch off by default", () => {
+  it("keeps schema 49 supported, steps 50 to 52 provisional and the switch off by default", () => {
     expect(SUPPORTED_SCHEMA_VERSION).toBe(49);
-    expect(PROVISIONAL_SCHEMA_VERSION).toBe(51);
+    expect(PROVISIONAL_SCHEMA_VERSION).toBe(52);
     expect(provisionalSchemaEnabled()).toBe(false);
     expect(schemaTarget()).toBe(49);
     expect(schemaTarget(49)).toBe(49);
     expect(() => schemaTarget(50)).toThrow(UNSUPPORTED);
-    for (const invalid of [48, 51, 52, 49.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
+    for (const invalid of [48, 51, 52, 53, 49.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
   });
 
-  it.each([50, 51])("refuses target or ceiling %i at every public entry point while the switch is off, with the unsupported-target error", async target => {
+  it.each([50, 51, 52])("refuses target or ceiling %i at every public entry point while the switch is off, with the unsupported-target error", async target => {
     expect(provisionalSchemaEnabled()).toBe(false);
     const fixture = current49(), data = realpathSync(fixture.paths.dataDirectory), files = tree(data);
     const memory = new Database(":memory:"), current = new Database(fixture.paths.databasePath, { readonly: true });
@@ -242,6 +285,9 @@ describe("provisional schema steps stay switched off", () => {
         planMappingQuarantine: () => planMappingQuarantine(memory),
         applyMappingQuarantine: () => applyMappingQuarantine(memory, { base: 0, final: 1, unstamped: { projects: 0, remote_project_identities: 0 } }),
         projectMappingViolation: () => projectMappingViolation(memory),
+        applyAccountGrantsMigration: () => applyAccountGrantsMigration(memory),
+        accountGrantsViolation: () => accountGrantsViolation(memory),
+        clearAccountGrants: () => clearAccountGrants(memory),
         ProjectDirectoryQueries: () => new ProjectDirectoryQueries(memory),
         inspectSchema: () => inspectSchema(current, target),
         OwnedSqliteDatabase: () => new OwnedSqliteDatabase(fixture.paths.databasePath, false, target),
@@ -315,6 +361,12 @@ describe("provisional schema steps stay switched off", () => {
         proposeProjectMapping: () => proposeProjectMapping(database, { schemaVersion: 49, source: 49, target: 51 }, { links: [], bindings: [], isolate: { registrations: [], remoteIdentities: [] } }, null, true),
         ...Object.fromEntries(MAPPING_ACT_DOMAIN.kinds.map(kind => [kind.kind, () => database.transaction(() => kind.execute(database, {}, context))()])),
         inspectSqliteUpgradeWithDecisions: () => inspectSqliteUpgrade(fixture.paths, 51, { isolate: { registrations: ["x"] } }),
+        // C3a: the authority domain's decisions, proposal and acts, and the upgrade at its target.
+        normaliseAuthorityDecisions: () => normaliseAuthorityDecisions({}),
+        proposeAuthority: () => proposeAuthority(database, { schemaVersion: 49, source: 49, target: 52 }, {}, null, true),
+        ...Object.fromEntries(AUTHORITY_ACT_DOMAIN.kinds.map(kind => [kind.kind, () => database.transaction(() => kind.execute(database, { accountId: "owner" }, { ...context, target: 52 }))()])),
+        normaliseUpgradeDecisionsAt52: () => normaliseUpgradeDecisions({}, 52),
+        inspectSqliteUpgradeAt52: () => inspectSqliteUpgrade(fixture.paths, 52),
       };
       for (const [entry, refusal] of Object.entries(refusals)) {
         expect(refusal, entry).toThrowError(expect.objectContaining({ name: "UpgradeError", code: "upgrade_unsupported", message: UNSUPPORTED }));
@@ -342,7 +394,7 @@ describe("provisional schema steps stay switched off", () => {
     // No non-test file imports the project directory.
     expect(Object.values(STEP_IMPORTS).some(modules => Object.hasOwn(modules, DIRECTORY))).toBe(false);
     expect(scanned.filter(({ steps }) => steps.some(entry => entry.module === DIRECTORY)).map(({ file }) => file)).toEqual([]);
-  });
+  }, 30_000); // One parse of every source file under src/: about a second here, growing with the tree.
 
   it("lists only existing files that need the exception", () => {
     for (const file of [GATE, ...STEP_MODULES]) expect(existsSync(join(repository, file)), file).toBe(true);
@@ -446,6 +498,61 @@ describe("provisional schema steps stay switched off", () => {
     for (const file of [`${SQLITE}/upgrade-maintenance.ts`, MAPPING_STEP, `${SQLITE}/security-maintenance.ts`, "src/server/bootstrap/example.ts"]) {
       expect(strip(stepFindings(file, acts)), file).toEqual([`import of ${actsModule} (${MAPPING_ACTS})`]);
     }
+    // So are the authority acts (C3a); the grants step is importable by its listed importers only, never by the maintenance or a module outside this directory.
+    const authorityModule = "@/server/infrastructure/sqlite/authority-upgrade-acts", grantsModule = "./account-grants-migration";
+    const authority = `import { AUTHORITY_ACT_DOMAIN } from "${authorityModule}";`, grants = `import { clearAccountGrants } from "${grantsModule}";`;
+    expect(stepFindings(`${SQLITE}/upgrade-plan.ts`, authority)).toEqual([]);
+    expect(stepFindings(`${SQLITE}/security-maintenance.ts`, grants)).toEqual([]);
+    for (const file of [`${SQLITE}/upgrade-maintenance.ts`, MAPPING_ACTS, GRANTS_STEP, `${SQLITE}/security-maintenance.ts`, "src/server/bootstrap/example.ts"]) {
+      expect(strip(stepFindings(file, authority)), file).toEqual([`import of ${authorityModule} (${AUTHORITY_ACTS})`]);
+    }
+    for (const file of [`${SQLITE}/upgrade-maintenance.ts`, MAPPING_ACTS, `${SQLITE}/sqlite-state-store.ts`]) {
+      expect(strip(stepFindings(file, grants)), file).toEqual([`import of ${grantsModule} (${GRANTS_STEP})`]);
+    }
+    // The shared authority reset: the quarantine and the authority acts only; every other file is reported, in every literal form.
+    const resetModule = "./authority-reset";
+    const reset = `import { revokeCredentials } from "${resetModule}";`;
+    for (const file of [`${SQLITE}/security-maintenance.ts`, AUTHORITY_ACTS]) expect(stepFindings(file, reset), file).toEqual([]);
+    for (const file of [`${SQLITE}/upgrade-maintenance.ts`, `${SQLITE}/upgrade-plan.ts`, `${SQLITE}/test-run-queries.ts`, `${SQLITE}/sqlite-state-store.ts`, MAPPING_ACTS, GRANTS_STEP, `${SQLITE}/example.ts`]) {
+      expect(strip(stepFindings(file, reset)), file).toEqual([`import of ${resetModule} (${AUTHORITY_RESET})`]);
+    }
+    expect(strip(stepFindings(`${SQLITE}/upgrade-maintenance.ts`, [
+      'export { revokeCredentials as revoke } from "./authority-reset.js";',
+      'const lazy = import("@/server/infrastructure/sqlite/authority-reset");',
+      'type Reset = typeof import("./authority-reset");',
+    ].join("\n")))).toEqual([
+      `re-export of ./authority-reset.js (${AUTHORITY_RESET})`, `import() of @/server/infrastructure/sqlite/authority-reset (${AUTHORITY_RESET})`,
+      `import() type of ./authority-reset (${AUTHORITY_RESET})`,
+    ]);
+    expect(strip(stepFindings("src/server/bootstrap/example.ts", 'import { revokeCredentials } from "@/server/infrastructure/sqlite/authority-reset";')))
+      .toEqual([`import of @/server/infrastructure/sqlite/authority-reset (${AUTHORITY_RESET})`]);
+    // The recovery's predictor: the authority acts only; the recovery itself, the quarantine and every other file are reported.
+    const predictionModule = "./test-run-recovery-prediction";
+    const prediction = `import { predictRecovery } from "${predictionModule}";`;
+    expect(stepFindings(AUTHORITY_ACTS, prediction)).toEqual([]);
+    for (const file of [`${SQLITE}/test-run-queries.ts`, `${SQLITE}/test-summary-queries.ts`, AUTHORITY_RESET, `${SQLITE}/security-maintenance.ts`, `${SQLITE}/upgrade-plan.ts`, `${SQLITE}/sqlite-state-store.ts`, `${SQLITE}/example.ts`]) {
+      expect(strip(stepFindings(file, prediction)), file).toEqual([`import of ${predictionModule} (${RECOVERY_PREDICTION})`]);
+    }
+    // The exact-text check: the predictor and both act domains only; the recovery itself, the plan, the maintenance and every other file are reported.
+    const textModule = "./stored-text";
+    const text = `import { readsBack } from "${textModule}";`;
+    for (const file of [RECOVERY_PREDICTION, MAPPING_ACTS, AUTHORITY_ACTS]) expect(stepFindings(file, text), file).toEqual([]);
+    for (const file of [`${SQLITE}/test-run-queries.ts`, `${SQLITE}/upgrade-plan.ts`, `${SQLITE}/upgrade-maintenance.ts`, `${SQLITE}/security-maintenance.ts`, `${SQLITE}/database-validation.ts`, `${SQLITE}/example.ts`]) {
+      expect(strip(stepFindings(file, text)), file).toEqual([`import of ${textModule} (${STORED_TEXT})`]);
+    }
+  });
+
+  it("keeps the shared authority reset callable with the switch off, as the schema-49 quarantine needs", () => {
+    expect(provisionalSchemaEnabled()).toBe(false);
+    const memory = new Database(":memory:");
+    try {
+      initializeSchema(memory);
+      // The fence triggers of the covered rows call the observer; outside an owner it is a no-op here.
+      memory.function("worktree_security_pending", () => 0);
+      const at = "2025-01-01T00:00:00.000Z";
+      revokeCredentials(memory, at); revokeOldGrants(memory, at); releaseReservations(memory, at); cancelRemoteWork(memory, at);
+      expect(() => interruptTestRuns(memory)).not.toThrow();
+    } finally { memory.close(); }
   });
 
   describe("with the switch on", () => {
@@ -453,12 +560,13 @@ describe("provisional schema steps stay switched off", () => {
     beforeEach(() => { restore = enableProvisionalSchema(); });
     afterEach(() => { restore(); });
 
-    it("accepts targets 50 and 51, still refuses anything above them, and restores the previous state", () => {
+    it("accepts targets 50 to 52, still refuses anything above them, and restores the previous state", () => {
       expect(provisionalSchemaEnabled()).toBe(true);
       expect(schemaTarget()).toBe(49);
       expect(schemaTarget(50)).toBe(50);
       expect(schemaTarget(51)).toBe(51);
-      for (const invalid of [48, 52, 49.5, 50.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
+      expect(schemaTarget(52)).toBe(52);
+      for (const invalid of [48, 53, 49.5, 50.5, 51.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
       // Nested use restores the outer state, not "off".
       const inner = enableProvisionalSchema();
       inner();

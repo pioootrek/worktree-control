@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import { TestRunQueries } from "./test-run-queries";
 import { AuthenticationQueries } from "./authentication-queries";
 import { projectMappingViolation } from "./mapping-structure-migration";
+import { accountGrantsViolation } from "./account-grants-migration";
 
 export function validateDatabase(database: Database.Database, version: number): void {
   const integrity = database.pragma("integrity_check(1)") as Array<{ integrity_check: string }>;
@@ -31,6 +32,14 @@ export function validateDatabase(database: Database.Database, version: number): 
   // and remote identities, and the decision journal (see mapping-structure-migration.ts).
   if (version >= 51) {
     const rule = projectMappingViolation(database);
+    if (rule) fail(rule);
+  }
+  // Provisional step 52: the shape of every stored grant (see account-grants-migration.ts).
+  // An existing account and project are the foreign-key check's above. Who may hold a
+  // role is not checked here: the contract re-validates each grant on every evaluation,
+  // so one inconsistent row refuses only itself instead of stopping the installation.
+  if (version >= 52) {
+    const rule = accountGrantsViolation(database);
     if (rule) fail(rule);
   }
   if (version >= 4 && database.prepare(`SELECT 1 FROM reservations WHERE released_at IS NULL AND NOT (

@@ -290,8 +290,9 @@ describe("explicit offline upgrade: inspect", () => {
     expect(readFileSync(target, "utf8")).toBe("preserve");
   });
 
-  it("refuses a plan at target 50 that contains an act or decisions: the only act domain (mapping) starts at 51", async () => {
-    expect(UPGRADE_ACT_DOMAINS.map(domain => [domain.name, domain.minimumTarget])).toEqual([["mapping", 51]]);
+  it("refuses a plan at target 50 that contains an act or decisions: the first act domain (mapping) starts at 51", async () => {
+    // Since C3a the authority domain follows the mapping domain, from 52.
+    expect(UPGRADE_ACT_DOMAINS.map(domain => [domain.name, domain.minimumTarget])).toEqual([["mapping", 51], ["authority", 52]]);
     const paths = installation(), status = inspect(paths);
     const mapping = { kind: "attach_registration", payload: { registrationId: "r", projectId: "p", basis: "created_project" } };
     for (const payload of [{ ...status.plan!, acts: [{ kind: "fixture.note", payload: {} }] }, { ...status.plan!, acts: [mapping] },
@@ -330,9 +331,10 @@ describe("explicit offline upgrade: plan and act mechanism", () => {
     expect(() => upgradePlanHash({ ...plan(), acts: new Array(1) as UpgradePlan["acts"] })).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
     expect(structuralSteps(50, 50)).toEqual([]);
     expect(() => structuralSteps(48, 50)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
-    // Step 51 is a known structural step since C2a; a step above the highest known one is not.
+    // Step 51 is a known structural step since C2a and step 52 since C3a; a step above the highest known one is not.
     expect(structuralSteps(49, 51).map(step => step.version)).toEqual([50, 51]);
-    expect(() => structuralSteps(49, 52)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
+    expect(structuralSteps(49, 52).map(step => step.version)).toEqual([50, 51, 52]);
+    expect(() => structuralSteps(49, 53)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
   });
   it("lets a registered domain propose, validate, execute and describe acts in order, every act, decision and review covered by the hash", () => {
     const executed: string[] = [];

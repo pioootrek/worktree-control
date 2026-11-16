@@ -94,7 +94,8 @@ function backupTree(build: (database: Database.Database) => void, schemaVersion:
 describe("provisional schema step 50: upgrade marker", () => {
   it("keeps schema-49 coverage frozen and covers the marker with the same trigger body", () => {
     expect(SECURITY_TABLES).not.toContain("upgrade_marker");
-    expect(SECURITY_COVERAGE.map(step => [step.version, step.tables])).toEqual([[49, SECURITY_TABLES], [50, UPGRADE_MARKER_SECURITY_TABLES], [51, PROJECT_MAPPING_SECURITY_TABLES]]);
+    // Steps 49 to 51; step 52's entry is pinned in account-grants-migration.test.ts.
+    expect(SECURITY_COVERAGE.slice(0, 3).map(step => [step.version, step.tables])).toEqual([[49, SECURITY_TABLES], [50, UPGRADE_MARKER_SECURITY_TABLES], [51, PROJECT_MAPPING_SECURITY_TABLES]]);
     expect(securityTriggersAt(48)).toEqual([]);
     expect(securityTriggersAt(49)).toEqual(securityTriggers);
     expect(securityTriggersAt(50)).toEqual([...securityTriggers, ...upgradeMarkerTriggers]);
@@ -383,6 +384,7 @@ describe("provisional schema step 50: upgrade marker", () => {
     // A schema-49 backup is accepted at both ceilings.
     expect(() => validateBackup(current.root, parseManifest(current.manifest))).not.toThrow();
     expect(() => validateBackup(current.root, parseManifest(current.manifest, TARGET), false, TARGET)).not.toThrow();
-    expect(() => parseManifest(current.manifest, 52)).toThrow("Unsupported schema target.");
+    // The first target above the highest provisional step (52 since C3a).
+    expect(() => parseManifest(current.manifest, 53)).toThrow("Unsupported schema target.");
   });
 });

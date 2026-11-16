@@ -7,6 +7,7 @@ import {
   compareText, escapeDisplay, FindingList, sampled, UPGRADE_FINDINGS_LIMIT, UPGRADE_PLAN_LIMITS, UpgradeError,
   type UpgradeAct, type UpgradeActContext, type UpgradeActDomain, type UpgradeActKind, type UpgradeProposalContext,
 } from "./upgrade-contract";
+import { unreadableTexts, type TextColumns } from "./stored-text";
 
 /**
  * The project-mapping acts of the explicit offline upgrade (integration branch,
@@ -25,7 +26,9 @@ import {
  * environment value and no stored JSON into the plan: the review carries IDs,
  * counts, statuses, timestamps and escaped display names only. Every stored
  * value it reads is first checked for its storage class
- * ({@link MAPPING_STORED_COLUMNS}).
+ * ({@link MAPPING_STORED_COLUMNS}), and every identifier it compares or an act
+ * writes back or matches on for reading back exactly
+ * ({@link MAPPING_TEXT_COLUMNS}).
  */
 
 /** The ID rule of the journal's `subject_id` and `project_id` (see mapping-structure-migration.ts). */
@@ -342,9 +345,43 @@ const STORED_COLUMNS: StoredColumns[] = [
   { table: "knowledge_import_batches", key: "id", columns: [["target_project_id", "text"]] },
 ];
 export const MAPPING_STORED_COLUMNS: ReadonlyArray<StoredColumns> = Object.freeze(STORED_COLUMNS);
+/** Text columns of {@link MAPPING_TEXT_COLUMNS}; `mapped` and `mappedColumns` only from step 51 on. */
+export interface MappingTextColumns extends TextColumns { readonly mapped?: boolean; readonly mappedColumns?: readonly string[] }
+/**
+ * Every identifier the proposal pass compares in JavaScript (subjects, the
+ * projects they may join, links, bindings, workers and the journal) or an act
+ * writes back or matches on (`attach_registration` and `map_remote_identity`
+ * match their subject by `WHERE id=?` and their project in
+ * `knowledge_projects`; they and the journal write subject and project IDs),
+ * on every row. Each must read back exactly (`stored-text.ts`): a stored ID
+ * whose bytes are not the UTF-8 of the string read back would be planned, then
+ * match no row or write other bytes inside the transaction. It is refused as
+ * `upgrade_mapping_malformed` before a value is used. A decision is JavaScript
+ * text and reaches an act only through equality with one of these IDs.
+ */
+export const MAPPING_TEXT_COLUMNS: ReadonlyArray<MappingTextColumns> = Object.freeze([
+  { table: "projects", key: "id", columns: ["id", "parent_project_id"], mappedColumns: ["parent_project_id"] },
+  { table: "remote_project_identities", key: "id", columns: ["id", "parent_project_id"], mappedColumns: ["parent_project_id"] },
+  { table: "knowledge_projects", key: "id", columns: ["id"] },
+  { table: "knowledge_project_runtime_links", key: "knowledge_project_id", columns: ["knowledge_project_id", "runtime_project_id"] },
+  { table: "remote_worker_project_grants", key: "project_id", columns: ["worker_id", "project_id", "local_project_id"] },
+  { table: "remote_workers", key: "id", columns: ["id"] },
+  { table: "project_mapping_journal", key: "subject_id", mapped: true, columns: ["subject_id", "project_id"] },
+]);
 const RULE_TEXT: Readonly<Record<StorageRule, string>> = { text: "text", text_or_null: "text or null", integer: "integer" };
 const holds = (type: unknown, rule: StorageRule) => rule === "text" ? type === "text" : rule === "integer" ? type === "integer" : type === "text" || type === "null";
 const holdsSql = (column: string, rule: StorageRule) => rule === "text_or_null" ? `typeof("${column}") IN ('text','null')` : `typeof("${column}")='${rule}'`;
+
+/** Adds a finding for every row of {@link MAPPING_TEXT_COLUMNS} whose identifier does not read back exactly (the first 100 per table listed, all counted). */
+function texts(database: Database.Database, mapped: boolean, findings: FindingList): void {
+  for (const entry of MAPPING_TEXT_COLUMNS) {
+    if (entry.mapped && !mapped) continue;
+    const columns = mapped ? entry.columns : entry.columns.filter(column => !entry.mappedColumns?.includes(column));
+    const { rows, count } = unreadableTexts(database, { ...entry, columns }, UPGRADE_FINDINGS_LIMIT);
+    for (const row of rows) findings.add(row.table, row.id, row.problem);
+    if (count > rows.length) findings.more(count - rows.length);
+  }
+}
 
 /** Adds a finding for every row of {@link MAPPING_STORED_COLUMNS} whose value is of another storage class (the first 100 per table read, all counted). */
 function storageClasses(database: Database.Database, mapped: boolean, findings: FindingList): void {
@@ -446,6 +483,10 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
   const storage = new FindingList();
   storageClasses(database, mapped, storage);
   storage.raise("upgrade_mapping_malformed");
+  // 0b. Identifiers compared or written back read back exactly (U+FFFD read back for an invalid stored sequence).
+  const unreadable = new FindingList();
+  texts(database, mapped, unreadable);
+  unreadable.raise("upgrade_mapping_malformed");
 
   const stamps = mapped ? "parent_project_id AS parent,incarnation,mapping_version AS version" : "NULL AS parent,0 AS incarnation,0 AS version";
   const registrationRows = database.prepare(`SELECT id,name,NULL AS status,${stamps} FROM projects`).all() as Array<Record<string, unknown>>;

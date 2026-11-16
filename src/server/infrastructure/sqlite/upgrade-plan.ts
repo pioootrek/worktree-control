@@ -8,7 +8,9 @@ import { durableJson, privateDirectory, readPrivateBoundedFile, syncDirectory, v
 import { schemaTarget, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { UPGRADE_MARKER_VERSION, upgradeMarkerChecksum, upgradeMarkerMigration } from "./upgrade-marker-migration";
 import { PROJECT_MAPPING_VERSION, projectMappingChecksum, projectMappingMigration } from "./mapping-structure-migration";
+import { ACCOUNT_GRANTS_VERSION, accountGrantsChecksum, accountGrantsMigration } from "./account-grants-migration";
 import { MAPPING_ACT_DOMAIN } from "./mapping-upgrade-acts";
+import { AUTHORITY_ACT_DOMAIN } from "./authority-upgrade-acts";
 import {
   canonicalJson, FindingList, UPGRADE_PLAN_LIMITS, UpgradeError,
   type UpgradeAct, type UpgradeActContext, type UpgradeActDomain, type UpgradeActKind, type UpgradeProposalContext,
@@ -63,6 +65,7 @@ export interface UpgradeStep { version: number; name: string; checksum: string }
 const STRUCTURAL_STEPS: ReadonlyMap<number, Omit<UpgradeStep, "version">> = new Map([
   [UPGRADE_MARKER_VERSION, { name: upgradeMarkerMigration.name, checksum: upgradeMarkerChecksum }],
   [PROJECT_MAPPING_VERSION, { name: projectMappingMigration.name, checksum: projectMappingChecksum }],
+  [ACCOUNT_GRANTS_VERSION, { name: accountGrantsMigration.name, checksum: accountGrantsChecksum }],
 ]);
 /** The steps from `source` (exclusive) to `target`, as this code would run them. */
 export function structuralSteps(source: number, target: number): UpgradeStep[] {
@@ -77,10 +80,11 @@ export function structuralSteps(source: number, target: number): UpgradeStep[] {
 }
 
 /**
- * The act domains, in the order their acts run. A later domain (grants and
- * revocations) is appended here; its acts then run after the mapping acts.
+ * The act domains, in the order their acts run: the project mapping (from 51),
+ * then the authority reset and the first grant (from 52), whose acts run after
+ * every mapping act.
  */
-export const UPGRADE_ACT_DOMAINS: ReadonlyArray<UpgradeActDomain> = Object.freeze([MAPPING_ACT_DOMAIN as unknown as UpgradeActDomain]);
+export const UPGRADE_ACT_DOMAINS: ReadonlyArray<UpgradeActDomain> = Object.freeze([MAPPING_ACT_DOMAIN as unknown as UpgradeActDomain, AUTHORITY_ACT_DOMAIN as unknown as UpgradeActDomain]);
 /** The domains a plan of this target carries. */
 export function upgradeDomains(target: number, domains: ReadonlyArray<UpgradeActDomain> = UPGRADE_ACT_DOMAINS): UpgradeActDomain[] {
   return domains.filter(domain => target >= domain.minimumTarget);
