@@ -54,8 +54,12 @@ function gate(): void {
 function grantId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && !value.includes("\u0000") && Buffer.byteLength(value, "utf8") <= 640 && [...value].length <= 160;
 }
-/** The most principals of kind `owner` the review lists; more is refused, never truncated. */
-export const AUTHORITY_OWNER_LIMIT = 1000;
+/**
+ * The most principals of kind `owner` the review lists; more is refused, never
+ * truncated. It is the security fence's own bound on owners (more than 64 make
+ * its owner identity refuse), so through the protocol the fence refuses first.
+ */
+export const AUTHORITY_OWNER_LIMIT = 64;
 const PRINCIPAL_KINDS = ["owner", "human", "agent", "worker", "installation"] as const;
 const PRINCIPAL_STATUSES = ["active", "revoked"] as const;
 const REQUEST_PHASES = ["pending", "assigned", "completed", "cancelled"] as const;
