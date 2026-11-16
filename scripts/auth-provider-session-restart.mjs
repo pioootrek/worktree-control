@@ -89,7 +89,8 @@ class Process {
       const waiter = { match: message => types.includes(message.type), accept: message => { clearTimeout(timer); this.messages.splice(this.messages.indexOf(message), 1); accept(message); } };
       this.waiting.push(waiter);
       this.exited.then(() => { if (this.waiting.includes(waiter) && !this.messages.some(waiter.match)) {
-        const failed = this.messages.filter(message => message.type === "failed").map(message => `${message.mode} failed: ${message.reason}`).join("; ");
+        // Unclaimed reports (a failure's reason, an opening refusal's code), never snapshots.
+        const failed = JSON.stringify(this.messages.map(({ type, mode, code, reason }) => ({ type, mode, code, reason })));
         clearTimeout(timer); reject(new Error(`Fixture process exited before ${types.join("/")}: ${failed} ${output.join("").slice(-1500)}`)); } });
     });
   }
