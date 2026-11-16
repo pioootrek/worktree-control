@@ -9,3 +9,5 @@ export { openRemoteRecoveryInspection } from "./remote-connection-inspection";
 export { SecurityFence, SecurityFenceBackupError, SecurityFenceError, securityRecoveryBoundary } from "./security-fence";
 export { establishSqliteSecurityFence, maintainSqliteSecurityFence, type SecurityMaintenanceCommand, type SecurityMaintenanceResult } from "./security-maintenance";
 export type { MaintenanceBackup, MaintenanceBackupSource } from "./backup-binding";
+export { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeApplyResult, type UpgradeInspection, type UpgradeStatus } from "./upgrade-maintenance";
+export { UpgradeError, UPGRADE_PLAN_LIMITS, type UpgradeErrorCode, type UpgradeFindings, type UpgradeNextStep, type UpgradeState } from "./upgrade-contract";
