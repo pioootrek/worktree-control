@@ -51,11 +51,11 @@ describe("provider session history migration 39", () => {
   it("creates recognized fresh storage with provider storage revision 1 and honest history method", () => {
     const f = directory(), store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(49);
+      expect(store.schemaVersion()).toBe(52);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
-      expect(inspectSchema(db)).toEqual({ version: 49, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 52, fresh: false });
       expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=39").get())
         .toEqual({ name: providerSessionHistoryMigration.name, checksum: providerSessionHistoryChecksum });
       expect(db.prepare("SELECT sql FROM sqlite_master WHERE name='knowledge_history'").get()).toMatchObject({ sql: expect.stringContaining("'provider_session'") });
@@ -78,11 +78,11 @@ describe("provider session history migration 39", () => {
       expect(db.prepare("SELECT seq FROM sqlite_sequence WHERE name='knowledge_history'").get()).toEqual({ seq: 99 });
     });
     const backups = join(f.root, "backups");
-    const store = await openProtectedUpgradeFixture(f.path, { backupBeforeMigration: true, backupDirectory: backups,
+    const store = await openProtectedUpgradeFixture(f.path, { backupDirectory: backups,
       applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
     store.close();
     const [backup] = readdirSync(backups);
-    expect(backup).toMatch(/^pre-migration-v38-/);
+    expect(backup).toMatch(/^pre-establishment-v38-/);
     expect(JSON.parse(readFileSync(join(backups, backup!, "manifest.json"), "utf8")).database.schemaVersion).toBe(38);
     raw(f.path, db => {
       expect(inspectSchema(db).version).toBe(49);
@@ -93,12 +93,12 @@ describe("provider session history migration 39", () => {
         VALUES('kept','task','kept-task','updated','owner','provider_session',2,'2026-10-29T00:00:00.000Z')`).run();
       expect(inserted.lastInsertRowid).toBe(100);
     });
-    // Restore the genuine old snapshot through the supported restore path, then migrate on open.
+    // Restore the genuine old snapshot through the supported restore path; resume and the explicit upgrade make it current.
     const restoredPath = join(f.root, "restored38", "state.sqlite3");
     restoreControllerBackup(join(backups, backup!), restoredPath);
     await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
-    try { expect(restored.schemaVersion()).toBe(49); } finally { restored.close(); }
+    try { expect(restored.schemaVersion()).toBe(52); } finally { restored.close(); }
     raw(restoredPath, db => {
       const after=preserved(db);
       for(const table of ["knowledge_history","knowledge_tasks","remote_principals","authentication_provider_subjects"])expect(after[table]).toEqual(before.rows[table]);
@@ -160,7 +160,7 @@ describe("provider session history migration 39", () => {
     await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
     try {
-      expect(restored.schemaVersion()).toBe(49);
+      expect(restored.schemaVersion()).toBe(52);
       expect(restored.listHistory("kept", "task", task.value.id, 25, 0).items[0]?.authenticationMethod).toBe("provider_session");
     } finally { restored.close(); }
     const target = new SqliteStateStore(join(f.root, "logical.sqlite3"));

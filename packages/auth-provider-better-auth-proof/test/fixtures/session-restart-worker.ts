@@ -157,8 +157,8 @@ async function owner(): Promise<void> {
   rmSync(socketPath, { force: true });
   const store: SqliteStateStore = boot.fault === "poison"
     ? new SqliteStateStore(databasePath, undefined, { rollback: () => { throw new Error("Fixture rollback failure."); } })
-    : await openControllerStore(databasePath, { backupBeforeMigration: boot.backup !== undefined, backupDirectory: boot.backup,
-      applicationVersion: "0.0.0-session-restart", attachmentDirectory });
+    // The controller's ordinary opening takes no pre-migration copy any more (see controller-storage.ts).
+    : openControllerStore(databasePath);
   const seeding = boot.mode === "seed", identity = new IdentityService(store, undefined, undefined, undefined, undefined, store);
   const ownerSession = seeding ? identity.bootstrapOwnerSession() : null;
   store.requireAdmission();

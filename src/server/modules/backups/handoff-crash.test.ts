@@ -27,7 +27,7 @@ it.each(["requested", "maintenance", "closed", "executing", "restore-intent", "r
     await Promise.race([once(child, "message", { signal: abort.signal }), once(child, "exit").then(() => { throw new Error(`Crash fixture missed boundary: ${stderr}`); })]);
     const exit = once(child, "exit"); child.kill("SIGKILL"); expect((await exit)[1]).toBe("SIGKILL");
     const handoff = recoverBackupHandoff(database, attachments, policy);
-    if(handoff)await resumeFixtureSecurity(database);
+    if(handoff)await resumeFixtureSecurity(database, "token", { attachmentDirectory: attachments });
     const restored = new SqliteStateStore(database);
     try {
       if (handoff) finishBackupHandoff(database, handoff, restored);

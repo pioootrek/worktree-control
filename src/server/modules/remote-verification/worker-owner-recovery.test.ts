@@ -158,7 +158,7 @@ it.each(["legacy", "legacy-reused-pids", "malformed", "tampered-pids", "tampered
   expect(readFileSync(join(f.human, "keep"), "utf8")).toBe("human");
 });
 
-it("refuses copied installation state even on the same simulated host and different boot", () => {
+it("refuses copied installation state even on the same simulated host and different boot", async () => {
   const f = fixture(); f.start(); f.reboot(); f.store.close();
   const copiedPath = join(f.root, "copy.sqlite3");
   copyFileSync(f.databasePath, copiedPath); copyFileSync(`${f.databasePath}.worker-recovery-key`, `${copiedPath}.worker-recovery-key`);

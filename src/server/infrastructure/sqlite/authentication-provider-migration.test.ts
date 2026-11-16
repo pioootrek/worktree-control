@@ -52,7 +52,7 @@ describe("authentication provider storage migration 38", () => {
     const f = directory();
     const store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(49);
+      expect(store.schemaVersion()).toBe(52);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
@@ -64,7 +64,7 @@ describe("authentication provider storage migration 38", () => {
     });
   });
 
-  it("upgrades a genuine v37 database atomically after a verified pre-migration backup, with no identity or grant changes", async () => {
+  it("upgrades a genuine v37 database atomically after a verified pre-establishment backup, with no identity or grant changes", async () => {
     const f = genuineV37();
     const before = raw(f.path, db => { expect(inspectSchema(db).version).toBe(37); return identityState(db); });
     raw(f.path, db => {
@@ -74,10 +74,10 @@ describe("authentication provider storage migration 38", () => {
       expect(identityState(db)).toEqual(before);
     });
     const backups = join(f.root, "backups");
-    const store = await openProtectedUpgradeFixture(f.path, { backupBeforeMigration: true, backupDirectory: backups, applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
+    const store = await openProtectedUpgradeFixture(f.path, { backupDirectory: backups, applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
     try { expect(store.schemaVersion()).toBe(49); } finally { store.close(); }
     const [backup] = readdirSync(backups);
-    expect(backup).toMatch(/^pre-migration-v37-/);
+    expect(backup).toMatch(/^pre-establishment-v37-/);
     expect(JSON.parse(readFileSync(join(backups, backup!, "manifest.json"), "utf8")).database.schemaVersion).toBe(37);
     raw(f.path, db => {
       expect(identityState(db)).toEqual(upgradedIdentityState(before));
