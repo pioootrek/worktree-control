@@ -20,7 +20,10 @@ import { cleanupRestartFixture, trackFixtureChild } from "./auth-provider-restar
 // (observed at boot 9, after plain-password-pending), and a resume would quarantine every session the cases
 // then inspect. The cases need a redesign before this script can prove session recovery again; until then
 // it stops here rather than report a failure that is not a regression. The code below is kept for that work.
-throw new Error("auth-provider-session-restart predates the security fence and the explicit offline upgrade: its crash cases end in security_fence_recovery_required. See the comment at the top of the script; it needs a redesign.");
+function predatesTheFence() {
+  throw new Error("auth-provider-session-restart predates the security fence and the explicit offline upgrade: its crash cases end in security_fence_recovery_required. See the comment at the top of the script; it needs a redesign.");
+}
+predatesTheFence();
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const temporary = mkdtempSync(join(tmpdir(), "session-restart-"));
 const workerSource = "packages/auth-provider-better-auth-proof/test/fixtures/session-restart-worker.ts";
