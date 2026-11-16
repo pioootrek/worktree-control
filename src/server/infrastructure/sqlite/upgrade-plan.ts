@@ -10,7 +10,7 @@ import { UPGRADE_MARKER_VERSION, upgradeMarkerChecksum, upgradeMarkerMigration }
 import { PROJECT_MAPPING_VERSION, projectMappingChecksum, projectMappingMigration } from "./mapping-structure-migration";
 import { MAPPING_ACT_DOMAIN } from "./mapping-upgrade-acts";
 import {
-  canonicalJson, UPGRADE_PLAN_LIMITS, UpgradeError,
+  canonicalJson, FindingList, UPGRADE_PLAN_LIMITS, UpgradeError,
   type UpgradeAct, type UpgradeActContext, type UpgradeActDomain, type UpgradeActKind, type UpgradeProposalContext,
 } from "./upgrade-contract";
 
@@ -24,7 +24,7 @@ import {
  */
 
 export {
-  canonicalJson, compareText, escapeDisplay, UPGRADE_FINDINGS_LIMIT, UPGRADE_PLAN_LIMITS, UpgradeError,
+  boundedFindings, canonicalJson, compareText, escapeDisplay, FindingList, sampled, UPGRADE_DETAILS_LIMITS, UPGRADE_FINDINGS_LIMIT, UPGRADE_PLAN_LIMITS, UpgradeError,
   type UpgradeAct, type UpgradeActContext, type UpgradeActDomain, type UpgradeActKind, type UpgradeErrorCode, type UpgradeFinding, type UpgradeFindings,
   type UpgradeNextStep, type UpgradeProposalContext, type UpgradeState,
 } from "./upgrade-contract";
@@ -152,19 +152,19 @@ export function parseUpgradePlan(value: unknown, domains: ReadonlyArray<UpgradeA
 /**
  * The operator's decisions for a target, before any lock or file: a plain
  * object whose keys each belong to a domain of the target, split by domain
- * and normalised by it. No decision (undefined or `{}`) is valid at every
- * target; at target 50, where no domain applies, any key is refused.
+ * and normalised by it. No decision (`undefined` or `{}`) is valid at every
+ * target; an explicit `null` is refused like any other value that is not a
+ * plain object. At target 50, where no domain applies, any key is refused.
  */
 export function normaliseUpgradeDecisions(input: unknown, target: number, domains: ReadonlyArray<UpgradeActDomain> = UPGRADE_ACT_DOMAINS): Record<string, unknown> {
   upgradeTarget(target);
-  const value = input ?? {};
+  const value = input === undefined ? {} : input;
   if (typeof value !== "object" || value === null || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new UpgradeError("upgrade_decisions_invalid", "upgrade inspect");
   const keys = Object.keys(value), applicable = upgradeDomains(target, domains);
   const unknown = keys.filter(entry => !applicable.some(domain => domain.decisionKeys.includes(entry)));
-  if (unknown.length > 0) {
-    throw new UpgradeError("upgrade_decisions_invalid", "upgrade inspect", false, undefined, {
-      findings: unknown.slice(0, 100).map(entry => ({ table: "decisions", id: entry.slice(0, 64), problem: "not a decision at this target" })), count: unknown.length, truncated: unknown.length > 100 });
-  }
+  const refused = new FindingList();
+  for (const entry of unknown) refused.add("decisions", entry, "not a decision at this target");
+  refused.raise("upgrade_decisions_invalid");
   return Object.fromEntries(applicable.map(domain => [domain.name,
     domain.normalise(Object.fromEntries(keys.filter(entry => domain.decisionKeys.includes(entry)).map(entry => [entry, (value as Record<string, unknown>)[entry]])))]));
 }
@@ -197,20 +197,30 @@ export function proposeUpgrade(database: Database.Database, context: UpgradeProp
  * `schemaVersion` is the schema of the connection read: the source before the
  * backup, the target inside the schema transaction. Every refusal is
  * `upgrade_plan_unproposed` (next step `upgrade inspect`), carrying a domain
- * refusal's findings when one stopped the replay.
+ * refusal's findings when one stopped the replay, and otherwise naming what
+ * differs: the decisions' form, the acts, the review (the acts are compared
+ * first and on their own, so a forged act list is refused for its acts even
+ * when its review was forged to match it).
  */
 export function validateUpgradeProposal(database: Database.Database, plan: UpgradePlan, schemaVersion: number, domains: ReadonlyArray<UpgradeActDomain> = UPGRADE_ACT_DOMAINS): void {
   upgradeTarget(plan.target);
   let proposal: { acts: UpgradeAct[]; review: Record<string, unknown> };
   try {
     const normalised = Object.fromEntries(upgradeDomains(plan.target, domains).map(domain => [domain.name, domain.normalise(plan.decisions[domain.name] as Record<string, unknown>)]));
-    if (canonicalJson(normalised) !== canonicalJson(plan.decisions)) throw new UpgradeError("upgrade_plan_unproposed", "upgrade inspect");
+    if (canonicalJson(normalised) !== canonicalJson(plan.decisions)) {
+      const differs = new FindingList();
+      differs.add("plan", "decisions", "the decisions are not in normalised form");
+      differs.raise("upgrade_plan_unproposed");
+    }
     proposal = proposeUpgrade(database, { schemaVersion, source: plan.source, target: plan.target }, plan.decisions, plan.acts, false, domains);
   } catch (error) {
     if (error instanceof UpgradeError && error.code !== "upgrade_unsupported") throw new UpgradeError("upgrade_plan_unproposed", "upgrade inspect", false, undefined, error.details);
     throw error;
   }
-  if (canonicalJson({ acts: proposal.acts, review: proposal.review }) !== canonicalJson({ acts: plan.acts, review: plan.review })) throw new UpgradeError("upgrade_plan_unproposed", "upgrade inspect");
+  const differs = new FindingList();
+  if (canonicalJson(proposal.acts) !== canonicalJson(plan.acts)) differs.add("plan", "acts", "the acts differ from the proposal for this database and the plan's decisions");
+  if (canonicalJson(proposal.review) !== canonicalJson(plan.review)) differs.add("plan", "review", "the review differs from the proposal for this database and the plan's decisions");
+  differs.raise("upgrade_plan_unproposed");
 }
 
 /** Executes a parsed plan's acts in their order, inside the caller's transaction. */

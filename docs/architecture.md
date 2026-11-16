@@ -1539,9 +1539,12 @@ and duplicates are refused as `upgrade_decisions_invalid`.
 
 A subject both accepted and isolated, a registration accepted into two
 projects, and an entry that names no such row are refused, and no plan is
-written. Several binding decisions for one identity are allowed when they lead
-to one project. Without decisions nothing is accepted. At target 50, where no
-act domain applies, any decision is refused. The plan stores the decisions in
+written. A link decision names a current link only: a link with `unlinked_at`
+set, or one whose registration was removed (`runtime_project_id` NULL), is
+refused. Several binding decisions for one identity are allowed when they lead
+to one project. Without decisions (no argument, or `{}`) nothing is accepted;
+an explicit `null` is refused like any other value that is not an object. At
+target 50, where no act domain applies, any decision is refused. The plan stores the decisions in
 normalised form (every key present, lists sorted) under the hash.
 
 #### Outcomes
@@ -1574,7 +1577,9 @@ Every remote identity gets exactly one outcome:
 
 1. One or more of its bindings are accepted: every accepted binding's
    registration must have the same destination in this plan, and the identity
-   maps there (`accepted_binding`); if they differ, the plan stops.
+   maps there (`accepted_binding`); if they differ, the plan stops. That
+   destination is an existing project, or the new project this plan creates
+   for the registration, which the identity then joins.
 2. It is isolated: a new project.
 3. Its bindings (every row, revoked ones included) lead to registrations with
    more than one destination: the plan stops, and the identity needs an
@@ -1590,8 +1595,26 @@ uses for Knowledge projects. It differs from every ID in `projects`,
 the journal and from the other new IDs. A repeated inspect reuses the new IDs
 of the existing plan file when that plan's binding, installation, base,
 source, target, steps and decisions equal the new one's, so an unchanged
-database and the same decisions give the same plan hash. The new project's
-name is copied from the registration's or identity's name, for display only.
+database and the same decisions give the same plan hash. A replay that cannot
+reuse a subject's new ID (missing, not a UUID, or no longer free) refuses and
+names the subject.
+
+A new project's name is derived from its subject's name during the proposal,
+for display only; it decides nothing. The rule is the application's own, the
+stricter of `IdentityService.createKnowledgeProject` (trimmed, 1 to 120) and
+the export/import snapshot schema (1 to 120), both counting JavaScript string
+length (UTF-16 code units):
+
+1. Trim with `String.prototype.trim`, as the application does.
+2. If longer than 120, cut at 120 without splitting a surrogate pair (cut at
+   119 when a pair would straddle the cut), then trim the end again.
+3. If empty after trimming, use `Registration <id>` or `Remote identity <id>`,
+   bounded by the same cut.
+
+So every created project could have been created by the application and
+round-trips through project export and import. The `create_project` act
+carries the derived name, and both its payload schema and its execution check
+the rule again. A stored name that is not text is a malformed-value stop.
 
 The acts are ordered: every `create_project` (registrations, then identities,
 each by subject ID), then every `attach_registration` (by registration ID),
@@ -1602,8 +1625,13 @@ then every `map_remote_identity` (by identity ID).
 A stop writes no plan. An existing plan file stays as it was, and the
 database and the witness are unchanged. The refusal is an `UpgradeError` with
 the next step `upgrade inspect` and `details`: the offending rows by table, ID
-(control characters escaped) and problem, at most 100, with the total count and
-whether the list is cut.
+(control characters escaped) and problem, with the total count and whether the
+list is cut. The details are bounded: at most 100 findings, a table name of at
+most 64 and a problem of at most 400 characters (cut with `…`), at most 5
+samples of any list a problem embeds (journal sequences, destinations),
+followed by "and N more (M in all)", and at most 64 KiB of JSON for the
+details as a whole, beyond which the last findings are dropped. The count is
+always complete.
 
 | Code | Stop |
 | --- | --- |
@@ -1612,7 +1640,8 @@ whether the list is cut.
 | `upgrade_mapping_divergent` | Accepted bindings that disagree, or an undecided identity whose bindings lead to several projects. |
 | `upgrade_mapping_unexpected` | A registration or identity with a parent while the upgrade is needed. A quarantine clears every parent, so a parent here is a state the protocol does not produce. |
 | `upgrade_mapping_journal` | A project with more than one `created_project` entry, a `created_project` entry for a project accepted by an earlier entry, an incarnation above the clock, or an illegal kind and basis. |
-| `upgrade_mapping_malformed` | A malformed stored value the pass depends on: a non-text or unbounded subject ID, malformed stamps or parent, a malformed link, binding, journal row or clock, a principal of unknown kind, or a name to copy that is not text of at most 1024 characters. |
+| `upgrade_mapping_malformed` | A stored value of another storage class than its column needs (see below), a non-text or unbounded subject ID, malformed stamps or parent, a malformed link, binding, journal row or clock, or a principal of unknown kind. |
+| `upgrade_mapping_clock` | The clock cannot advance once for every attach and map act of the plan (its value plus their number would pass 2^53 − 1). |
 | `upgrade_plan_bounds` | More than 50 000 acts, more than 500 000 rows of the read tables, or a plan above 8 MiB. Refused, never truncated. |
 | `upgrade_decisions_invalid` | A decision that is malformed, conflicting, not allowed at this target, or names no such row. |
 
@@ -1620,6 +1649,35 @@ Ownership validates the database (`PRAGMA foreign_key_check` and step 51's
 rules) before the pass runs. So a dangling reference, malformed stamps and the
 journal rows the table refuses are refused there first, with a generic
 validation error. The pass detects them anyway.
+
+The clock check runs at inspect and again in the pre-backup validation, which
+replays the same pass, so an exhausted clock refuses before the backup and the
+pending witness with nothing changed. The clock's `CHECK` during the acts
+remains the last defence.
+
+The tables are not `STRICT`, so a declared column type does not keep a BLOB, a
+REAL or another class out. Before using any value, the pass checks the storage
+class (`typeof`) of every column it or its review reads, and stops on any
+other: text for every ID, name, status, kind, basis and timestamp
+(`projects.id`, `name`, `environment_profiles_json`;
+`remote_project_identities.id`, `name`, `status`; `knowledge_projects.id`,
+`name`, `status`; `knowledge_project_runtime_links.knowledge_project_id`,
+`linked_at`; `remote_worker_project_grants.worker_id`, `project_id`,
+`local_project_id`; `remote_workers.id`, `principal_id`, `name`, `status`;
+`remote_principals.id`, `kind`, `status`; the journal's `subject_kind`,
+`subject_id`, `project_id`, `basis`, `recorded_at`; the `project_id` of
+`dev_environment_vaults`, `reservations`, `test_runs`,
+`remote_verification_requests` and the Knowledge content tables;
+`remote_verification_requests.id`; `remote_verification_attempts.request_id`;
+`knowledge_import_batches.target_project_id`; every column the last link change
+reads from `knowledge_history`; the `project_id` and `principal_id` of the
+grant, role, delegation, membership and remote-principal-grant tables;
+`runtime_credential_scopes.credential_id`, `project_id`;
+`principal_credentials.id`, `principal_id`, `status`). Text or NULL for
+`parent_project_id`, `runtime_project_id`, `unlinked_at`, `released_at` and
+every `revoked_at`. Integer for `incarnation`, `mapping_version`, the journal's
+`sequence` and `subject_incarnation`, and the clock's `singleton` and `value`.
+`MAPPING_STORED_COLUMNS` in `mapping-upgrade-acts.ts` is the list.
 
 #### The review
 
@@ -1631,8 +1689,10 @@ characters, DEL, the bidirectional controls and the line separators become
 `…`. No repository path, remote URL, environment value, ciphertext or stored
 JSON is included.
 
-- **Each registration:** its outcome (destination, basis, whether the project
-  is new) and its incarnation. Its current link, if any: the project, `linked_at`,
+- **Each registration:** its outcome and its incarnation. The outcome holds the
+  destination, the basis, `created` (this subject's own `create_project` act
+  creates it) and `existing` (it is a row of `knowledge_projects` now); an
+  identity that joins a registration's new project has both false. Its current link, if any: the project, `linked_at`,
   whether it is accepted, and the attribution of the last link change from
   Knowledge history (principal, kind, authentication method, time), stated as
   recorded history and not as approval. The journal nomination, if any, and
@@ -1643,24 +1703,39 @@ JSON is included.
   (worker, worker name and status, the worker principal's status,
   registration, revoked or not, accepted or not); the nomination; and counts of
   its verification requests and attempts.
-- **Each existing destination project** (an accepted link, binding or journal
-  nomination): its Knowledge inventory (threads, replies, tasks, memories,
-  attachments, history rows, import batches). It lists every registration and
-  identity that this plan attaches to it or that the journal last associated
-  with it, and whether that subject still exists. It also counts the
-  principals that hold authority as stored now, by kind (owner, human, agent,
-  worker, installation) and by active or revoked: Knowledge grants and role
-  bindings on the project; delegations, memberships, credential scopes and
-  worker bindings on the registrations the plan attaches; principal grants on
-  the identities it maps. Grant tables keep only the latest value of each grant,
-  so these counts are not a complete history.
+- **Each existing destination project** (a row of `knowledge_projects`
+  reached by an accepted link, a journal nomination, or an accepted binding to
+  a registration that goes there): its Knowledge inventory (threads, replies,
+  tasks, memories, attachments, history rows, import batches). It lists every
+  registration and identity that this plan attaches to it or that the journal
+  last associated with it, and whether that subject still exists. It also
+  counts, in `authorityRows`, the stored authority rows by the kind of the
+  principal they name (owner, human, agent, worker, installation): Knowledge
+  grants and role bindings on the project; delegations, memberships, credential
+  scopes and worker bindings on the registrations the plan attaches; principal
+  grants on the identities it maps. Each row is counted as `unrevoked` or
+  `revoked` by its own `revoked_at`, a credential scope by its credential's
+  stored `status` (`active` or not). These are row counts: not distinct
+  principals and not effective access, since a revoked principal or an expired
+  credential is not taken into account. Grant tables keep only the latest value
+  of each grant, so the counts are not a complete history either.
+- **Each new project** (`newProjects`): its ID, the derived name (escaped),
+  how the name was derived (`copied`, `trimmed`, `shortened` or `replaced`)
+  and the source name's length, the subject it is created for, and every
+  registration and identity that joins it in this plan. It has no Knowledge
+  content and no stored authority yet. An identity that accepts a binding to a
+  registration with a new project is listed there, so the operator sees that it
+  joins that new project.
 - The number of other projects, which are not touched.
 
 A journal nomination is shown with its project, sequence and time. It is a
 nomination from history: the operator approves it through the plan hash or
 declines it with `isolate`. The journal authorizes nothing. `describeUpgradeActs`
-returns the operator's lines from the acts and the review. Lists are sorted by
-ID, so the review is deterministic.
+returns the operator's lines from the acts and the review. A line states only
+what holds: a link or nomination that is not the basis says so, and when the
+subject joins that same project by another basis, the line says that too
+rather than claiming it does not join. Lists are sorted by ID, so the review is
+deterministic.
 
 #### The acts
 
@@ -1669,13 +1744,16 @@ steps, with foreign keys off. Each receives the plan's source and target, the
 plan hash, the run's receipt and one time for the run, and re-checks its
 preconditions. A mismatch aborts the whole transaction.
 
-- `create_project { projectId, name }` refuses when the ID exists in any of the
-  three ID tables. Then it inserts one `knowledge_projects` row as the
-  application writes one: `active`, revision 1, both timestamps the run's time.
-  `saveKnowledgeProject` also writes a `knowledge.project_saved` audit event.
-  The act does not: the row alone is a valid, readable project, and the
-  upgrade's audit event and the journal rows record why it exists. It writes no
-  grant, role, membership, link or history row.
+- `create_project { projectId, name }` refuses when the ID is not a UUID,
+  exists in any of the three ID tables, or the name breaks the application's
+  name rule. Then it inserts one `knowledge_projects` row in the form the
+  application writes one: `active`, revision 1, both timestamps the run's time,
+  and the derived name. It is not the application's creation path, which only
+  an owner session reaches and whose `saveKnowledgeProject` also writes a
+  `knowledge.project_saved` audit event. The act writes no audit event of its
+  own: the row alone is a valid, readable project, and the upgrade's audit
+  event and the journal rows record why it exists. It writes no grant, role,
+  membership, link or history row.
 - `attach_registration { registrationId, projectId, basis }` requires the
   registration with a NULL parent and the project. It advances the clock
   (`UPDATE project_mapping_clock SET value=value+1`), then in one UPDATE sets
@@ -1708,7 +1786,10 @@ review:
 
 - before the backup and the pending witness, read-only at the source schema.
   A difference is `upgrade_plan_unproposed`, next step `upgrade inspect`, with
-  nothing changed;
+  nothing changed. Its details name what differs: the decisions' form, the
+  acts (compared on their own, so a forged act list is refused for its acts even
+  with a review forged to match), the review, or the subject whose new ID the
+  replay cannot reuse; a stop of the replayed pass keeps that stop's findings;
 - inside the schema transaction, after the structural steps and before the
   first act, at the target. A difference aborts the transaction, which leaves
   the database fenced like any failure there.
@@ -1726,7 +1807,11 @@ free.
 The plan is format 2. It has the fields of format 1 plus `decisions` and
 `review`, both keyed by act domain and present for exactly the domains that
 apply at the target. At target 50 both are empty objects and `acts` is empty. A
-format-1 plan is refused as malformed. The hash covers every field.
+format-1 plan is refused as malformed. The hash covers every field. The
+review's shape is provisional and has changed within format 2 (the outcome's
+`existing`, `newProjects`, `authorityRows`); a plan written in an earlier shape
+fails the strict review schema and is refused as malformed, so the format
+number was not raised for an unreleased change.
 
 An act domain supplies its decision keys, the strict schemas of its stored
 decisions and review, its act kinds (a strict payload and `execute`), one
@@ -1737,8 +1822,9 @@ domain, from 51.
 
 The bounds are 50 000 acts, 8 MiB per plan file, 500 000 rows each of
 `knowledge_projects`, links, bindings, workers and journal rows read by the
-pass, 100 findings per refusal, 1024 characters per copied name and 200 per
-displayed name.
+pass, 100 findings and 64 KiB of details per refusal, 400 characters per
+problem, 120 characters (UTF-16 code units) per created project's name and 200
+per displayed name.
 
 ### Pre-establishment backup (integration branch only)
 

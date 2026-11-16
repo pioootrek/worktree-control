@@ -20,7 +20,7 @@ export type UpgradeErrorCode =
   | "upgrade_source_changed" | "upgrade_outcome_uncertain"
   | "upgrade_decisions_invalid" | "upgrade_plan_unproposed" | "upgrade_plan_bounds"
   | "upgrade_mapping_collision" | "upgrade_mapping_dangling" | "upgrade_mapping_divergent" | "upgrade_mapping_unexpected"
-  | "upgrade_mapping_journal" | "upgrade_mapping_malformed";
+  | "upgrade_mapping_journal" | "upgrade_mapping_malformed" | "upgrade_mapping_clock";
 const MESSAGES: Readonly<Record<UpgradeErrorCode, string>> = {
   upgrade_unsupported: "Unsupported schema target.",
   upgrade_invalid_input: "The upgrade command is invalid.",
@@ -48,6 +48,7 @@ const MESSAGES: Readonly<Record<UpgradeErrorCode, string>> = {
   upgrade_mapping_unexpected: "A registration or remote identity has a parent project although the upgrade is needed; no plan was written.",
   upgrade_mapping_journal: "The project mapping journal is inconsistent; no plan was written.",
   upgrade_mapping_malformed: "A stored value the project mapping depends on is malformed; no plan was written.",
+  upgrade_mapping_clock: "The project mapping clock cannot advance once for every attach and map act; no plan was written.",
 };
 
 /** One offending row of a refusal: where it is, its ID (control characters escaped) and what is wrong. */
@@ -56,6 +57,39 @@ export interface UpgradeFinding { readonly table: string; readonly id: string; r
 export interface UpgradeFindings { readonly findings: readonly UpgradeFinding[]; readonly count: number; readonly truncated: boolean }
 /** The most findings one refusal lists; the count is always complete. */
 export const UPGRADE_FINDINGS_LIMIT = 100;
+/**
+ * The bounds of one refusal's details: a finding's table and problem text (code
+ * points, cut with `…`), the samples a problem embeds from a list (see
+ * {@link sampled}), and the serialised details as a whole (UTF-8 bytes of their
+ * JSON). Beyond the byte bound the last findings are dropped and `truncated`
+ * is set; `count` stays complete.
+ */
+export const UPGRADE_DETAILS_LIMITS = { table: 64, problem: 400, samples: 5, bytes: 64 * 1024 } as const;
+
+function cutText(value: string, limit: number): string {
+  const points = [...value];
+  return points.length > limit ? `${points.slice(0, limit).join("")}…` : value;
+}
+/**
+ * A bounded list for a finding's text: the first {@link UPGRADE_DETAILS_LIMITS}
+ * `samples` items, then "and N more (M in all)" when there are more.
+ */
+export function sampled(items: readonly string[], limit: number = UPGRADE_DETAILS_LIMITS.samples): string {
+  const shown = items.slice(0, limit).join(", ");
+  return items.length > limit ? `${shown} and ${items.length - limit} more (${items.length} in all)` : shown;
+}
+/**
+ * The details of a refusal from its first findings and the complete count,
+ * every text bounded and the whole JSON within the byte bound.
+ */
+export function boundedFindings(findings: readonly UpgradeFinding[], count: number): UpgradeFindings {
+  const items = findings.slice(0, UPGRADE_FINDINGS_LIMIT).map(finding => ({
+    table: cutText(finding.table, UPGRADE_DETAILS_LIMITS.table), id: escapeDisplay(finding.id, 200) ?? "", problem: cutText(finding.problem, UPGRADE_DETAILS_LIMITS.problem),
+  }));
+  const size = () => Buffer.byteLength(JSON.stringify({ findings: items, count, truncated: true }), "utf8");
+  while (items.length > 0 && size() > UPGRADE_DETAILS_LIMITS.bytes) items.pop();
+  return { findings: items, count, truncated: count > items.length };
+}
 
 /**
  * Every refusal or failure of the upgrade. `nextStep` names the operator's next
@@ -71,19 +105,26 @@ export class UpgradeError extends Error {
   }
 }
 
-/** Collects findings, keeping the first {@link UPGRADE_FINDINGS_LIMIT} and counting all. */
+/**
+ * Collects findings, keeping the first {@link UPGRADE_FINDINGS_LIMIT} and
+ * counting all; the refusal's details are bounded by {@link boundedFindings}.
+ */
 export class FindingList {
   private readonly items: UpgradeFinding[] = [];
   private total = 0;
   add(table: string, id: string, problem: string): void {
     this.total++;
-    if (this.items.length < UPGRADE_FINDINGS_LIMIT) this.items.push({ table, id: escapeDisplay(id, 200) ?? "", problem });
+    if (this.items.length < UPGRADE_FINDINGS_LIMIT) this.items.push({ table, id, problem });
   }
+  /** Counts `count` further findings that are not listed (a bounded query found more rows than it read). */
+  more(count: number): void { this.total += count; }
   get count(): number { return this.total; }
+  /** The bounded details of what was found. */
+  details(): UpgradeFindings { return boundedFindings(this.items, this.total); }
   /** Throws the refusal when anything was found. */
   raise(code: UpgradeErrorCode): void {
     if (this.total === 0) return;
-    throw new UpgradeError(code, "upgrade inspect", false, undefined, { findings: [...this.items], count: this.total, truncated: this.total > this.items.length });
+    throw new UpgradeError(code, "upgrade inspect", false, undefined, this.details());
   }
 }
 

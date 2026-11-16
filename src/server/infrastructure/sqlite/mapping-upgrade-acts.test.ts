@@ -20,8 +20,14 @@ import { hashFile } from "./backup-validation";
 import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { MAPPING_CLOCK_MAX, projectMappingChecksum, projectMappingMigration } from "./mapping-structure-migration";
 import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup, type UpgradeBackupSource } from "./upgrade-maintenance";
-import { canonicalJson, upgradePlanHash, upgradePlanPath, validateUpgradeProposal, type UpgradeAct, type UpgradePlan } from "./upgrade-plan";
-import { MAPPING_ACT_DOMAIN, normaliseMappingDecisions, proposeProjectMapping, type MappingReview } from "./mapping-upgrade-acts";
+import {
+  canonicalJson, FindingList, normaliseUpgradeDecisions, UPGRADE_DETAILS_LIMITS, upgradePlanHash, upgradePlanPath, validateUpgradeProposal, type UpgradeAct, type UpgradePlan,
+} from "./upgrade-plan";
+import {
+  applicationProjectName, deriveProjectName, MAPPING_ACT_DOMAIN, MAPPING_READ_LIMIT, MAPPING_STORED_COLUMNS, normaliseMappingDecisions, PROJECT_NAME_LIMIT, proposeProjectMapping,
+  type MappingReview,
+} from "./mapping-upgrade-acts";
+import { parseKnowledgeProjectSnapshot } from "../../modules/knowledge/project-transfer-schema";
 
 // Every test here needs target 51; the switch is restored after each one.
 const TARGET = 51;
@@ -170,7 +176,7 @@ const standard = () => world(w => {
 describe("project mapping: outcomes", () => {
   it("by default gives every registration and remote identity a new project of its own, reports links without applying them and leaves the rest untouched", async () => {
     const { paths, ids } = standard();
-    const links = () => read(paths, database => database.prepare("SELECT knowledge_project_id,quote(runtime_project_id) AS r,linked_at,unlinked_at FROM knowledge_project_runtime_links ORDER BY rowid").all());
+    const links = () => read(paths, database => exact(database).knowledge_project_runtime_links);
     const linksBefore = links(), lonelyBefore = read(paths, database => database.prepare("SELECT * FROM knowledge_projects WHERE id=?").get(ids.lonely));
     const inspection = inspect(paths);
     expect(inspection.decisions).toEqual({ mapping: { links: [], bindings: [], isolate: { registrations: [], remoteIdentities: [] } } });
@@ -182,7 +188,7 @@ describe("project mapping: outcomes", () => {
     expect(outcomeOf(inspection, ids.remote).outcome).toMatchObject({ basis: "created_project", created: true });
     expect(review(inspection).projects).toEqual([]);
     expect(review(inspection).untouchedProjects).toBe(2);
-    expect(inspection.acts!.join("\n")).toContain("not accepted (the registration does not join that project)");
+    expect(inspection.acts!.join("\n")).toContain("not accepted; the registration does not join that project in this plan");
     expect(inspection.acts!.join("\n")).toContain("Recorded history, not an approval");
     await apply(paths, inspection.planHash!);
     const after = parents(paths);
@@ -225,14 +231,14 @@ describe("project mapping: outcomes", () => {
       expect(files(paths), name).toEqual(before);
     }
     const inspection = inspect(paths, { links: [{ registrationId: ids.linked, projectId: ids.knowledge }] });
-    expect(outcomeOf(inspection, ids.linked).outcome).toEqual({ projectId: ids.knowledge, basis: "accepted_link", created: false });
+    expect(outcomeOf(inspection, ids.linked).outcome).toEqual({ projectId: ids.knowledge, basis: "accepted_link", created: false, existing: true });
     expect(outcomeOf(inspection, ids.other).outcome).toMatchObject({ basis: "created_project", created: true });
     const project = review(inspection).projects.find(entry => entry.id === ids.knowledge)!;
     const history = read(paths, database => database.prepare("SELECT count(*) FROM knowledge_history WHERE project_id=?").pluck().get(ids.knowledge));
     expect(project).toMatchObject({ name: "Linked knowledge", status: "active",
       inventory: { threads: 0, replies: 0, tasks: 1, memories: 0, attachments: 0, history, importBatches: 0 },
       registrations: [{ id: ids.linked, plan: true, journal: false, present: true }], remoteIdentities: [] });
-    expect(project.principals.knowledgeGrants.owner).toEqual({ active: 1, revoked: 0 });
+    expect(project.authorityRows.knowledgeGrants.owner).toEqual({ unrevoked: 1, revoked: 0 });
     expect(inspection.acts!.join("\n")).toContain("they are not a complete history");
     const result = await apply(paths, inspection.planHash!);
     expect(parents(paths).registrations[ids.linked]).toBe(ids.knowledge);
@@ -265,7 +271,7 @@ describe("project mapping: outcomes", () => {
       bindings: [{ remoteIdentityId: "diverging", registrationId: ids.first }],
       isolate: { registrations: [], remoteIdentities: [] },
     });
-    expect(outcomeOf(consistent, "diverging").outcome).toEqual({ projectId: ids.knowledge, basis: "accepted_binding", created: false });
+    expect(outcomeOf(consistent, "diverging").outcome).toEqual({ projectId: ids.knowledge, basis: "accepted_binding", created: false, existing: true });
     const bindings = (outcomeOf(consistent, "diverging") as MappingReview["remoteIdentities"][number]).bindings;
     expect(bindings).toEqual([
       { workerId: "worker-a", workerName: "Worker worker-a", workerStatus: "active", workerPrincipalStatus: "active", registrationId: ids.first, revoked: false, accepted: true },
@@ -422,7 +428,7 @@ describe("project mapping: stop conditions write no plan and change nothing", ()
         .run("blob", "/srv/blob", 5999, "node", "[]", "/", 1000, PAST, PAST);
     });
     const before = files(paths);
-    expect(await failure(() => inspect(paths))).toMatchObject({ code: "upgrade_mapping_malformed", details: { findings: [{ table: "projects", id: "<object>", problem: "ID is not bounded text" }] } });
+    expect(await failure(() => inspect(paths))).toMatchObject({ code: "upgrade_mapping_malformed", details: { findings: [{ table: "projects", id: "<blob>", problem: "id is blob, expected text" }] } });
     expect(files(paths)).toEqual(before);
   });
 
@@ -436,24 +442,57 @@ describe("project mapping: stop conditions write no plan and change nothing", ()
     const large = installation();
     tamper(large, database => {
       const insert = database.prepare("INSERT INTO remote_project_identities(id,name,source_remote,status) VALUES(?,?,?,'active')");
-      database.transaction(() => { for (let index = 0; index < 6000; index++) insert.run(`remote-${index}`, "n".repeat(1024), "origin"); })();
+      database.transaction(() => { for (let index = 0; index < 8000; index++) insert.run(`remote-${index}`, "n".repeat(1024), "origin"); })();
     });
     expect((await stops(large, "upgrade_plan_bounds")).findings).toEqual([{ table: "plan", id: "bytes", problem: expect.stringContaining("exceeds") }]);
   });
 });
 
 /**
- * Every value of every row, as SQLite quotes it (text, numbers and blobs
- * exactly), keyed by table and rowid.
+ * One stored value as its storage class and complete content: text and blobs
+ * as the hex of every byte (`CAST(x AS BLOB)` keeps them all, NUL included,
+ * where `quote()` stops text at the first NUL), integers in exact decimal (read
+ * as BigInt), reals as the hex of their IEEE 754 double, NULL as `null`.
  */
-function quoted(database: Database.Database): Record<string, Record<string, Record<string, string>>> {
+function cell(type: unknown, bytes: unknown, value: unknown): string {
+  if (type === "null") return "null";
+  if (type === "integer") return `integer:${String(value)}`;
+  if (type === "real") { const buffer = Buffer.alloc(8); buffer.writeDoubleBE(value as number); return `real:${buffer.toString("hex")}`; }
+  return `${String(type)}:${(bytes as Buffer).toString("hex")}`;
+}
+/** Every value of every row, exactly ({@link cell}), keyed by table and rowid. */
+function exact(database: Database.Database): Record<string, Record<string, Record<string, string>>> {
   const tables = database.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").pluck().all() as string[];
   return Object.fromEntries(tables.map(table => {
     const columns = (database.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map(column => column.name);
-    const rows = database.prepare(`SELECT rowid AS r,${columns.map(column => `quote("${column}")`).join(",")} FROM "${table}" ORDER BY rowid`).raw().all() as unknown[][];
-    return [table, Object.fromEntries(rows.map(row => [String(row[0]), Object.fromEntries(columns.map((column, index) => [column, String(row[index + 1])]))]))];
+    const rows = database.prepare(`SELECT rowid AS r,${columns.map(column => `typeof("${column}"),CAST("${column}" AS BLOB),"${column}"`).join(",")} FROM "${table}" ORDER BY rowid`)
+      .raw().safeIntegers(true).all() as unknown[][];
+    return [table, Object.fromEntries(rows.map(row => [String(row[0]), Object.fromEntries(columns.map((column, index) => [column, cell(row[1 + index * 3], row[2 + index * 3], row[3 + index * 3])]))]))];
   }));
 }
+/** The text or integer a {@link cell} holds (for reading `sqlite_sequence` back). */
+const plain = (value: string) => value.startsWith("integer:") ? Number(value.slice(8)) : Buffer.from(value.slice(value.indexOf(":") + 1), "hex").toString("utf8");
+
+describe("project mapping: the exact row comparator", () => {
+  it("tells apart values that differ only after an embedded NUL, in a blob, in a real or in storage class, where quote() does not", () => {
+    const database = new Database(":memory:");
+    try {
+      database.exec("CREATE TABLE t(x)");
+      const snapshot = (expression: string) => { database.exec(`DELETE FROM t; INSERT INTO t(rowid,x) VALUES(1,${expression})`); return exact(database); };
+      for (const [left, right] of [
+        ["'ab'||char(0)||'cd'", "'ab'||char(0)||'XY'"], ["X'000102'", "X'000103'"], ["0.30000000000000004", "0.3"], ["1", "1.0"], ["1", "'1'"], ["'1'", "X'31'"], ["NULL", "''"],
+        ["9007199254740993", "9007199254740992"],
+      ]) {
+        expect(snapshot(left), `${left} / ${right}`).not.toEqual(snapshot(right));
+        expect(snapshot(left), left).toEqual(snapshot(left));
+      }
+      // The comparator it replaces: quote() cuts text at the first NUL.
+      expect(database.prepare("SELECT quote('ab'||char(0)||'cd')=quote('ab'||char(0)||'XY')").pluck().get()).toBe(1);
+      expect(plain(snapshot("'a\u00e9'").t["1"].x)).toBe("a\u00e9");
+      expect(plain(snapshot("42").t["1"].x)).toBe(42);
+    } finally { database.close(); }
+  });
+});
 /**
  * The preservation allow-list: what an apply from schema 49 may change. Every
  * other table, row and value that existed before is byte-identical after.
@@ -482,12 +521,12 @@ describe("project mapping: preservation after apply", () => {
       w.remote("remote-a"); w.worker("worker-a"); w.bind("worker-a", "remote-a", linked); w.remote("remote-b"); w.bind("worker-a", "remote-b", plain, true);
       return { linked, plain, knowledge };
     });
-    const before = read(paths, quoted);
+    const before = read(paths, exact);
     const inspection = inspect(paths, { links: [{ registrationId: ids.linked, projectId: ids.knowledge }], bindings: [{ remoteIdentityId: "remote-a", registrationId: ids.linked }] });
     const created = (inspection.plan!.acts.filter(act => act.kind === "create_project").map(act => (act.payload as { projectId: string }).projectId));
     expect(created).toHaveLength(2);
     await apply(paths, inspection.planHash!);
-    const after = read(paths, quoted);
+    const after = read(paths, exact);
     expect(Object.keys(after).filter(table => !(table in before)).sort()).toEqual([...PRESERVATION.created].sort());
     for (const [table, rows] of Object.entries(before)) {
       const later = after[table];
@@ -507,7 +546,7 @@ describe("project mapping: preservation after apply", () => {
       expect(database.prepare("SELECT event_type FROM controller_audit_events WHERE rowid>?").pluck().all(Math.max(...Object.keys(before.controller_audit_events).map(Number)))).toEqual(["authentication.upgrade_applied"]);
       expect(database.prepare("SELECT version FROM schema_migrations WHERE version>49 ORDER BY version").pluck().all()).toEqual([50, 51]);
       const sequences = Object.fromEntries((database.prepare("SELECT name,seq FROM sqlite_sequence").all() as Array<{ name: string; seq: number }>).map(row => [row.name, row.seq]));
-      const old = new Map<string, number>(Object.values(before.sqlite_sequence).map(row => [row.name.slice(1, -1), Number(row.seq)]));
+      const old = new Map<string, number>(Object.values(before.sqlite_sequence).map(row => [plain(row.name) as string, plain(row.seq) as number]));
       for (const [name, seq] of old) expect(sequences[name], name).toBe(seq + ((PRESERVATION.sequences as Record<string, number>)[name] ?? 0));
       expect(sequences.project_mapping_journal).toBe(4);
       // Every registration and identity has a parent and non-zero stamps; one journal row per attach and map act.
@@ -540,7 +579,7 @@ describe("project mapping: the journal after a resume", () => {
     expect(kinds(inspection.plan!.acts)).toEqual(["attach_registration", "attach_registration", "map_remote_identity"]);
     for (const [id, project] of [[ids.linked, first.registrations[ids.linked]], [ids.plain, first.registrations[ids.plain]], [ids.remote, first.remoteIdentities[ids.remote]]]) {
       const entry = outcomeOf(inspection, id!);
-      expect(entry.outcome, id!).toEqual({ projectId: project, basis: "journal_reuse", created: false });
+      expect(entry.outcome, id!).toEqual({ projectId: project, basis: "journal_reuse", created: false, existing: true });
       expect(entry.nomination).toMatchObject({ projectId: project, basis: "created_project", used: true, reason: "used", recordedAt: expect.any(String), sequence: expect.any(Number) });
     }
     expect(review(inspection).projects.map(project => project.id).sort()).toEqual([first.registrations[ids.linked], first.registrations[ids.plain], first.remoteIdentities[ids.remote]].sort());
@@ -588,8 +627,8 @@ describe("project mapping: the journal after a resume", () => {
       database.prepare("INSERT INTO knowledge_tasks(id,project_id,title,description,status,priority,revision,created_by,created_at,updated_at) VALUES(?,?,'t','d','open','later',1,?,?,?)").run(randomUUID(), nominated, principal, PAST, PAST);
     });
     const inspection = inspect(paths, { links: [{ registrationId: newcomer, projectId: nominated }] });
-    expect(outcomeOf(inspection, ids.plain).outcome).toEqual({ projectId: nominated, basis: "journal_reuse", created: false });
-    expect(outcomeOf(inspection, newcomer).outcome).toEqual({ projectId: nominated, basis: "accepted_link", created: false });
+    expect(outcomeOf(inspection, ids.plain).outcome).toEqual({ projectId: nominated, basis: "journal_reuse", created: false, existing: true });
+    expect(outcomeOf(inspection, newcomer).outcome).toEqual({ projectId: nominated, basis: "accepted_link", created: false, existing: true });
     const project = review(inspection).projects.find(entry => entry.id === nominated)!;
     expect(project.inventory.tasks).toBe(1);
     expect(project.registrations).toEqual([
@@ -606,7 +645,7 @@ describe("project mapping: the journal after a resume", () => {
     expect(entry.outcome).toMatchObject({ basis: "created_project", created: true });
     expect(entry.nomination).toMatchObject({ projectId: fixture.ids.knowledge, basis: "accepted_link", used: false, reason: "accepted_basis" });
     const decided = inspect(fixture.paths, { links: [{ registrationId: fixture.ids.linked, projectId: fixture.ids.knowledge }] });
-    expect(outcomeOf(decided, fixture.ids.linked).outcome).toEqual({ projectId: fixture.ids.knowledge, basis: "accepted_link", created: false });
+    expect(outcomeOf(decided, fixture.ids.linked).outcome).toEqual({ projectId: fixture.ids.knowledge, basis: "accepted_link", created: false, existing: true });
     expect(outcomeOf(decided, fixture.ids.linked).nomination).toMatchObject({ reason: "accepted_basis" });
   });
 });
@@ -665,7 +704,7 @@ describe("project mapping: interrupted apply", () => {
     const decisions = (ids: Record<string, string>) => ({ links: [{ registrationId: ids.linked, projectId: ids.knowledge }] });
     const { paths, ids } = standard();
     const noted = inspect(paths, decisions(ids)).planHash!;
-    const before = read(paths, quoted);
+    const before = read(paths, exact);
     let journalInserts = 0;
     const prepare = Database.prototype.prepare;
     vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, source: string) {
@@ -676,7 +715,7 @@ describe("project mapping: interrupted apply", () => {
     expect(await failure(() => apply(paths, noted))).toMatchObject({ code: "upgrade_outcome_uncertain", nextStep: "auth fence resume", committed: false, state: "fenced" });
     expect(journalInserts).toBe(2);
     vi.restoreAllMocks();
-    const after = read(paths, quoted);
+    const after = read(paths, exact);
     expect({ ...after, security_checkpoint: undefined }).toEqual({ ...before, security_checkpoint: undefined });
     resume(paths);
     await apply(paths, inspect(paths, decisions(ids)).planHash!);
@@ -807,16 +846,61 @@ describe("project mapping: acts against step 51's triggers", () => {
     });
   });
 
-  it("rolls everything back when the clock is exhausted during apply", async () => {
+  /** The standard world applied and resumed, its clock then set to `value` (three attach and map acts follow). */
+  async function clockAt(value: number) {
     const { paths } = standard();
     await apply(paths, inspect(paths).planHash!);
     resume(paths);
-    tamper(paths, database => { database.prepare("UPDATE project_mapping_clock SET value=?").run(MAPPING_CLOCK_MAX - 1); });
+    tamper(paths, database => { database.prepare("UPDATE project_mapping_clock SET value=?").run(value); });
+    return paths;
+  }
+
+  it("refuses at inspect, with nothing written, a plan whose attach and map acts the clock cannot advance for; the last value that fits plans", async () => {
+    const exhausted = await clockAt(MAPPING_CLOCK_MAX - 2);
+    const before = files(exhausted);
+    const refusal = await failure(() => inspect(exhausted));
+    expect(refusal).toMatchObject({ code: "upgrade_mapping_clock", nextStep: "upgrade inspect", committed: false,
+      details: { count: 1, findings: [{ table: "project_mapping_clock", id: "1", problem: `the clock at ${MAPPING_CLOCK_MAX - 2} cannot advance 3 times (its maximum is ${MAPPING_CLOCK_MAX})` }] } });
+    expect(files(exhausted)).toEqual(before);
+    const fits = await clockAt(MAPPING_CLOCK_MAX - 3);
+    const inspection = inspect(fits);
+    expect(kinds(inspection.plan!.acts)).toEqual(["attach_registration", "attach_registration", "map_remote_identity"]);
+    await apply(fits, inspection.planHash!);
+    read(fits, database => expect(clock(database)).toBe(MAPPING_CLOCK_MAX));
+  });
+
+  it("refuses the same plan again at the pre-backup validation when only the clock moved since it was proposed", async () => {
+    const paths = await clockAt(MAPPING_CLOCK_MAX - 3);
+    const genuine = inspect(paths).plan!;
+    const fencePreflight = () => maintainSqliteSecurityFence(paths, { action: "inspect" }, HANDOFF, TARGET).preflight;
+    expect(fencePreflight()).toBe(genuine.base);
+    tamper(paths, database => { database.prepare("UPDATE project_mapping_clock SET value=?").run(MAPPING_CLOCK_MAX - 2); });
+    // The same acts and review under the new base: everything but the clock is what the proposal gives.
+    const payload: UpgradePlan = { ...genuine, base: fencePreflight() };
+    const hash = sha(canonicalJson(payload));
+    writeFileSync(planFile(paths), JSON.stringify({ payload, sha256: hash }), { mode: 0o600 });
+    const before = files(paths), calls: string[] = [];
+    expect(await failure(() => apply(paths, hash, backups(paths, calls)))).toMatchObject({ code: "upgrade_plan_unproposed", nextStep: "upgrade inspect", committed: false,
+      details: { findings: [{ table: "project_mapping_clock", problem: expect.stringContaining("cannot advance 3 times") }] } });
+    expect(calls).toEqual([]);
+    expect(files(paths)).toEqual(before);
+  });
+
+  it("rolls everything back when the clock is exhausted during the acts after both validations passed (the clock's CHECK is the last defence)", async () => {
+    const paths = await clockAt(MAPPING_CLOCK_MAX - 3);
     const inspection = inspect(paths);
-    expect(inspection.plan!.acts.length).toBeGreaterThan(1);
-    const before = read(paths, quoted);
+    const before = read(paths, exact);
+    // Fault injection: inside the transaction, just before the first act's clock advance, the clock jumps to its maximum.
+    const prepare = Database.prototype.prepare;
+    let advances = 0;
+    vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, source: string) {
+      if (source === "UPDATE project_mapping_clock SET value=value+1 WHERE singleton=1" && ++advances === 1) prepare.call(this, "UPDATE project_mapping_clock SET value=? WHERE singleton=1").run(MAPPING_CLOCK_MAX);
+      return prepare.call(this, source);
+    } as typeof prepare);
     expect(await failure(() => apply(paths, inspection.planHash!))).toMatchObject({ code: "upgrade_outcome_uncertain", committed: false, state: "fenced" });
-    expect({ ...read(paths, quoted), security_checkpoint: undefined }).toEqual({ ...before, security_checkpoint: undefined });
+    expect(advances).toBe(1);
+    vi.restoreAllMocks();
+    expect({ ...read(paths, exact), security_checkpoint: undefined }).toEqual({ ...before, security_checkpoint: undefined });
   });
 });
 
@@ -874,4 +958,602 @@ describe("project mapping: targets", () => {
     expect(await apply(paths, inspection.planHash!)).toMatchObject({ state: "current", schemaVersion: 51 });
     read(paths, database => { expect(journal(database)).toEqual([]); expect(clock(database)).toBe(0); });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Fix round: new destinations, names, wording, stored values, bounds, protections.
+
+/** A schema-51 database in memory, outside any owner, for probing the pass on states ownership or the tables would refuse. */
+function memory(): Database.Database {
+  const database = unmanagedFixtureDatabase(":memory:");
+  initializeSchema(database, undefined, current => { inspectSchema(current, TARGET); }, { target: TARGET });
+  database.pragma("foreign_keys = OFF");
+  return database;
+}
+const memoryRegistration = (database: Database.Database, id: string, name = id) => database.prepare(`INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
+  VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id, name, `/srv/${id}`, 6000 + (ports++ % 3000), "node", "[]", "/", 1000, PAST, PAST);
+const memoryProject = (database: Database.Database, id: string) => database.prepare("INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at) VALUES(?,?,'active',1,?,?)").run(id, `Project ${id}`, PAST, PAST);
+const journalRow = (database: Database.Database, kind: string, subject: string, incarnation: number, project: string, basis: string) => database.prepare(`INSERT INTO project_mapping_journal
+  (subject_kind,subject_id,subject_incarnation,project_id,basis,plan_hash,run_receipt,recorded_at) VALUES(?,?,?,?,?,?,?,?)`).run(kind, subject, incarnation, project, basis, "a".repeat(64), "00000000-0000-4000-8000-000000000000", PAST);
+const proposeAt51 = (database: Database.Database, decisions: Record<string, unknown> = {}) => proposeProjectMapping(database, { schemaVersion: TARGET, source: TARGET, target: TARGET }, normaliseMappingDecisions(decisions), null, true);
+const incarnationOf = (database: Database.Database, table: string, id: string) => database.prepare(`SELECT incarnation FROM ${table} WHERE id=?`).pluck().get(id) as number;
+
+describe("project mapping: subjects that join a project created in this plan", () => {
+  /** One unlinked registration A and identity I bound to it (and, when asked, a second identity J bound to it). */
+  const bound = (second = false) => world(w => {
+    const a = w.register("A");
+    w.worker("worker-a"); w.remote("I"); w.bind("worker-a", "I", a);
+    if (second) { w.remote("J"); w.bind("worker-a", "J", a); }
+    return { a };
+  });
+  const newProject = (inspection: ReturnType<typeof inspect>, id: string) => review(inspection).newProjects.find(entry => entry.id === id)!;
+
+  for (const [name, isolate] of [["an unlinked registration", false], ["an isolated registration", true]] as const) {
+    it(`maps an identity whose binding to ${name} is accepted to that registration's new project, and shows the project as new with both joiners`, async () => {
+      const { paths, ids } = bound();
+      const inspection = inspect(paths, { bindings: [{ remoteIdentityId: "I", registrationId: ids.a }], ...(isolate ? { isolate: { registrations: [ids.a] } } : {}) });
+      const registration = outcomeOf(inspection, ids.a).outcome, identity = outcomeOf(inspection, "I").outcome;
+      expect(registration).toMatchObject({ basis: "created_project", created: true, existing: false });
+      expect(identity).toEqual({ projectId: registration.projectId, basis: "accepted_binding", created: false, existing: false });
+      expect(review(inspection).projects).toEqual([]);
+      expect(review(inspection).newProjects).toEqual([{ id: registration.projectId, name: "A", naming: "copied", sourceLength: 1, createdFor: { kind: "registration", id: ids.a },
+        registrations: [ids.a], remoteIdentities: ["I"] }]);
+      expect(kinds(inspection.plan!.acts)).toEqual(["create_project", "attach_registration", "map_remote_identity"]);
+      const text = inspection.acts!.join("\n");
+      expect(text).toContain(`Map remote identity I "Remote I" (active) to new project ${registration.projectId} (created in this plan for registration ${ids.a}): its accepted worker bindings.`);
+      expect(text).toContain(`Joined in this plan by registration ${ids.a}, remote identity I.`);
+      expect(text).toContain("New project: no Knowledge content and no stored grants or role bindings.");
+      expect(text).not.toContain("Existing project");
+      const result = await apply(paths, inspection.planHash!);
+      expect(parents(paths)).toEqual({ registrations: { [ids.a]: registration.projectId }, remoteIdentities: { I: registration.projectId } });
+      read(paths, database => {
+        expect(journal(database).map(row => [row.subject_id, row.project_id, row.basis, row.plan_hash])).toEqual([
+          [ids.a, registration.projectId, "created_project", result.planHash], ["I", registration.projectId, "accepted_binding", result.planHash]]);
+        expect(database.prepare("SELECT name FROM knowledge_projects WHERE id=?").pluck().get(registration.projectId)).toBe("A");
+      });
+    });
+  }
+
+  it("maps two identities that accept bindings to one registration to its one new project, listing every joiner", async () => {
+    const { paths, ids } = bound(true);
+    const inspection = inspect(paths, { bindings: [{ remoteIdentityId: "I", registrationId: ids.a }, { remoteIdentityId: "J", registrationId: ids.a }] });
+    const destination = outcomeOf(inspection, ids.a).outcome.projectId;
+    for (const id of ["I", "J"]) expect(outcomeOf(inspection, id).outcome).toEqual({ projectId: destination, basis: "accepted_binding", created: false, existing: false });
+    expect(newProject(inspection, destination)).toMatchObject({ createdFor: { kind: "registration", id: ids.a }, registrations: [ids.a], remoteIdentities: ["I", "J"] });
+    expect(review(inspection).newProjects).toHaveLength(1);
+    expect(inspection.acts!.join("\n")).toContain(`Joined in this plan by registration ${ids.a}, remote identity I, remote identity J.`);
+    await apply(paths, inspection.planHash!);
+    expect(new Set([...Object.values(parents(paths).registrations), ...Object.values(parents(paths).remoteIdentities)])).toEqual(new Set([destination]));
+  });
+
+  it("maps an identity that accepts bindings to two registrations reaching one existing project (an accepted link and a journal nomination), with several joiners", async () => {
+    // The standard world and a second worker (one binding row per worker and identity).
+    const { paths, ids } = world(w => {
+      const linked = w.register("linked"), plain = w.register("plain");
+      const knowledge = w.project("Linked knowledge"), lonely = w.project("Lonely knowledge");
+      w.link(knowledge, linked);
+      w.remote("remote-a"); w.worker("worker-a"); w.bind("worker-a", "remote-a", linked); w.worker("worker-b");
+      return { linked, plain, knowledge, lonely };
+    });
+    await apply(paths, inspect(paths).planHash!);
+    const nominated = parents(paths).registrations[ids.plain]!;
+    resume(paths);
+    const newcomer = randomUUID();
+    tamper(paths, database => {
+      database.prepare("INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .run(newcomer, "newcomer", `${SECRET_PATH}/newcomer`, 5997, "node", "[]", "/", 1000, PAST, PAST);
+      database.prepare("INSERT INTO knowledge_project_runtime_links(knowledge_project_id,runtime_project_id,linked_at,unlinked_at) VALUES(?,?,?,NULL)").run(nominated, newcomer, PAST);
+      database.prepare("INSERT INTO remote_project_identities(id,name,source_remote,status) VALUES('remote-b','Remote remote-b','origin','active')").run();
+      for (const [worker, registration] of [["worker-a", ids.plain], ["worker-b", newcomer]]) {
+        database.prepare("INSERT INTO remote_worker_project_grants(worker_id,project_id,local_project_id,preset_ids_json,revoked_at) VALUES(?,'remote-b',?,'[]',NULL)").run(worker, registration);
+      }
+    });
+    const inspection = inspect(paths, { links: [{ registrationId: newcomer, projectId: nominated }],
+      bindings: [{ remoteIdentityId: "remote-b", registrationId: ids.plain }, { remoteIdentityId: "remote-b", registrationId: newcomer }] });
+    expect(outcomeOf(inspection, ids.plain).outcome).toEqual({ projectId: nominated, basis: "journal_reuse", created: false, existing: true });
+    expect(outcomeOf(inspection, newcomer).outcome).toEqual({ projectId: nominated, basis: "accepted_link", created: false, existing: true });
+    expect(outcomeOf(inspection, "remote-b").outcome).toEqual({ projectId: nominated, basis: "accepted_binding", created: false, existing: true });
+    const project = review(inspection).projects.find(entry => entry.id === nominated)!;
+    expect(project.registrations).toEqual([{ id: ids.plain, plan: true, journal: true, present: true }, { id: newcomer, plan: true, journal: false, present: true }].sort((a, b) => (a.id < b.id ? -1 : 1)));
+    expect(project.remoteIdentities).toEqual([{ id: "remote-b", plan: true, journal: false, present: true }]);
+    expect(review(inspection).newProjects.map(entry => entry.id)).not.toContain(nominated);
+    expect(inspection.acts!.join("\n")).toContain(`Map remote identity remote-b "Remote remote-b" (active) to existing project ${nominated}: its accepted worker bindings.`);
+    await apply(paths, inspection.planHash!);
+    expect(parents(paths).remoteIdentities["remote-b"]).toBe(nominated);
+  });
+
+  it("maps an identity whose only binding is revoked when that binding is accepted", async () => {
+    const { paths, ids } = world(w => {
+      const a = w.register("A"), knowledge = w.project("Knowledge");
+      w.link(knowledge, a);
+      w.worker("worker-r", "revoked"); w.remote("R"); w.bind("worker-r", "R", a, true);
+      return { a, knowledge };
+    });
+    const inspection = inspect(paths, { links: [{ registrationId: ids.a, projectId: ids.knowledge }], bindings: [{ remoteIdentityId: "R", registrationId: ids.a }] });
+    expect(outcomeOf(inspection, "R").outcome).toEqual({ projectId: ids.knowledge, basis: "accepted_binding", created: false, existing: true });
+    expect((outcomeOf(inspection, "R") as MappingReview["remoteIdentities"][number]).bindings).toMatchObject([{ revoked: true, accepted: true }]);
+    await apply(paths, inspection.planHash!);
+    expect(parents(paths).remoteIdentities.R).toBe(ids.knowledge);
+    read(paths, database => expect(database.prepare("SELECT revoked_at FROM remote_worker_project_grants").pluck().get()).toBe(PAST));
+  });
+});
+
+describe("project mapping: names of created projects", () => {
+  const surrogate = "\u{1F600}";
+  const CASES: Array<[string, string, string, string]> = [
+    ["120 characters, copied", "a".repeat(120), "a".repeat(120), "copied"],
+    ["121 characters, shortened", "b".repeat(121), "b".repeat(120), "shortened"],
+    ["1024 characters, shortened", "c".repeat(1024), "c".repeat(120), "shortened"],
+    ["a surrogate pair across the cut, which is not split", `${"d".repeat(119)}${surrogate}tail`, "d".repeat(119), "shortened"],
+    ["a surrogate pair ending at the cut, which is kept", `${"e".repeat(118)}${surrogate}tail`, `${"e".repeat(118)}${surrogate}`, "shortened"],
+    ["surrounding whitespace, trimmed", "  padded\t\n", "padded", "trimmed"],
+    ["whitespace that the cut exposes, trimmed again", `f${" ".repeat(130)}g`, "f", "shortened"],
+  ];
+
+  it("derives names the application could create, deterministically, from the subject's name alone", () => {
+    for (const [label, source, expected, naming] of CASES) {
+      expect(deriveProjectName("registration", "r-1", source), label).toEqual({ name: expected, naming });
+      expect(applicationProjectName(expected), label).toBe(true);
+    }
+    expect(deriveProjectName("registration", "r-1", "")).toEqual({ name: "Registration r-1", naming: "replaced" });
+    expect(deriveProjectName("remote_identity", "i-1", " 　\t")).toEqual({ name: "Remote identity i-1", naming: "replaced" });
+    const longId = "x".repeat(160);
+    expect(deriveProjectName("remote_identity", longId, "")).toEqual({ name: `Remote identity ${"x".repeat(PROJECT_NAME_LIMIT - 16)}`, naming: "replaced" });
+    for (const value of ["", " a", "a ", "x".repeat(121), 7, null]) expect(applicationProjectName(value), String(value)).toBe(false);
+  });
+
+  it("creates projects whose names satisfy the application's rule and round-trip through the snapshot schema; the review says how each was derived", async () => {
+    const subjects: Array<[string, string, string]> = [...CASES.map(([, source, expected, naming]) => [source, expected, naming] as [string, string, string]), ["", "", "replaced"], ["   ", "", "replaced"]];
+    const { paths, ids } = world(w => Object.fromEntries(subjects.map((_entry, index) => [`s${index}`, w.register(`placeholder-${index}`)])));
+    tamper(paths, database => { subjects.forEach(([source], index) => { database.prepare("UPDATE projects SET name=? WHERE id=?").run(source, ids[`s${index}`]); }); });
+    tamper(paths, database => { database.prepare("INSERT INTO remote_project_identities(id,name,source_remote,status) VALUES('nameless','','origin','active')").run(); });
+    const inspection = inspect(paths);
+    const expectedOf = (index: number) => subjects[index][1] || `Registration ${ids[`s${index}`]}`;
+    subjects.forEach(([source, , naming], index) => {
+      const outcome = outcomeOf(inspection, ids[`s${index}`]).outcome;
+      const entry = review(inspection).newProjects.find(project => project.id === outcome.projectId)!;
+      expect(entry, String(index)).toMatchObject({ naming, sourceLength: source.length, createdFor: { kind: "registration", id: ids[`s${index}`] } });
+      expect((inspection.plan!.acts.find(act => act.kind === "create_project" && (act.payload as { projectId: string }).projectId === outcome.projectId)!.payload as { name: string }).name, String(index)).toBe(expectedOf(index));
+    });
+    const text = inspection.acts!.join("\n");
+    expect(text).toContain("its name trimmed and shortened from 1024 to 120 characters");
+    expect(text).toContain("its name replaced, since the registration's name is empty after trimming");
+    expect(text).toContain("its name replaced, since the remote identity's name is empty after trimming");
+    expect(text).toContain("its name without the surrounding whitespace");
+    await apply(paths, inspection.planHash!);
+    read(paths, database => {
+      const after = parents(paths);
+      subjects.forEach((_entry, index) => {
+        const row = database.prepare("SELECT id,name,status,revision,created_at,updated_at FROM knowledge_projects WHERE id=?").get(after.registrations[ids[`s${index}`]]) as Record<string, unknown>;
+        expect(row.name, String(index)).toBe(expectedOf(index));
+        expect(applicationProjectName(row.name)).toBe(true);
+        const snapshot = parseKnowledgeProjectSnapshot({ project: row, threads: [], replies: [], tasks: [], memories: [], relations: [], history: [], attachments: [], importSources: [], requiredPrincipals: [] });
+        expect(snapshot.project).toEqual(row);
+      });
+      expect(database.prepare("SELECT name FROM knowledge_projects WHERE id=?").pluck().get(after.remoteIdentities.nameless)).toBe("Remote identity nameless");
+    });
+  });
+
+  it("validates the name again in the act's payload and at execution", () => {
+    const create = MAPPING_ACT_DOMAIN.kinds.find(entry => entry.kind === "create_project")!;
+    for (const name of ["", " padded", "x".repeat(121)]) expect(create.payload.safeParse({ projectId: randomUUID(), name }).success, name).toBe(false);
+    expect(create.payload.safeParse({ projectId: randomUUID(), name: "x".repeat(120) }).success).toBe(true);
+    const database = memory();
+    try {
+      const context = { source: TARGET, target: TARGET, planHash: "a".repeat(64), receipt: randomUUID(), at: PAST };
+      database.exec("BEGIN");
+      expect(() => create.execute(database, { projectId: randomUUID(), name: "x".repeat(121) }, context)).toThrow(/create_project/);
+      expect(() => create.execute(database, { projectId: randomUUID(), name: " padded" }, context)).toThrow(/create_project/);
+      expect(database.prepare("SELECT count(*) FROM knowledge_projects").pluck().get()).toBe(0);
+      database.exec("ROLLBACK");
+    } finally { database.close(); }
+  });
+});
+
+describe("project mapping: the operator's lines state only what is true", () => {
+  it("does not say a registration avoids the project its link names when a journal nomination selects that project", async () => {
+    const { paths, ids } = standard();
+    await apply(paths, inspect(paths).planHash!);
+    const created = parents(paths).registrations[ids.plain]!;
+    resume(paths);
+    tamper(paths, database => { database.prepare("INSERT INTO knowledge_project_runtime_links(knowledge_project_id,runtime_project_id,linked_at,unlinked_at) VALUES(?,?,?,NULL)").run(created, ids.plain, PAST); });
+    const inspection = inspect(paths);
+    const entry = outcomeOf(inspection, ids.plain) as MappingReview["registrations"][number];
+    expect(entry.outcome).toEqual({ projectId: created, basis: "journal_reuse", created: false, existing: true });
+    expect(entry.link).toMatchObject({ projectId: created, accepted: false });
+    const lines = inspection.acts!.filter(line => line.includes(`Existing link to project ${created}`));
+    expect(lines).toEqual([`  Existing link to project ${created} since ${PAST}: not accepted as the basis; the registration joins that project anyway, by another basis: the project the journal nominates.`]);
+    expect(inspection.acts!.join("\n")).not.toContain("does not join that project");
+    // The linked registration's own link still is not followed and says so.
+    expect(inspection.acts!.join("\n")).toContain("not accepted; the registration does not join that project in this plan");
+  });
+
+  it("says when a nomination not used as the basis still names the project the subject joins", async () => {
+    const fixture = standard();
+    await apply(fixture.paths, inspect(fixture.paths, { links: [{ registrationId: fixture.ids.linked, projectId: fixture.ids.knowledge }] }).planHash!);
+    resume(fixture.paths);
+    const decided = inspect(fixture.paths, { links: [{ registrationId: fixture.ids.linked, projectId: fixture.ids.knowledge }] });
+    const line = decided.acts!.find(text => text.startsWith("  Journal nomination") && text.includes(`project ${fixture.ids.knowledge}`))!;
+    expect(line).toContain("not used: an acceptance of a pre-existing project needs the decision again.");
+    expect(line).toContain("The subject joins that project anyway, by another basis: its existing link, accepted by the operator.");
+    expect(decided.acts!.join("\n")).toContain(`Existing link to project ${fixture.ids.knowledge} since ${PAST}: accepted as the basis; the registration joins that project.`);
+  });
+
+  it("words the authority counts as stored rows by their own revocation fields", () => {
+    const { paths, ids } = standard();
+    const inspection = inspect(paths, { links: [{ registrationId: ids.linked, projectId: ids.knowledge }] });
+    expect(inspection.acts!.join("\n")).toContain("row counts, not distinct principals and not effective access; a revoked principal or an expired credential is not taken into account.");
+    expect(inspection.acts!.join("\n")).toContain("Knowledge grants: owner 1 unrevoked/0 revoked");
+  });
+});
+
+describe("project mapping: storage classes of every value the pass reads", () => {
+  it("lists every column it reads", () => {
+    const listed = MAPPING_STORED_COLUMNS.flatMap(entry => entry.columns.map(([column, rule]) => `${entry.table}.${column}:${rule}`));
+    expect(new Set(listed).size).toBe(listed.length);
+    for (const required of ["knowledge_project_runtime_links.linked_at:text", "remote_worker_project_grants.revoked_at:text_or_null", "projects.incarnation:integer",
+      "project_mapping_journal.recorded_at:text", "project_mapping_clock.value:integer", "remote_principals.kind:text", "principal_credentials.status:text"]) expect(listed).toContain(required);
+  });
+
+  /** Every listed column, one corrupted value at a time, in a table recreated without constraints (the pass itself, at 51). */
+  const BAD: Readonly<Record<string, readonly string[]>> = { text: ["X'00ff'", "7", "1.5"], text_or_null: ["X'00ff'", "7"], integer: ["X'00ff'", "'1'", "1.0"] };
+  const CORRUPTIONS = MAPPING_STORED_COLUMNS.flatMap(entry => entry.columns.flatMap(([column, rule]) => BAD[rule].map(value => [entry.table, column, rule, value] as const)));
+  it.each(CORRUPTIONS)("refuses %s.%s (%s) holding %s", (table, column, rule, value) => {
+    const database = memory();
+    try {
+      const columns = (database.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map(entry => entry.name);
+      const rules = new Map(MAPPING_STORED_COLUMNS.filter(entry => entry.table === table).flatMap(entry => entry.columns.map(([name, kind]) => [name, kind] as const)));
+      database.exec(`DROP TABLE "${table}"`);
+      database.exec(`CREATE TABLE "${table}"(${columns.map(name => `"${name}"`).join(",")})`);
+      const good = (name: string) => rules.get(name) === "integer" ? (name === "singleton" ? "1" : "0") : rules.get(name) === "text" ? "'x'" : "NULL";
+      database.exec(`INSERT INTO "${table}"(${columns.map(name => `"${name}"`).join(",")}) VALUES(${columns.map(name => name === column ? value : good(name)).join(",")})`);
+      const type = database.prepare(`SELECT typeof("${column}") FROM "${table}"`).pluck().get() as string;
+      expect(rule === "text_or_null" ? ["text", "null"] : [rule]).not.toContain(type);
+      let refusal: { code?: string; details?: { findings: Array<{ table: string; problem: string }> } } | undefined;
+      try { proposeAt51(database); } catch (error) { refusal = error as typeof refusal; }
+      expect(refusal?.code).toBe("upgrade_mapping_malformed");
+      expect(refusal!.details!.findings).toEqual([expect.objectContaining({ table, problem: `${column} is ${type}, expected ${rule === "text_or_null" ? "text or null" : rule}` })]);
+    } finally { database.close(); }
+  });
+
+  /** Through inspect, on the tables a product-built world fills: a BLOB written by raw SQL. */
+  const filled = () => world(w => {
+    const linked = w.register("linked"), knowledge = w.project("Knowledge");
+    w.link(knowledge, linked); w.task(knowledge); w.store.devVault.commit(linked, 0, CIPHERTEXT);
+    w.remote("remote-a"); w.worker("worker-a"); w.bind("worker-a", "remote-a", linked);
+    return { linked, knowledge };
+  });
+  const INSPECTED = MAPPING_STORED_COLUMNS.filter(entry => !entry.mapped && ["projects", "remote_project_identities", "knowledge_projects", "knowledge_project_runtime_links",
+    "remote_worker_project_grants", "remote_workers", "remote_principals", "dev_environment_vaults", "knowledge_history", "knowledge_project_grants", "principal_credentials", "knowledge_tasks"].includes(entry.table))
+    .flatMap(entry => entry.columns.filter(([, , onlyMapped]) => !onlyMapped).map(([column]) => [entry.table, column] as const));
+  it.each(INSPECTED)("refuses a BLOB in %s.%s through inspect, with no plan written and nothing changed", async (table, column) => {
+    const { paths } = filled();
+    try {
+      tamper(paths, database => { database.pragma("foreign_keys = OFF"); database.prepare(`UPDATE "${table}" SET "${column}"=X'00ff' WHERE rowid=(SELECT min(rowid) FROM "${table}")`).run(); });
+    } catch (error) {
+      // A CHECK of the table refuses the value: it cannot be stored, so there is nothing to read.
+      expect((error as { code?: string }).code, `${table}.${column}`).toMatch(/^SQLITE_CONSTRAINT/);
+      return;
+    }
+    const before = files(paths);
+    const refusal = await failure(() => inspect(paths));
+    expect(files(paths)).toEqual(before);
+    expect(existsSync(planFile(paths))).toBe(false);
+    if (refusal.code === "upgrade_mapping_malformed") {
+      expect(refusal.details!.findings.map(entry => entry.problem), `${table}.${column}`).toContain(`${column} is blob, expected ${MAPPING_STORED_COLUMNS.find(entry => entry.table === table)!.columns.find(([name]) => name === column)![1] === "text_or_null" ? "text or null" : "text"}`);
+      return;
+    }
+    // Ownership's validation (foreign keys) refused the database first, generically; the pass refuses the same value itself.
+    expect(refusal.name, `${table}.${column}`).not.toBe("UpgradeError");
+    const database = unmanagedFixtureDatabase(paths.databasePath, { readonly: true });
+    try {
+      const direct = await failure(() => proposeProjectMapping(database, { schemaVersion: 49, source: 49, target: TARGET }, normaliseMappingDecisions({}), null, true));
+      expect(direct.code).toBe("upgrade_mapping_malformed");
+      expect(direct.details!.findings.map(entry => entry.problem).join(";")).toContain(`${column} is blob`);
+    } finally { database.close(); }
+  });
+
+  it("refuses the reported cases: an accepted link with a BLOB linked_at, and a binding with a BLOB revoked_at", async () => {
+    for (const [table, column, problem] of [["knowledge_project_runtime_links", "linked_at", "linked_at is blob, expected text"], ["remote_worker_project_grants", "revoked_at", "revoked_at is blob, expected text or null"]] as const) {
+      const { paths, ids } = filled();
+      tamper(paths, database => { database.prepare(`UPDATE "${table}" SET "${column}"=X'00ff'`).run(); });
+      const before = files(paths);
+      expect(await failure(() => inspect(paths, { links: [{ registrationId: ids.linked, projectId: ids.knowledge }], bindings: [{ remoteIdentityId: "remote-a", registrationId: ids.linked }] })))
+        .toMatchObject({ code: "upgrade_mapping_malformed", details: { count: 1, findings: [{ table, problem }] } });
+      expect(files(paths)).toEqual(before);
+    }
+  });
+});
+
+describe("project mapping: bounded refusal details", () => {
+  it("bounds a finding's text, samples embedded lists with the complete count, and bounds the serialised details", () => {
+    const list = new FindingList();
+    list.add("t".repeat(500), "id", "p".repeat(10_000));
+    const [finding] = list.details().findings;
+    expect([...finding.table]).toHaveLength(UPGRADE_DETAILS_LIMITS.table + 1);
+    expect([...finding.problem]).toHaveLength(UPGRADE_DETAILS_LIMITS.problem + 1);
+    expect(finding.problem.endsWith("…")).toBe(true);
+    const database = memory();
+    try {
+      memoryRegistration(database, "A"); memoryProject(database, "P");
+      database.transaction(() => { for (let index = 0; index < 20_000; index++) journalRow(database, "registration", "A", 1, "P", "created_project"); })();
+      const refusal = (() => { try { proposeAt51(database); } catch (error) { return error as { code: string; details: { findings: Array<{ problem: string }> } }; } throw new Error("expected a refusal"); })();
+      expect(refusal.code).toBe("upgrade_mapping_journal");
+      expect(refusal.details.findings[0].problem).toBe("created by 20000 entries (1, 2, 3, 4, 5 and 19995 more (20000 in all))");
+      expect(Buffer.byteLength(JSON.stringify(refusal.details))).toBeLessThan(1024);
+    } finally { database.close(); }
+  }, 30_000);
+
+  it("cuts the findings of one refusal to its byte bound, keeping the complete count", async () => {
+    const paths = installation();
+    const id = (index: number) => `${"\u0001".repeat(150)}${index}`;
+    tamper(paths, database => {
+      for (let index = 0; index < 150; index++) {
+        database.prepare("INSERT INTO remote_project_identities(id,name,source_remote,status) VALUES(?,'r','origin','active')").run(id(index));
+        database.prepare("INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at) VALUES(?,'k','active',1,?,?)").run(id(index), PAST, PAST);
+      }
+    });
+    const before = files(paths);
+    const refusal = await failure(() => inspect(paths));
+    expect(refusal).toMatchObject({ code: "upgrade_mapping_collision", details: { count: 150, truncated: true } });
+    expect(refusal.details!.findings.length).toBeGreaterThan(0);
+    expect(refusal.details!.findings.length).toBeLessThan(100);
+    expect(Buffer.byteLength(JSON.stringify(refusal.details), "utf8")).toBeLessThanOrEqual(UPGRADE_DETAILS_LIMITS.bytes);
+    expect(files(paths)).toEqual(before);
+  });
+});
+
+describe("project mapping: explicit null decisions", () => {
+  it("refuses null before any lock, and takes undefined as no decisions", async () => {
+    const paths = installation(w => { w.register("only"); });
+    const before = files(paths);
+    expect(await failure(() => inspect(paths, null))).toMatchObject({ code: "upgrade_decisions_invalid", nextStep: "upgrade inspect" });
+    expect(() => normaliseUpgradeDecisions(null, TARGET)).toThrowError(expect.objectContaining({ code: "upgrade_decisions_invalid" }));
+    expect(existsSync(paths.controllerLockPath)).toBe(false);
+    expect(files(paths)).toEqual(before);
+    expect(normaliseUpgradeDecisions(undefined, TARGET)).toEqual({ mapping: { links: [], bindings: [], isolate: { registrations: [], remoteIdentities: [] } } });
+    expect(inspect(paths, undefined).decisions).toEqual(inspect(paths, {}).decisions);
+  });
+});
+
+describe("project mapping: the protections, isolated", () => {
+  /** A plan file with a consistent envelope hash, as an operator could hand-write it. */
+  const writePlan = (paths: AppPaths, payload: unknown) => {
+    const hash = sha(canonicalJson(payload));
+    writeFileSync(planFile(paths), JSON.stringify({ payload, sha256: hash }), { mode: 0o600 });
+    return hash;
+  };
+
+  it("validates the whole plan inside the transaction after the structural steps and before the first act", async () => {
+    const { paths, ids } = standard();
+    const inspection = inspect(paths, { links: [{ registrationId: ids.linked, projectId: ids.knowledge }] });
+    const events: Array<[string, boolean]> = [];
+    const prepare = Database.prototype.prepare, exec = Database.prototype.exec;
+    const tag = (source: string) => source.includes("CREATE TABLE project_mapping_clock") ? "step 51"
+      : source.startsWith("SELECT id,name,NULL AS status,NULL AS parent") ? "proposal at 49"
+        : source.startsWith("SELECT id,name,NULL AS status,parent_project_id AS parent") ? "proposal at 51"
+          : source.startsWith("SELECT 1 FROM knowledge_projects WHERE id=? UNION ALL") ? "first act" : undefined;
+    vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, source: string) {
+      const name = tag(source); if (name) events.push([name, this.inTransaction]);
+      return prepare.call(this, source);
+    } as typeof prepare);
+    vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, source: string) {
+      const name = tag(source); if (name) events.push([name, this.inTransaction]);
+      return exec.call(this, source);
+    } as typeof exec);
+    await apply(paths, inspection.planHash!);
+    vi.restoreAllMocks();
+    const order = events.filter(([name], index) => events.findIndex(([other]) => other === name) === index);
+    expect(order).toEqual([["proposal at 49", false], ["step 51", true], ["proposal at 51", true], ["first act", true]]);
+  });
+
+  it("aborts the transaction with nothing applied when the database differs between the two validations", async () => {
+    const { paths, ids } = standard();
+    const inspection = inspect(paths, { links: [{ registrationId: ids.linked, projectId: ids.knowledge }] });
+    const before = read(paths, exact);
+    const prepare = Database.prototype.prepare;
+    let acted = false, changed = false;
+    vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, source: string) {
+      // After the structural steps, just before the in-transaction proposal reads: the accepted link's time moves.
+      if (!changed && this.inTransaction && source.startsWith("SELECT id,name,NULL AS status,parent_project_id AS parent")) {
+        changed = true;
+        prepare.call(this, "UPDATE knowledge_project_runtime_links SET linked_at='2025-04-01T10:00:00.000Z'").run();
+      }
+      if (source.startsWith("SELECT 1 FROM knowledge_projects WHERE id=? UNION ALL")) acted = true;
+      return prepare.call(this, source);
+    } as typeof prepare);
+    expect(await failure(() => apply(paths, inspection.planHash!))).toMatchObject({ code: "upgrade_outcome_uncertain", committed: false, state: "fenced" });
+    vi.restoreAllMocks();
+    expect(changed).toBe(true);
+    expect(acted).toBe(false);
+    expect({ ...read(paths, exact), security_checkpoint: undefined }).toEqual({ ...before, security_checkpoint: undefined });
+  });
+
+  /** The review rewritten to agree with the plan's acts: what a careful forger would hand-write so that the plan reads as one coherent whole. */
+  function coherent(plan: UpgradePlan): UpgradePlan {
+    const review = plan.review.mapping as MappingReview;
+    const payloads = (kind: string) => plan.acts.filter(act => act.kind === kind).map(act => act.payload as Record<string, string>);
+    const creates = new Map(payloads("create_project").map(payload => [payload.projectId, payload.name]));
+    const attaches = new Map(payloads("attach_registration").map(payload => [payload.registrationId, payload]));
+    const maps = new Map(payloads("map_remote_identity").map(payload => [payload.remoteIdentityId, payload]));
+    const outcome = (payload: Record<string, string>) => ({ projectId: payload.projectId, basis: payload.basis, created: payload.basis === "created_project" && creates.has(payload.projectId), existing: !creates.has(payload.projectId) });
+    const sorted = (values: string[]) => [...values].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const joined = (id: string) => ({ registrations: sorted([...attaches.values()].filter(payload => payload.projectId === id).map(payload => payload.registrationId)),
+      remoteIdentities: sorted([...maps.values()].filter(payload => payload.projectId === id).map(payload => payload.remoteIdentityId)) });
+    const newProjects = sorted([...creates.keys()]).map(id => {
+      const own = [...attaches.values()].find(payload => payload.projectId === id && payload.basis === "created_project");
+      const ownIdentity = [...maps.values()].find(payload => payload.projectId === id && payload.basis === "created_project");
+      const createdFor = own ? { kind: "registration" as const, id: own.registrationId } : ownIdentity ? { kind: "remote_identity" as const, id: ownIdentity.remoteIdentityId } : { kind: "registration" as const, id: review.registrations[0].id };
+      return { id, name: creates.get(id)!, naming: "copied" as const, sourceLength: creates.get(id)!.length, createdFor, ...joined(id) };
+    });
+    const zero = { owner: { unrevoked: 0, revoked: 0 }, human: { unrevoked: 0, revoked: 0 }, agent: { unrevoked: 0, revoked: 0 }, worker: { unrevoked: 0, revoked: 0 }, installation: { unrevoked: 0, revoked: 0 } };
+    const known = new Map(review.projects.map(project => [project.id, project]));
+    const members = (values: string[]) => values.map(id => ({ id, plan: true, journal: false, present: true }));
+    const projects = sorted([...new Set([...attaches.values(), ...maps.values()].map(payload => payload.projectId).filter(id => !creates.has(id)))]).map(id => {
+      const kept = known.get(id), { registrations, remoteIdentities } = joined(id);
+      return kept ? { ...kept, registrations: members(registrations), remoteIdentities: members(remoteIdentities) } : {
+        id, name: "Forged", status: "active", inventory: { threads: 0, replies: 0, tasks: 0, memories: 0, attachments: 0, history: 0, importBatches: 0 },
+        registrations: members(registrations), remoteIdentities: members(remoteIdentities),
+        authorityRows: { knowledgeGrants: zero, roleBindings: zero, runtimeDelegations: zero, runtimeMemberships: zero, credentialScopes: zero, workerBindings: zero, remotePrincipalGrants: zero },
+      };
+    });
+    const mapping = {
+      registrations: review.registrations.filter(row => attaches.has(row.id)).map(row => ({ ...row, outcome: outcome(attaches.get(row.id)!) })),
+      remoteIdentities: review.remoteIdentities.filter(row => maps.has(row.id)).map(row => ({ ...row, outcome: outcome(maps.get(row.id)!) })),
+      projects, newProjects, untouchedProjects: Math.max(0, review.untouchedProjects + review.projects.length - projects.length),
+    };
+    expect(MAPPING_ACT_DOMAIN.review.safeParse(mapping).success).toBe(true);
+    return { ...plan, review: { mapping } };
+  }
+  const attachOf = (plan: UpgradePlan, id: string) => plan.acts.findIndex(act => act.kind === "attach_registration" && (act.payload as { registrationId: string }).registrationId === id);
+  /** Replaces the new project ID of `subject` (a registration) in its create and attach acts. */
+  const reassign = (plan: UpgradePlan, subject: string, id: string): UpgradePlan => {
+    const index = attachOf(plan, subject), old = (plan.acts[index].payload as { projectId: string }).projectId;
+    plan.acts = plan.acts.map(act => (act.payload as { projectId: string }).projectId === old ? { kind: act.kind, payload: { ...(act.payload as object), projectId: id } } : act);
+    return plan;
+  };
+  type Forgery = (plan: UpgradePlan, ids: Record<string, string>) => UpgradePlan;
+  /** Forged act lists with a review forged to match; `source` names where the refusal must come from: the recomputed acts, or the replay of new IDs. */
+  const COHERENT: Array<[string, "acts" | "ids", Forgery]> = [
+    ["an attach to a project the proposal would not choose", "ids", (plan, ids) => { plan.acts[attachOf(plan, ids.plain)] = { kind: "attach_registration", payload: { registrationId: ids.plain, projectId: ids.lonely, basis: "journal_reuse" } }; return plan; }],
+    ["an attachment labelled created_project for a pre-existing project", "ids", (plan, ids) => reassign(plan, ids.plain, ids.lonely)],
+    ["a created project nobody is attached to", "acts", plan => { plan.acts.unshift({ kind: "create_project", payload: { projectId: randomUUID(), name: "orphan" } }); return plan; }],
+    ["a missing registration", "ids", (plan, ids) => { plan.acts.splice(attachOf(plan, ids.plain), 1); return plan; }],
+    ["a duplicate attach", "acts", (plan, ids) => { plan.acts.splice(attachOf(plan, ids.plain), 0, plan.acts[attachOf(plan, ids.plain)]); return plan; }],
+    ["acts out of dependency order", "acts", plan => { const creates = plan.acts.filter(act => act.kind === "create_project"); plan.acts = [...plan.acts.filter(act => act.kind !== "create_project"), ...creates]; return plan; }],
+    ["duplicate generated IDs for two subjects", "ids", (plan, ids) => {
+      const shared = (plan.acts[attachOf(plan, ids.linked)].payload as { projectId: string }).projectId;
+      reassign(plan, ids.plain, shared);
+      const first = plan.acts.findIndex(act => act.kind === "create_project" && (act.payload as { projectId: string }).projectId === shared);
+      plan.acts = plan.acts.filter((act, index) => act.kind !== "create_project" || (act.payload as { projectId: string }).projectId !== shared || index === first);
+      return plan;
+    }],
+    ["a generated ID equal to a registration's ID", "ids", (plan, ids) => reassign(plan, ids.plain, ids.linked)],
+    ["a generated ID equal to a Knowledge project's ID", "ids", (plan, ids) => reassign(plan, ids.plain, ids.knowledge)],
+    ["a generated ID equal to a remote identity's ID", "ids", (plan, ids) => reassign(plan, ids.plain, ids.uuidRemote)],
+  ];
+  it.each(COHERENT)("refuses %s, its review forged to match, for its acts and not for a stale review", async (name, source, forge) => {
+    const fixture = world(w => {
+      const linked = w.register("linked"), plain = w.register("plain");
+      const knowledge = w.project("Linked knowledge"), lonely = w.project("Lonely knowledge");
+      w.link(knowledge, linked);
+      w.remote("remote-a"); w.worker("worker-a"); w.bind("worker-a", "remote-a", linked);
+      const uuidRemote = w.remote(randomUUID());
+      return { linked, plain, knowledge, lonely, uuidRemote };
+    });
+    const genuine = inspect(fixture.paths).plan!;
+    const payload = coherent(forge(JSON.parse(JSON.stringify(genuine)) as UpgradePlan, fixture.ids));
+    const hash = writePlan(fixture.paths, payload);
+    const before = files(fixture.paths), calls: string[] = [];
+    const refusal = await failure(() => apply(fixture.paths, hash, backups(fixture.paths, calls)));
+    expect(refusal).toMatchObject({ code: "upgrade_plan_unproposed", nextStep: "upgrade inspect", committed: false });
+    const findings = refusal.details!.findings;
+    if (source === "acts") expect(findings).toContainEqual({ table: "plan", id: "acts", problem: expect.stringContaining("the acts differ") });
+    else {
+      // The second of two subjects sharing an ID is the one refused, whichever sorts first.
+      expect(findings).toEqual([{ table: "projects", id: expect.any(String), problem: "the plan gives this subject no new project ID that is a UUID and still free" }]);
+      expect(name === "duplicate generated IDs for two subjects" ? [fixture.ids.plain, fixture.ids.linked] : [fixture.ids.plain]).toContain(findings[0].id);
+    }
+    expect(calls).toEqual([]);
+    expect(files(fixture.paths)).toEqual(before);
+    // The in-transaction check alone refuses it too.
+    const copy = join(temporary(), "copy.sqlite3");
+    copyFileSync(fixture.paths.databasePath, copy);
+    if (existsSync(`${fixture.paths.databasePath}-wal`)) copyFileSync(`${fixture.paths.databasePath}-wal`, `${copy}-wal`);
+    const database = unmanagedFixtureDatabase(copy);
+    try {
+      expect(() => initializeSchema(database, false, current => { inspectSchema(current, TARGET); }, { target: TARGET, acts: current => validateUpgradeProposal(current, payload, TARGET) }))
+        .toThrowError(expect.objectContaining({ code: "upgrade_plan_unproposed" }));
+    } finally { database.close(); }
+  });
+
+  it("refuses an altered review on its own, naming the review", async () => {
+    const { paths } = standard();
+    const genuine = inspect(paths).plan!;
+    const payload = JSON.parse(JSON.stringify(genuine)) as UpgradePlan;
+    (payload.review.mapping as MappingReview).untouchedProjects += 1;
+    const hash = writePlan(paths, payload);
+    expect(await failure(() => apply(paths, hash))).toMatchObject({ code: "upgrade_plan_unproposed", details: { findings: [{ table: "plan", id: "review" }] } });
+  });
+
+  it("refuses a generated ID that a journal row still names although its project is gone", async () => {
+    const { paths, ids } = standard();
+    await apply(paths, inspect(paths).planHash!);
+    const gone = parents(paths).registrations[ids.plain]!;
+    resume(paths);
+    tamper(paths, database => { database.prepare("DELETE FROM knowledge_projects WHERE id=?").run(gone); });
+    const genuine = inspect(paths).plan!;
+    expect(outcomeOf(inspect(paths), ids.plain).nomination).toMatchObject({ projectId: gone, reason: "project_missing" });
+    const payload = coherent(reassign(JSON.parse(JSON.stringify(genuine)) as UpgradePlan, ids.plain, gone));
+    const hash = writePlan(paths, payload);
+    expect(await failure(() => apply(paths, hash))).toMatchObject({ code: "upgrade_plan_unproposed",
+      details: { findings: [{ table: "projects", id: ids.plain, problem: "the plan gives this subject no new project ID that is a UUID and still free" }] } });
+  });
+
+  it("refuses decisions that name an unlinked link or a link whose registration is gone", async () => {
+    for (const change of ["UPDATE knowledge_project_runtime_links SET unlinked_at=linked_at", "UPDATE knowledge_project_runtime_links SET runtime_project_id=NULL"]) {
+      const { paths, ids } = standard();
+      tamper(paths, database => { database.prepare(change).run(); });
+      const before = files(paths);
+      expect(await failure(() => inspect(paths, { links: [{ registrationId: ids.linked, projectId: ids.knowledge }] })), change).toMatchObject({ code: "upgrade_decisions_invalid",
+        details: { count: 1, findings: [{ table: "decisions.links", id: ids.linked, problem: "names no current link of this registration to this project" }] } });
+      expect(files(paths)).toEqual(before);
+      // Without the decision the link is simply not current.
+      expect((outcomeOf(inspect(paths), ids.linked) as MappingReview["registrations"][number]).link).toBeNull();
+    }
+  });
+
+  it.each([
+    ["the creation entry belongs to another subject", (database: Database.Database) => {
+      memoryRegistration(database, "A"); memoryRegistration(database, "B"); memoryProject(database, "X");
+      journalRow(database, "registration", "A", incarnationOf(database, "projects", "A"), "X", "created_project");
+      journalRow(database, "registration", "B", incarnationOf(database, "projects", "B"), "X", "journal_reuse");
+      return { subject: "B", reason: "provenance" };
+    }],
+    ["the creation entry belongs to another incarnation of the same ID", (database: Database.Database) => {
+      memoryRegistration(database, "A"); memoryProject(database, "X");
+      journalRow(database, "registration", "A", incarnationOf(database, "projects", "A"), "X", "created_project");
+      database.prepare("DELETE FROM projects WHERE id='A'").run();
+      memoryRegistration(database, "A");
+      journalRow(database, "registration", "A", incarnationOf(database, "projects", "A"), "X", "journal_reuse");
+      return { subject: "A", reason: "provenance" };
+    }],
+    ["a later accepted_link entry superseded the creation", (database: Database.Database) => {
+      memoryRegistration(database, "A"); memoryProject(database, "X");
+      journalRow(database, "registration", "A", incarnationOf(database, "projects", "A"), "X", "created_project");
+      journalRow(database, "registration", "A", incarnationOf(database, "projects", "A"), "X", "accepted_link");
+      return { subject: "A", reason: "accepted_basis" };
+    }],
+    ["a later accepted_binding entry superseded the creation", (database: Database.Database) => {
+      database.prepare("INSERT INTO remote_project_identities(id,name,source_remote,status) VALUES('I','I','origin','active')").run();
+      memoryProject(database, "X");
+      journalRow(database, "remote_identity", "I", incarnationOf(database, "remote_project_identities", "I"), "X", "created_project");
+      journalRow(database, "remote_identity", "I", incarnationOf(database, "remote_project_identities", "I"), "X", "accepted_binding");
+      return { subject: "I", reason: "accepted_basis" };
+    }],
+  ] as const)("refuses a nomination when %s", (_name, build) => {
+    const database = memory();
+    try {
+      const { subject, reason } = build(database);
+      const { review: proposed } = proposeAt51(database);
+      const entry = [...proposed.registrations, ...proposed.remoteIdentities].find(row => row.id === subject)!;
+      expect(entry.nomination).toMatchObject({ projectId: "X", used: false, reason });
+      expect(entry.outcome).toMatchObject({ basis: "created_project", created: true, existing: false });
+      expect(entry.outcome.projectId).not.toBe("X");
+    } finally { database.close(); }
+  });
+
+  it("reads exactly the row limit and refuses one row more, never truncating", () => {
+    const database = memory();
+    try {
+      // The fence triggers would update the checkpoint once per row; this probe needs only the rows.
+      for (const name of database.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='remote_workers'").pluck().all() as string[]) database.exec(`DROP TRIGGER "${name}"`);
+      const insert = database.prepare("INSERT INTO remote_workers(id,principal_id,name,status) VALUES(?,?,'w','active')");
+      database.transaction(() => { for (let index = 0; index < MAPPING_READ_LIMIT; index++) insert.run(`w${index}`, `p${index}`); })();
+      expect(proposeAt51(database).acts).toEqual([]);
+      insert.run("one-more", "p-one-more");
+      expect((() => { try { proposeAt51(database); } catch (error) { return error; } throw new Error("expected a refusal"); })())
+        .toMatchObject({ code: "upgrade_plan_bounds", details: { count: 1, findings: [{ table: "remote_workers", id: "remote_workers", problem: `more than ${MAPPING_READ_LIMIT} rows` }] } });
+    } finally { database.close(); }
+  }, 60_000);
 });

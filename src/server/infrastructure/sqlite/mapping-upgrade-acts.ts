@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { schemaTarget } from "./migration-registry";
-import { PROJECT_MAPPING_VERSION } from "./mapping-structure-migration";
+import { MAPPING_CLOCK_MAX, PROJECT_MAPPING_VERSION } from "./mapping-structure-migration";
 import {
-  compareText, escapeDisplay, FindingList, UPGRADE_PLAN_LIMITS, UpgradeError,
+  compareText, escapeDisplay, FindingList, sampled, UPGRADE_FINDINGS_LIMIT, UPGRADE_PLAN_LIMITS, UpgradeError,
   type UpgradeAct, type UpgradeActContext, type UpgradeActDomain, type UpgradeActKind, type UpgradeProposalContext,
 } from "./upgrade-contract";
 
@@ -23,7 +23,9 @@ import {
  * accepts it; the journal only nominates, and the plan hash is the approval.
  * The pass reads no Vault ciphertext, no repository path, no remote URL, no
  * environment value and no stored JSON into the plan: the review carries IDs,
- * counts, statuses, timestamps and escaped display names only.
+ * counts, statuses, timestamps and escaped display names only. Every stored
+ * value it reads is first checked for its storage class
+ * ({@link MAPPING_STORED_COLUMNS}).
  */
 
 /** The ID rule of the journal's `subject_id` and `project_id` (see mapping-structure-migration.ts). */
@@ -34,9 +36,42 @@ const idSchema = z.string().refine(journalId);
 /** Any stored ID as text, as the review shows it (bounded by the plan's byte limit). */
 const storedIdSchema = z.string().min(1);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-/** The most code points of a name copied into a created project. */
-export const MAPPING_NAME_LIMIT = 1024;
-const nameSchema = z.string().refine(value => [...value].length <= MAPPING_NAME_LIMIT);
+/**
+ * The name rule of a Knowledge project, the stricter of the application's
+ * creation path (`IdentityService.createKnowledgeProject`: trimmed, 1 to 120)
+ * and the export/import snapshot schema (`project-transfer-schema.ts`: 1 to
+ * 120). Both count JavaScript string length (UTF-16 code units).
+ */
+export const PROJECT_NAME_LIMIT = 120;
+/** True when `value` is a name the application itself could have created and the snapshot schema accepts. */
+export function applicationProjectName(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 1 && value.length <= PROJECT_NAME_LIMIT && value.trim() === value;
+}
+const nameSchema = z.string().refine(applicationProjectName);
+/** How a new project's name came from its subject's name. */
+export type ProjectNaming = "copied" | "trimmed" | "shortened" | "replaced";
+/** At most {@link PROJECT_NAME_LIMIT} code units, never splitting a surrogate pair, then trimmed at the end again. */
+function cutName(text: string): string {
+  if (text.length <= PROJECT_NAME_LIMIT) return text;
+  let end = PROJECT_NAME_LIMIT;
+  const last = text.charCodeAt(end - 1), next = text.charCodeAt(end);
+  if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end--;
+  return text.slice(0, end).trimEnd();
+}
+/**
+ * The display name of the project created for a subject, deterministic and
+ * always within {@link applicationProjectName}: the subject's name trimmed
+ * (`String.prototype.trim`, as the application trims); if longer than the
+ * limit, cut at it without splitting a surrogate pair and trimmed at the end
+ * again; if empty after trimming, `Registration <id>` or `Remote identity
+ * <id>`, bounded the same way. It is display text only and decides nothing.
+ */
+export function deriveProjectName(kind: "registration" | "remote_identity", id: string, source: string): { name: string; naming: ProjectNaming } {
+  const trimmed = source.trim();
+  if (trimmed.length === 0) return { name: cutName(`${kind === "registration" ? "Registration" : "Remote identity"} ${id}`.trim()), naming: "replaced" };
+  if (trimmed.length > PROJECT_NAME_LIMIT) return { name: cutName(trimmed), naming: "shortened" };
+  return { name: trimmed, naming: trimmed === source ? "copied" : "trimmed" };
+}
 const LIST = UPGRADE_PLAN_LIMITS.acts;
 /** The most journal rows, links and bindings the pass reads; more is refused, never truncated. */
 export const MAPPING_READ_LIMIT = 500_000;
@@ -127,7 +162,8 @@ function actFailed(kind: string): never { throw new Error(`Upgrade act ${kind} f
 
 /**
  * `create_project`: one `knowledge_projects` row in the form the application
- * writes one (`active`, revision 1, both timestamps the run's time). It writes
+ * writes one (`active`, revision 1, both timestamps the run's time, a name
+ * within the application's rule, checked again here). It writes
  * no grant, role, membership, link, history row or audit event: a project row
  * alone is a valid, readable project, and the run's own audit event and the
  * journal rows of the acts that attach to it record why it exists.
@@ -135,6 +171,7 @@ function actFailed(kind: string): never { throw new Error(`Upgrade act ${kind} f
 function createProject(database: Database.Database, payload: CreateProjectPayload, context: UpgradeActContext): void {
   gate();
   const id = payload.projectId;
+  if (!UUID.test(id) || !applicationProjectName(payload.name)) actFailed(CREATE_PROJECT);
   if (database.prepare("SELECT 1 FROM knowledge_projects WHERE id=? UNION ALL SELECT 1 FROM projects WHERE id=? UNION ALL SELECT 1 FROM remote_project_identities WHERE id=? LIMIT 1").get(id, id, id)) actFailed(CREATE_PROJECT);
   if (database.prepare("INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at) VALUES(?,?,'active',1,?,?)").run(id, payload.name, context.at, context.at).changes !== 1) actFailed(CREATE_PROJECT);
 }
@@ -183,9 +220,16 @@ const count = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const display = z.string().nullable();
 const PRINCIPAL_KINDS = ["owner", "human", "agent", "worker", "installation"] as const;
 type PrincipalKind = typeof PRINCIPAL_KINDS[number];
-const activity = z.object({ active: count, revoked: count }).strict();
-const principalCounts = z.object(Object.fromEntries(PRINCIPAL_KINDS.map(kind => [kind, activity]))).strict() as unknown as z.ZodType<PrincipalCounts>;
-export type PrincipalCounts = Record<PrincipalKind, { active: number; revoked: number }>;
+const rowCounts = z.object({ unrevoked: count, revoked: count }).strict();
+const authorityCounts = z.object(Object.fromEntries(PRINCIPAL_KINDS.map(kind => [kind, rowCounts]))).strict() as unknown as z.ZodType<AuthorityRowCounts>;
+/**
+ * Stored authority rows by the kind of the principal they name, split by the
+ * row's own revocation field (`revoked_at` NULL or not; a credential scope by
+ * its credential's stored `status`, `active` or not). These are row counts,
+ * not distinct principals and not effective access: a revoked principal, an
+ * expired credential or a missing parent is not taken into account.
+ */
+export type AuthorityRowCounts = Record<PrincipalKind, { unrevoked: number; revoked: number }>;
 const NOMINATION_REASONS = ["used", "isolated", "accepted_decision", "accepted_basis", "project_missing", "unstamped", "incarnation_changed", "provenance"] as const;
 export type NominationReason = typeof NOMINATION_REASONS[number];
 const nominationSchema = z.object({
@@ -193,8 +237,14 @@ const nominationSchema = z.object({
   incarnation: count, used: z.boolean(), reason: z.enum(NOMINATION_REASONS),
 }).strict();
 export type MappingNomination = z.infer<typeof nominationSchema>;
-const registrationOutcome = z.object({ projectId: idSchema, basis: z.enum(["created_project", "accepted_link", "journal_reuse"]), created: z.boolean() }).strict();
-const identityOutcome = z.object({ projectId: idSchema, basis: z.enum(["created_project", "accepted_binding", "journal_reuse"]), created: z.boolean() }).strict();
+/**
+ * A subject's destination. `created`: this subject's own `create_project` act
+ * creates it. `existing`: it is a row of `knowledge_projects` now. A subject
+ * that joins a project created in this plan for another subject (an accepted
+ * binding to a registration that gets a new project) has both false.
+ */
+const registrationOutcome = z.object({ projectId: idSchema, basis: z.enum(["created_project", "accepted_link", "journal_reuse"]), created: z.boolean(), existing: z.boolean() }).strict();
+const identityOutcome = z.object({ projectId: idSchema, basis: z.enum(["created_project", "accepted_binding", "journal_reuse"]), created: z.boolean(), existing: z.boolean() }).strict();
 const registrationReview = z.object({
   id: idSchema, name: display, incarnation: count, outcome: registrationOutcome,
   link: z.object({
@@ -217,18 +267,99 @@ const projectReview = z.object({
   id: idSchema, name: display, status: display,
   inventory: z.object({ threads: count, replies: count, tasks: count, memories: count, attachments: count, history: count, importBatches: count }).strict(),
   registrations: z.array(memberSchema), remoteIdentities: z.array(memberSchema),
-  principals: z.object({
-    knowledgeGrants: principalCounts, roleBindings: principalCounts, runtimeDelegations: principalCounts, runtimeMemberships: principalCounts,
-    credentialScopes: principalCounts, workerBindings: principalCounts, remotePrincipalGrants: principalCounts,
+  authorityRows: z.object({
+    knowledgeGrants: authorityCounts, roleBindings: authorityCounts, runtimeDelegations: authorityCounts, runtimeMemberships: authorityCounts,
+    credentialScopes: authorityCounts, workerBindings: authorityCounts, remotePrincipalGrants: authorityCounts,
   }).strict(),
 }).strict();
+const subjectKind = z.enum(["registration", "remote_identity"]);
+/**
+ * A project this plan creates: the name it gets (escaped for display), how
+ * that name came from its subject's (`sourceLength` in UTF-16 code units), the
+ * subject it is created for and every subject that joins it in this plan. It
+ * has no Knowledge content and no stored authority: it does not exist yet.
+ */
+const newProjectReview = z.object({
+  id: z.string().regex(UUID), name: z.string(), naming: z.enum(["copied", "trimmed", "shortened", "replaced"]), sourceLength: count,
+  createdFor: z.object({ kind: subjectKind, id: idSchema }).strict(),
+  registrations: z.array(idSchema), remoteIdentities: z.array(idSchema),
+}).strict();
 const reviewSchema = z.object({
-  registrations: z.array(registrationReview), remoteIdentities: z.array(identityReview), projects: z.array(projectReview), untouchedProjects: count,
+  registrations: z.array(registrationReview), remoteIdentities: z.array(identityReview), projects: z.array(projectReview), newProjects: z.array(newProjectReview), untouchedProjects: count,
 }).strict();
 export type MappingReview = z.infer<typeof reviewSchema>;
 export type RegistrationReview = z.infer<typeof registrationReview>;
 export type RemoteIdentityReview = z.infer<typeof identityReview>;
 export type ProjectReview = z.infer<typeof projectReview>;
+export type NewProjectReview = z.infer<typeof newProjectReview>;
+
+// ---------------------------------------------------------------------------
+// Stored values
+
+/** The storage class a column must hold: SQLite's `typeof()` of the value. */
+export type StorageRule = "text" | "text_or_null" | "integer";
+export interface StoredColumns {
+  readonly table: string;
+  /** The column that names an offending row in a finding. */
+  readonly key: string;
+  /** Only from step 51 on (the table or column does not exist before). */
+  readonly mapped?: boolean;
+  readonly columns: ReadonlyArray<readonly [column: string, rule: StorageRule, mapped?: boolean]>;
+}
+/**
+ * Every column the proposal pass and its review read, with the storage class
+ * it must hold. The tables are not STRICT, so a column's declared type does
+ * not stop a BLOB, a REAL or a wrong class from being stored; any other class
+ * is refused as `upgrade_mapping_malformed` before a value is used. Ranges and
+ * shapes (bounded IDs, safe integers, known kinds and bases) are checked
+ * afterwards by the pass itself.
+ */
+const STORED_COLUMNS: StoredColumns[] = [
+  { table: "projects", key: "id", columns: [["id", "text"], ["name", "text"], ["environment_profiles_json", "text"],
+    ["parent_project_id", "text_or_null", true], ["incarnation", "integer", true], ["mapping_version", "integer", true]] },
+  { table: "remote_project_identities", key: "id", columns: [["id", "text"], ["name", "text"], ["status", "text"],
+    ["parent_project_id", "text_or_null", true], ["incarnation", "integer", true], ["mapping_version", "integer", true]] },
+  { table: "knowledge_projects", key: "id", columns: [["id", "text"], ["name", "text"], ["status", "text"]] },
+  { table: "knowledge_project_runtime_links", key: "knowledge_project_id", columns: [["knowledge_project_id", "text"], ["runtime_project_id", "text_or_null"], ["linked_at", "text"], ["unlinked_at", "text_or_null"]] },
+  { table: "remote_worker_project_grants", key: "project_id", columns: [["worker_id", "text"], ["project_id", "text"], ["local_project_id", "text"], ["revoked_at", "text_or_null"]] },
+  { table: "remote_workers", key: "id", columns: [["id", "text"], ["principal_id", "text"], ["name", "text"], ["status", "text"]] },
+  { table: "remote_principals", key: "id", columns: [["id", "text"], ["kind", "text"], ["status", "text"]] },
+  { table: "project_mapping_clock", key: "singleton", mapped: true, columns: [["singleton", "integer"], ["value", "integer"]] },
+  { table: "project_mapping_journal", key: "subject_id", mapped: true, columns: [["sequence", "integer"], ["subject_kind", "text"], ["subject_id", "text"], ["subject_incarnation", "integer"],
+    ["project_id", "text"], ["basis", "text"], ["recorded_at", "text"]] },
+  { table: "dev_environment_vaults", key: "project_id", columns: [["project_id", "text"]] },
+  { table: "reservations", key: "id", columns: [["project_id", "text"], ["released_at", "text_or_null"]] },
+  { table: "test_runs", key: "id", columns: [["project_id", "text"]] },
+  { table: "remote_verification_requests", key: "id", columns: [["id", "text"], ["project_id", "text"]] },
+  { table: "remote_verification_attempts", key: "id", columns: [["request_id", "text"]] },
+  { table: "knowledge_history", key: "id", columns: [["project_id", "text"], ["record_kind", "text"], ["record_id", "text"], ["operation", "text"], ["principal_id", "text"],
+    ["authentication_method", "text"], ["created_at", "text"]] },
+  ...["knowledge_project_grants", "knowledge_role_bindings", "runtime_delegations", "runtime_human_memberships", "remote_principal_project_grants"]
+    .map((table): StoredColumns => ({ table, key: "project_id", columns: [["project_id", "text"], ["principal_id", "text"], ["revoked_at", "text_or_null"]] })),
+  { table: "runtime_credential_scopes", key: "project_id", columns: [["credential_id", "text"], ["project_id", "text"]] },
+  { table: "principal_credentials", key: "id", columns: [["id", "text"], ["principal_id", "text"], ["status", "text"]] },
+  ...["knowledge_threads", "knowledge_replies", "knowledge_tasks", "knowledge_memories", "knowledge_attachments"].map((table): StoredColumns => ({ table, key: "id", columns: [["project_id", "text"]] })),
+  { table: "knowledge_import_batches", key: "id", columns: [["target_project_id", "text"]] },
+];
+export const MAPPING_STORED_COLUMNS: ReadonlyArray<StoredColumns> = Object.freeze(STORED_COLUMNS);
+const RULE_TEXT: Readonly<Record<StorageRule, string>> = { text: "text", text_or_null: "text or null", integer: "integer" };
+const holds = (type: unknown, rule: StorageRule) => rule === "text" ? type === "text" : rule === "integer" ? type === "integer" : type === "text" || type === "null";
+const holdsSql = (column: string, rule: StorageRule) => rule === "text_or_null" ? `typeof("${column}") IN ('text','null')` : `typeof("${column}")='${rule}'`;
+
+/** Adds a finding for every row of {@link MAPPING_STORED_COLUMNS} whose value is of another storage class (the first 100 per table read, all counted). */
+function storageClasses(database: Database.Database, mapped: boolean, findings: FindingList): void {
+  for (const entry of MAPPING_STORED_COLUMNS) {
+    if (entry.mapped && !mapped) continue;
+    const columns = entry.columns.filter(([, , onlyMapped]) => mapped || !onlyMapped);
+    const where = `NOT (${columns.map(([column, rule]) => holdsSql(column, rule)).join(" AND ")})`;
+    const name = `CASE typeof("${entry.key}") WHEN 'text' THEN "${entry.key}" WHEN 'integer' THEN CAST("${entry.key}" AS TEXT) ELSE '<' || typeof("${entry.key}") || '>' END`;
+    const rows = database.prepare(`SELECT ${name},${columns.map(([column]) => `typeof("${column}")`).join(",")} FROM "${entry.table}" WHERE ${where} LIMIT ${UPGRADE_FINDINGS_LIMIT}`).raw().all() as unknown[][];
+    for (const row of rows) {
+      findings.add(entry.table, String(row[0]), columns.flatMap(([column, rule], index) => holds(row[index + 1], rule) ? [] : [`${column} is ${String(row[index + 1])}, expected ${RULE_TEXT[rule]}`]).join("; "));
+    }
+    if (rows.length === UPGRADE_FINDINGS_LIMIT) findings.more((database.prepare(`SELECT count(*) FROM "${entry.table}" WHERE ${where}`).pluck().get() as number) - rows.length);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // The proposal pass
@@ -239,10 +370,12 @@ interface JournalEntry { sequence: number; kind: SubjectKind; subject: string; i
 interface Link { project: unknown; registration: unknown; linkedAt: unknown; unlinkedAt: unknown }
 interface Binding { worker: unknown; identity: unknown; registration: unknown; revoked: unknown }
 interface Worker { id: string; name: unknown; status: unknown; principalStatus: unknown }
-type Outcome<Basis> = { projectId: string; basis: Basis; created: boolean };
+type Outcome<Basis> = { projectId: string; basis: Basis; created: boolean; existing: boolean };
+interface Creation { name: string; naming: ProjectNaming; sourceLength: number; kind: SubjectKind; subject: string }
 
 const key = (kind: SubjectKind, id: string) => `${kind}\u0000${id}`;
 const safe = (value: unknown, minimum = 0): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
+const SUBJECT_TABLE: Readonly<Record<SubjectKind, string>> = { registration: "projects", remote_identity: "remote_project_identities" };
 
 /**
  * The project IDs this pass creates. A subject first gets the ID an earlier
@@ -251,7 +384,8 @@ const safe = (value: unknown, minimum = 0): value is number => typeof value === 
  * projects, when `fresh` allows it. Every ID is distinct from every ID in
  * `projects`, `knowledge_projects`, `remote_project_identities` and the
  * journal's projects, and from every other generated one. A replay (`fresh`
- * false) that cannot reuse the plan's ID refuses: the plan is not the proposal.
+ * false) that cannot reuse the plan's ID refuses, naming the subject: the plan
+ * is not the proposal.
  */
 class ProjectIds {
   private readonly prior = new Map<string, string>();
@@ -266,7 +400,11 @@ class ProjectIds {
   take(kind: SubjectKind, id: string): string {
     const candidate = this.prior.get(key(kind, id));
     if (candidate !== undefined && UUID.test(candidate) && !this.used.has(candidate)) { this.used.add(candidate); return candidate; }
-    if (!this.fresh) throw new UpgradeError("upgrade_plan_unproposed", "upgrade inspect");
+    if (!this.fresh) {
+      const refused = new FindingList();
+      refused.add(SUBJECT_TABLE[kind], id, "the plan gives this subject no new project ID that is a UUID and still free");
+      refused.raise("upgrade_plan_unproposed");
+    }
     for (;;) {
       const generated = randomUUID();
       if (!this.used.has(generated)) { this.used.add(generated); return generated; }
@@ -282,8 +420,8 @@ function boundedRows<T>(database: Database.Database, table: string, sql: string,
 function grouped(database: Database.Database, sql: string): Map<string, number[]> {
   return new Map((database.prepare(sql).raw().all() as unknown[][]).filter(row => typeof row[0] === "string").map(row => [row[0] as string, row.slice(1).map(value => Number(value ?? 0))]));
 }
-function emptyCounts(): PrincipalCounts {
-  return Object.fromEntries(PRINCIPAL_KINDS.map(kind => [kind, { active: 0, revoked: 0 }])) as PrincipalCounts;
+function emptyCounts(): AuthorityRowCounts {
+  return Object.fromEntries(PRINCIPAL_KINDS.map(kind => [kind, { unrevoked: 0, revoked: 0 }])) as AuthorityRowCounts;
 }
 
 /**
@@ -303,6 +441,11 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
   const subjectCount = (database.prepare("SELECT (SELECT count(*) FROM projects)+(SELECT count(*) FROM remote_project_identities)").pluck().get() as number);
   if (subjectCount * 2 > UPGRADE_PLAN_LIMITS.acts) bounds.add("plan", "acts", `${subjectCount} registrations and remote identities may need more than ${UPGRADE_PLAN_LIMITS.acts} acts`);
   bounds.raise("upgrade_plan_bounds");
+
+  // 0. Storage classes of every value read below, before any is used.
+  const storage = new FindingList();
+  storageClasses(database, mapped, storage);
+  storage.raise("upgrade_mapping_malformed");
 
   const stamps = mapped ? "parent_project_id AS parent,incarnation,mapping_version AS version" : "NULL AS parent,0 AS incarnation,0 AS version";
   const registrationRows = database.prepare(`SELECT id,name,NULL AS status,${stamps} FROM projects`).all() as Array<Record<string, unknown>>;
@@ -339,24 +482,27 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
   }
   const links: Link[] = linkRows.map(row => ({ project: row.project, registration: row.registration, linkedAt: row.linkedAt, unlinkedAt: row.unlinkedAt }));
   for (const link of links) {
-    if (typeof link.project !== "string" || (link.registration !== null && typeof link.registration !== "string") || (link.unlinkedAt !== null && typeof link.unlinkedAt !== "string")) {
+    if (typeof link.project !== "string" || (link.registration !== null && typeof link.registration !== "string") || typeof link.linkedAt !== "string" || (link.unlinkedAt !== null && typeof link.unlinkedAt !== "string")) {
       malformed.add("knowledge_project_runtime_links", typeof link.project === "string" ? link.project : `<${typeof link.project}>`, "malformed link");
     }
   }
   const bindings: Binding[] = bindingRows.map(row => ({ worker: row.worker, identity: row.identity, registration: row.registration, revoked: row.revoked }));
   for (const binding of bindings) {
-    if (typeof binding.worker !== "string" || typeof binding.identity !== "string" || typeof binding.registration !== "string") {
+    if (typeof binding.worker !== "string" || typeof binding.identity !== "string" || typeof binding.registration !== "string" || (binding.revoked !== null && typeof binding.revoked !== "string")) {
       malformed.add("remote_worker_project_grants", typeof binding.identity === "string" ? binding.identity : `<${typeof binding.identity}>`, "malformed binding");
     }
   }
   const workers = new Map<string, Worker>();
-  for (const row of workerRows) if (typeof row.id === "string") workers.set(row.id, { id: row.id, name: row.name, status: row.status, principalStatus: row.principalStatus });
+  for (const row of workerRows) {
+    if (typeof row.id === "string") workers.set(row.id, { id: row.id, name: row.name, status: row.status, principalStatus: row.principalStatus });
+    else malformed.add("remote_workers", `<${typeof row.id}>`, "ID is not text");
+  }
   const journal: JournalEntry[] = [];
   const journalInconsistent = new FindingList();
   for (const row of journalRows) {
     const id = typeof row.subject === "string" ? row.subject : `<${typeof row.subject}>`;
     if (!safe(row.sequence, 1) || (row.kind !== "registration" && row.kind !== "remote_identity") || !journalId(row.subject) || !journalId(row.project)
-      || !safe(row.incarnation, 1) || typeof row.basis !== "string" || !["created_project", "accepted_link", "accepted_binding", "journal_reuse"].includes(row.basis)) {
+      || !safe(row.incarnation, 1) || typeof row.basis !== "string" || !["created_project", "accepted_link", "accepted_binding", "journal_reuse"].includes(row.basis) || typeof row.recordedAt !== "string") {
       malformed.add("project_mapping_journal", id, "malformed journal row"); continue;
     }
     if ((row.basis === "accepted_link" && row.kind !== "registration") || (row.basis === "accepted_binding" && row.kind !== "remote_identity")) { journalInconsistent.add("project_mapping_journal", id, `entry ${row.sequence} has an illegal kind and basis`); continue; }
@@ -402,13 +548,16 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
   const created = new Map<string, JournalEntry[]>(), acceptedBefore = new Map<string, number>();
   for (const entry of journal) {
     if (entry.basis === "created_project") {
-      created.set(entry.project, [...(created.get(entry.project) ?? []), entry]);
+      const list = created.get(entry.project);
+      if (list) list.push(entry); else created.set(entry.project, [entry]);
       const earlier = acceptedBefore.get(entry.project);
       if (earlier !== undefined) journalInconsistent.add("project_mapping_journal", entry.project, `created by entry ${entry.sequence} after its acceptance in entry ${earlier}`);
     }
     if ((entry.basis === "accepted_link" || entry.basis === "accepted_binding") && !acceptedBefore.has(entry.project)) acceptedBefore.set(entry.project, entry.sequence);
   }
-  for (const [project, entries] of created) if (entries.length > 1) journalInconsistent.add("project_mapping_journal", project, `created by ${entries.length} entries (${entries.map(entry => entry.sequence).join(", ")})`);
+  for (const [project, entries] of created) {
+    if (entries.length > 1) journalInconsistent.add("project_mapping_journal", project, `created by ${entries.length} entries (${sampled(entries.map(entry => String(entry.sequence)))})`);
+  }
   journalInconsistent.raise("upgrade_mapping_journal");
 
   // 6. The decisions must name existing rows.
@@ -448,8 +597,13 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
       eligible: reason === "used",
     };
   };
-  const creationName = (table: string, row: Subject): void => {
-    if (typeof row.name !== "string" || [...row.name].length > MAPPING_NAME_LIMIT) malformed.add(table, row.id, `name is not text of at most ${MAPPING_NAME_LIMIT} characters`);
+  // The new projects: their derived names and the subject each is created for.
+  const creations = new Map<string, Creation>();
+  const create = (kind: SubjectKind, row: Subject): string => {
+    const projectId = ids.take(kind, row.id);
+    if (typeof row.name !== "string") malformed.add(SUBJECT_TABLE[kind], row.id, "name is not text");
+    else creations.set(projectId, { ...deriveProjectName(kind, row.id, row.name), sourceLength: row.name.length, kind, subject: row.id });
+    return projectId;
   };
   const acceptedLinks = new Map(decisions.links.map(entry => [entry.registrationId, entry.projectId]));
   const isolatedRegistrations = new Set(decisions.isolate.registrations), isolatedIdentities = new Set(decisions.isolate.remoteIdentities);
@@ -459,11 +613,10 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
     const { nomination, eligible } = nominate("registration", row);
     let outcome: Outcome<RegistrationBasis>;
     const linked = acceptedLinks.get(row.id);
-    if (linked !== undefined) outcome = { projectId: linked, basis: "accepted_link", created: false };
-    else if (isolatedRegistrations.has(row.id)) outcome = { projectId: ids.take("registration", row.id), basis: "created_project", created: true };
-    else if (eligible && nomination) outcome = { projectId: nomination.projectId, basis: "journal_reuse", created: false };
-    else outcome = { projectId: ids.take("registration", row.id), basis: "created_project", created: true };
-    if (outcome.created) creationName("projects", row);
+    if (linked !== undefined) outcome = { projectId: linked, basis: "accepted_link", created: false, existing: true };
+    else if (isolatedRegistrations.has(row.id)) outcome = { projectId: create("registration", row), basis: "created_project", created: true, existing: false };
+    else if (eligible && nomination) outcome = { projectId: nomination.projectId, basis: "journal_reuse", created: false, existing: true };
+    else outcome = { projectId: create("registration", row), basis: "created_project", created: true, existing: false };
     if (nomination) {
       nomination.used = outcome.basis === "journal_reuse";
       if (eligible && !nomination.used) nomination.reason = linked !== undefined ? "accepted_decision" : "isolated";
@@ -472,7 +625,10 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
     registrationNominations.set(row.id, nomination);
   }
   const bindingsOf = new Map<string, Array<Binding & { worker: string; identity: string; registration: string }>>();
-  for (const binding of bindings as Array<Binding & { worker: string; identity: string; registration: string }>) bindingsOf.set(binding.identity, [...(bindingsOf.get(binding.identity) ?? []), binding]);
+  for (const binding of bindings as Array<Binding & { worker: string; identity: string; registration: string }>) {
+    const list = bindingsOf.get(binding.identity);
+    if (list) list.push(binding); else bindingsOf.set(binding.identity, [binding]);
+  }
   const acceptedBindings = new Map<string, Set<string>>();
   for (const entry of decisions.bindings) acceptedBindings.set(entry.remoteIdentityId, (acceptedBindings.get(entry.remoteIdentityId) ?? new Set()).add(entry.registrationId));
   const divergent = new FindingList();
@@ -485,17 +641,17 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
     let outcome: Outcome<IdentityBasis> | undefined;
     if (accepted) {
       const targets = destinations(accepted);
-      if (targets.length > 1) divergent.add("remote_project_identities", row.id, `accepted bindings lead to projects ${targets.map(id => escapeDisplay(id)).join(", ")}`);
-      else outcome = { projectId: targets[0], basis: "accepted_binding", created: false };
-    } else if (isolatedIdentities.has(row.id)) outcome = { projectId: ids.take("remote_identity", row.id), basis: "created_project", created: true };
+      if (targets.length > 1) divergent.add("remote_project_identities", row.id, `accepted bindings lead to projects ${sampled(targets.map(id => escapeDisplay(id) ?? ""))}`);
+      // The registration's destination: an existing project, or the one this plan creates for that registration.
+      else outcome = { projectId: targets[0], basis: "accepted_binding", created: false, existing: projects.has(targets[0]) };
+    } else if (isolatedIdentities.has(row.id)) outcome = { projectId: create("remote_identity", row), basis: "created_project", created: true, existing: false };
     else {
       const targets = destinations((bindingsOf.get(row.id) ?? []).map(binding => binding.registration));
-      if (targets.length > 1) divergent.add("remote_project_identities", row.id, `bindings lead to projects ${targets.map(id => escapeDisplay(id)).join(", ")}; accept a consistent set or isolate it`);
-      else if (eligible && nomination) outcome = { projectId: nomination.projectId, basis: "journal_reuse", created: false };
-      else outcome = { projectId: ids.take("remote_identity", row.id), basis: "created_project", created: true };
+      if (targets.length > 1) divergent.add("remote_project_identities", row.id, `bindings lead to projects ${sampled(targets.map(id => escapeDisplay(id) ?? ""))}; accept a consistent set or isolate it`);
+      else if (eligible && nomination) outcome = { projectId: nomination.projectId, basis: "journal_reuse", created: false, existing: true };
+      else outcome = { projectId: create("remote_identity", row), basis: "created_project", created: true, existing: false };
     }
     if (!outcome) continue;
-    if (outcome.created) creationName("remote_project_identities", row);
     if (nomination) {
       nomination.used = outcome.basis === "journal_reuse";
       if (eligible && !nomination.used) nomination.reason = accepted ? "accepted_decision" : "isolated";
@@ -505,16 +661,28 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
   }
   divergent.raise("upgrade_mapping_divergent");
   malformed.raise("upgrade_mapping_malformed");
+  // Every destination is an existing project or one this plan creates; nothing else can be attached to.
+  for (const outcome of [...registrationOutcomes.values(), ...identityOutcomes.values()]) {
+    if (outcome.existing !== projects.has(outcome.projectId) || (!outcome.existing && !creations.has(outcome.projectId)) || outcome.created !== (outcome.basis === "created_project")) {
+      throw new Error("Project mapping proposal produced an inconsistent destination.");
+    }
+  }
+
+  // 7b. The clock advances once per attach and map act; refuse now, before any backup or witness, if it cannot.
+  const advances = registrationOutcomes.size + identityOutcomes.size;
+  if (advances > MAPPING_CLOCK_MAX - clock) {
+    const exhausted = new FindingList();
+    exhausted.add("project_mapping_clock", "1", `the clock at ${clock} cannot advance ${advances} times (its maximum is ${MAPPING_CLOCK_MAX})`);
+    exhausted.raise("upgrade_mapping_clock");
+  }
 
   // 8. Acts: every creation, then every attachment, then every mapping, each by subject ID.
   const acts: UpgradeAct[] = [];
-  for (const row of registrations) {
-    const outcome = registrationOutcomes.get(row.id)!;
-    if (outcome.created) acts.push({ kind: CREATE_PROJECT, payload: { projectId: outcome.projectId, name: row.name as string } });
-  }
-  for (const row of identities) {
-    const outcome = identityOutcomes.get(row.id)!;
-    if (outcome.created) acts.push({ kind: CREATE_PROJECT, payload: { projectId: outcome.projectId, name: row.name as string } });
+  for (const [rows, outcomes] of [[registrations, registrationOutcomes], [identities, identityOutcomes]] as const) {
+    for (const row of rows) {
+      const outcome = (outcomes as Map<string, Outcome<string>>).get(row.id)!;
+      if (outcome.created) acts.push({ kind: CREATE_PROJECT, payload: { projectId: outcome.projectId, name: creations.get(outcome.projectId)!.name } });
+    }
   }
   for (const row of registrations) {
     const outcome = registrationOutcomes.get(row.id)!;
@@ -567,29 +735,45 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
       inventory: { requests: requests.get(row.id)?.[0] ?? 0, attempts: attempts.get(row.id)?.[0] ?? 0 },
     };
   });
-  // Existing destination projects: what the plan puts together there, and who holds authority over it now.
-  const existing = [...new Set([...registrationOutcomes.values(), ...identityOutcomes.values()].filter(outcome => !outcome.created).map(outcome => outcome.projectId))].sort(compareText);
+  // Subjects by destination and by the journal's last project, indexed once (the subject lists are already sorted by ID).
+  const index = (pairs: Iterable<readonly [string, string]>) => {
+    const result = new Map<string, string[]>();
+    for (const [project, subject] of pairs) { const list = result.get(project); if (list) list.push(subject); else result.set(project, [subject]); }
+    return result;
+  };
+  const joiners = { registration: index([...registrationOutcomes].map(([subject, outcome]) => [outcome.projectId, subject] as const)),
+    remote_identity: index([...identityOutcomes].map(([subject, outcome]) => [outcome.projectId, subject] as const)) };
+  const journaled = { registration: index([...latest.values()].filter(entry => entry.kind === "registration").map(entry => [entry.project, entry.subject] as const)),
+    remote_identity: index([...latest.values()].filter(entry => entry.kind === "remote_identity").map(entry => [entry.project, entry.subject] as const)) };
+  const joining = (kind: SubjectKind, id: string) => [...(joiners[kind].get(id) ?? [])].sort(compareText);
+  // Projects this plan creates: the name each gets and every subject that joins it.
+  const newProjectReviews: NewProjectReview[] = [...creations].sort(([a], [b]) => compareText(a, b)).map(([id, creation]) => ({
+    id, name: escapeDisplay(creation.name) ?? "", naming: creation.naming, sourceLength: creation.sourceLength, createdFor: { kind: creation.kind, id: creation.subject },
+    registrations: joining("registration", id), remoteIdentities: joining("remote_identity", id),
+  }));
+  // Existing destination projects: what the plan puts together there, and the authority rows stored for it now.
+  const existing = [...new Set([...registrationOutcomes.values(), ...identityOutcomes.values()].filter(outcome => outcome.existing).map(outcome => outcome.projectId))].sort(compareText);
   const principalKind = new FindingList();
   const counter = (sql: string) => {
     const statement = database.prepare(sql);
-    return (ids: readonly string[]): PrincipalCounts => {
+    return (ids: readonly string[]): AuthorityRowCounts => {
       const result = emptyCounts();
-      for (const id of ids) for (const row of statement.all(id) as Array<{ kind: unknown; active: unknown }>) {
+      for (const id of ids) for (const row of statement.all(id) as Array<{ kind: unknown; unrevoked: unknown }>) {
         if (!PRINCIPAL_KINDS.includes(row.kind as PrincipalKind)) { principalKind.add("remote_principals", id, "a principal of unknown kind holds authority here"); continue; }
-        result[row.kind as PrincipalKind][row.active ? "active" : "revoked"]++;
+        result[row.kind as PrincipalKind][row.unrevoked ? "unrevoked" : "revoked"]++;
       }
       return result;
     };
   };
-  const knowledgeGrants = counter("SELECT p.kind,g.revoked_at IS NULL AS active FROM knowledge_project_grants g LEFT JOIN remote_principals p ON p.id=g.principal_id WHERE g.project_id=?");
-  const roleBindings = counter("SELECT p.kind,g.revoked_at IS NULL AS active FROM knowledge_role_bindings g LEFT JOIN remote_principals p ON p.id=g.principal_id WHERE g.project_id=?");
-  const runtimeDelegations = counter("SELECT p.kind,g.revoked_at IS NULL AS active FROM runtime_delegations g LEFT JOIN remote_principals p ON p.id=g.principal_id WHERE g.project_id=?");
-  const runtimeMemberships = counter("SELECT p.kind,g.revoked_at IS NULL AS active FROM runtime_human_memberships g LEFT JOIN remote_principals p ON p.id=g.principal_id WHERE g.project_id=?");
-  const credentialScopes = counter(`SELECT p.kind,c.status='active' AS active FROM runtime_credential_scopes s LEFT JOIN principal_credentials c ON c.id=s.credential_id
+  const knowledgeGrants = counter("SELECT p.kind,g.revoked_at IS NULL AS unrevoked FROM knowledge_project_grants g LEFT JOIN remote_principals p ON p.id=g.principal_id WHERE g.project_id=?");
+  const roleBindings = counter("SELECT p.kind,g.revoked_at IS NULL AS unrevoked FROM knowledge_role_bindings g LEFT JOIN remote_principals p ON p.id=g.principal_id WHERE g.project_id=?");
+  const runtimeDelegations = counter("SELECT p.kind,g.revoked_at IS NULL AS unrevoked FROM runtime_delegations g LEFT JOIN remote_principals p ON p.id=g.principal_id WHERE g.project_id=?");
+  const runtimeMemberships = counter("SELECT p.kind,g.revoked_at IS NULL AS unrevoked FROM runtime_human_memberships g LEFT JOIN remote_principals p ON p.id=g.principal_id WHERE g.project_id=?");
+  const credentialScopes = counter(`SELECT p.kind,c.status='active' AS unrevoked FROM runtime_credential_scopes s LEFT JOIN principal_credentials c ON c.id=s.credential_id
     LEFT JOIN remote_principals p ON p.id=c.principal_id WHERE s.project_id=?`);
-  const workerBindings = counter(`SELECT p.kind,g.revoked_at IS NULL AS active FROM remote_worker_project_grants g LEFT JOIN remote_workers w ON w.id=g.worker_id
+  const workerBindings = counter(`SELECT p.kind,g.revoked_at IS NULL AS unrevoked FROM remote_worker_project_grants g LEFT JOIN remote_workers w ON w.id=g.worker_id
     LEFT JOIN remote_principals p ON p.id=w.principal_id WHERE g.local_project_id=?`);
-  const remotePrincipalGrants = counter("SELECT p.kind,g.revoked_at IS NULL AS active FROM remote_principal_project_grants g LEFT JOIN remote_principals p ON p.id=g.principal_id WHERE g.project_id=?");
+  const remotePrincipalGrants = counter("SELECT p.kind,g.revoked_at IS NULL AS unrevoked FROM remote_principal_project_grants g LEFT JOIN remote_principals p ON p.id=g.principal_id WHERE g.project_id=?");
   const inventory = Object.fromEntries(([
     ["threads", "knowledge_threads", "project_id"], ["replies", "knowledge_replies", "project_id"], ["tasks", "knowledge_tasks", "project_id"],
     ["memories", "knowledge_memories", "project_id"], ["attachments", "knowledge_attachments", "project_id"], ["history", "knowledge_history", "project_id"],
@@ -597,19 +781,16 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
   ] as const).map(([name, table, column]) => [name, database.prepare(`SELECT count(*) FROM ${table} WHERE ${column}=?`).pluck()]));
   const projectReviews: ProjectReview[] = existing.map(id => {
     const members = (kind: SubjectKind, outcomes: Map<string, { projectId: string }>, present: Set<string>) => {
-      const ids = new Set<string>();
-      for (const [subject, outcome] of outcomes) if (outcome.projectId === id) ids.add(subject);
-      for (const entry of latest.values()) if (entry.kind === kind && entry.project === id) ids.add(entry.subject);
+      const ids = new Set<string>([...(joiners[kind].get(id) ?? []), ...(journaled[kind].get(id) ?? [])]);
       return [...ids].sort(compareText).map(subject => ({ id: subject, plan: outcomes.get(subject)?.projectId === id, journal: latest.get(key(kind, subject))?.project === id, present: present.has(subject) }));
     };
-    const attached = [...registrationOutcomes].filter(([, outcome]) => outcome.projectId === id).map(([subject]) => subject);
-    const mappedHere = [...identityOutcomes].filter(([, outcome]) => outcome.projectId === id).map(([subject]) => subject);
+    const attached = joining("registration", id), mappedHere = joining("remote_identity", id);
     const project = projects.get(id)!;
     return {
       id, name: escapeDisplay(project.name), status: escapeDisplay(project.status, 64),
       inventory: Object.fromEntries(Object.entries(inventory).map(([name, statement]) => [name, statement.get(id) as number])) as ProjectReview["inventory"],
       registrations: members("registration", registrationOutcomes, registrationIds), remoteIdentities: members("remote_identity", identityOutcomes, identityIds),
-      principals: {
+      authorityRows: {
         knowledgeGrants: knowledgeGrants([id]), roleBindings: roleBindings([id]), runtimeDelegations: runtimeDelegations(attached), runtimeMemberships: runtimeMemberships(attached),
         credentialScopes: credentialScopes(attached), workerBindings: workerBindings(attached), remotePrincipalGrants: remotePrincipalGrants(mappedHere),
       },
@@ -618,7 +799,7 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
   principalKind.raise("upgrade_mapping_malformed");
   const destinationsAll = new Set([...registrationOutcomes.values(), ...identityOutcomes.values()].map(outcome => outcome.projectId));
   const review: MappingReview = {
-    registrations: registrationReviews, remoteIdentities: identityReviews, projects: projectReviews,
+    registrations: registrationReviews, remoteIdentities: identityReviews, projects: projectReviews, newProjects: newProjectReviews,
     untouchedProjects: [...projects.keys()].filter(id => !destinationsAll.has(id)).length,
   };
   return { acts, review };
@@ -629,7 +810,7 @@ export function proposeProjectMapping(database: Database.Database, context: Upgr
 
 const shown = (value: string | null) => value === null ? "(none)" : `"${value}"`;
 const ident = (value: string) => escapeDisplay(value) ?? "";
-const counts = (value: PrincipalCounts) => PRINCIPAL_KINDS.map(kind => `${kind} ${value[kind].active} active/${value[kind].revoked} revoked`).join(", ");
+const counts = (value: AuthorityRowCounts) => PRINCIPAL_KINDS.map(kind => `${kind} ${value[kind].unrevoked} unrevoked/${value[kind].revoked} revoked`).join(", ");
 const BASIS: Readonly<Record<string, string>> = {
   created_project: "a new project created for it", accepted_link: "its existing link, accepted by the operator",
   accepted_binding: "its accepted worker bindings", journal_reuse: "the project the journal nominates",
@@ -640,44 +821,66 @@ const REASONS: Readonly<Record<NominationReason, string>> = {
   unstamped: "not used: the row is not stamped", incarnation_changed: "not used: the row was removed and created again since (another incarnation)",
   provenance: "not used: the project was not created for exactly this subject",
 };
-function nominationLine(nomination: MappingNomination | null): string[] {
+interface NamingFacts { sourceLength: number; length: number; subject: string }
+const NAMING: Readonly<Record<ProjectNaming, (facts: NamingFacts) => string>> = {
+  copied: () => "its name copied",
+  trimmed: () => "its name without the surrounding whitespace",
+  shortened: ({ sourceLength, length }) => `its name trimmed and shortened from ${sourceLength} to ${length} characters, the application's limit being ${PROJECT_NAME_LIMIT}`,
+  replaced: ({ subject }) => `its name replaced, since the ${subject}'s name is empty after trimming`,
+};
+const subjectLabel = (kind: "registration" | "remote_identity", id: string) => `${kind === "registration" ? "registration" : "remote identity"} ${ident(id)}`;
+const LIST_LIMIT = 20;
+function nominationLine(nomination: MappingNomination | null, outcome: { projectId: string; basis: string }): string[] {
   if (!nomination) return [];
+  // A nomination not used as the basis may still name the project the subject joins by another basis: say so.
+  const same = !nomination.used && outcome.projectId === nomination.projectId ? ` The subject joins that project anyway, by another basis: ${BASIS[outcome.basis]}.` : "";
   return [`  Journal nomination (entry ${nomination.sequence}, recorded ${nomination.recordedAt ?? "(not text)"}, basis ${nomination.basis}): project ${ident(nomination.projectId)}; ${REASONS[nomination.reason]}.`
-    + (nomination.used ? " It is a nomination from history: approve it through the plan hash, or decline it with isolate." : "")];
+    + (nomination.used ? " It is a nomination from history: approve it through the plan hash, or decline it with isolate." : "") + same];
 }
 
 /** The operator's lines for the mapping acts and their review. */
 export function describeProjectMapping(acts: readonly UpgradeAct[], review: MappingReview): string[] {
   const lines: string[] = [];
-  const createdFor = new Map<string, string>();
-  for (const row of review.registrations) if (row.outcome.created) createdFor.set(row.outcome.projectId, `registration ${ident(row.id)}`);
-  for (const row of review.remoteIdentities) if (row.outcome.created) createdFor.set(row.outcome.projectId, `remote identity ${ident(row.id)}`);
+  const created = new Map(review.newProjects.map(project => [project.id, project]));
+  const createdFor = (id: string) => { const project = created.get(id); return project ? subjectLabel(project.createdFor.kind, project.createdFor.id) : "(no subject)"; };
   for (const act of acts) {
-    if (act.kind === CREATE_PROJECT) {
-      const payload = act.payload as CreateProjectPayload;
-      lines.push(`Create project ${payload.projectId} ${shown(escapeDisplay(payload.name))} for ${createdFor.get(payload.projectId) ?? "(no subject)"}.`);
+    if (act.kind !== CREATE_PROJECT) continue;
+    const payload = act.payload as CreateProjectPayload;
+    const project = created.get(payload.projectId);
+    const naming = project ? `; ${NAMING[project.naming]({ sourceLength: project.sourceLength, length: payload.name.length, subject: project.createdFor.kind === "registration" ? "registration" : "remote identity" })}` : "";
+    lines.push(`Create project ${payload.projectId} ${shown(escapeDisplay(payload.name))} for ${createdFor(payload.projectId)}${naming}.`);
+    if (project) {
+      const joiners = [...project.registrations.map(id => subjectLabel("registration", id)), ...project.remoteIdentities.map(id => subjectLabel("remote_identity", id))];
+      lines.push(`  New project: no Knowledge content and no stored grants or role bindings. Joined in this plan by ${sampled(joiners, LIST_LIMIT)}.`);
     }
   }
+  const destination = (outcome: { projectId: string; existing: boolean; created: boolean }) => outcome.existing ? `existing project ${ident(outcome.projectId)}`
+    : outcome.created ? `new project ${ident(outcome.projectId)}` : `new project ${ident(outcome.projectId)} (created in this plan for ${createdFor(outcome.projectId)})`;
   for (const row of review.registrations) {
-    lines.push(`Attach registration ${ident(row.id)} ${shown(row.name)} to project ${ident(row.outcome.projectId)}: ${BASIS[row.outcome.basis]}.`);
+    lines.push(`Attach registration ${ident(row.id)} ${shown(row.name)} to ${destination(row.outcome)}: ${BASIS[row.outcome.basis]}.`);
     if (row.link) {
-      lines.push(`  Existing link to project ${ident(row.link.projectId)} since ${row.link.linkedAt ?? "(not text)"}: ${row.link.accepted ? "accepted" : "not accepted (the registration does not join that project)"}.`);
+      // Only what is true of the link: whether it is the accepted basis, and whether the registration joins its project at all.
+      const joins = row.outcome.projectId === row.link.projectId;
+      const verdict = row.link.accepted ? "accepted as the basis; the registration joins that project"
+        : joins ? `not accepted as the basis; the registration joins that project anyway, by another basis: ${BASIS[row.outcome.basis]}`
+          : "not accepted; the registration does not join that project in this plan";
+      lines.push(`  Existing link to project ${ident(row.link.projectId)} since ${row.link.linkedAt ?? "(not text)"}: ${verdict}.`);
       if (row.link.lastChange) {
         const change = row.link.lastChange;
         lines.push(`  Recorded history, not an approval: the last link change (${change.operation ?? "?"}) was attributed to principal ${change.principalId ?? "?"} (${change.principalKind ?? "unknown kind"}, ${change.authenticationMethod ?? "?"}) at ${change.at ?? "?"}.`);
       }
     }
-    lines.push(...nominationLine(row.nomination));
+    lines.push(...nominationLine(row.nomination, row.outcome));
     const inventory = row.inventory;
     lines.push(`  Inventory: ${inventory.vaultRecords} Vault record(s) (profiles are inside the ciphertext and not read), ${inventory.reservations} claim(s) or reservation(s) (${inventory.activeReservations} active), ${inventory.testRuns} test run(s), ${inventory.environmentProfiles ?? "unreadable"} environment profile(s).`);
   }
   for (const row of review.remoteIdentities) {
-    lines.push(`Map remote identity ${ident(row.id)} ${shown(row.name)} (${row.status ?? "?"}) to project ${ident(row.outcome.projectId)}: ${BASIS[row.outcome.basis]}.`);
+    lines.push(`Map remote identity ${ident(row.id)} ${shown(row.name)} (${row.status ?? "?"}) to ${destination(row.outcome)}: ${BASIS[row.outcome.basis]}.`);
     for (const binding of row.bindings) {
       lines.push(`  Binding: worker ${ident(binding.workerId)} ${shown(binding.workerName)} (worker ${binding.workerStatus ?? "?"}, principal ${binding.workerPrincipalStatus ?? "?"}), registration ${ident(binding.registrationId)}, ${binding.revoked ? "revoked" : "not revoked"}, ${binding.accepted ? "accepted" : "not accepted"}.`);
     }
     if (row.bindings.some(binding => binding.accepted)) lines.push("  Accepting a binding accepts every worker row of that remote identity and registration; no grant is changed or restored.");
-    lines.push(...nominationLine(row.nomination));
+    lines.push(...nominationLine(row.nomination, row.outcome));
     lines.push(`  Inventory: ${row.inventory.requests} verification request(s), ${row.inventory.attempts} attempt(s).`);
   }
   for (const project of review.projects) {
@@ -686,10 +889,11 @@ export function describeProjectMapping(acts: readonly UpgradeAct[], review: Mapp
     for (const [label, members] of [["registration", project.registrations], ["remote identity", project.remoteIdentities]] as const) {
       for (const member of members) lines.push(`  ${label} ${ident(member.id)}: ${[member.plan && "joins it in this plan", member.journal && "the journal last associated it", !member.present && "no longer exists"].filter(Boolean).join("; ")}.`);
     }
-    const principals = project.principals;
-    lines.push(`  Knowledge grants: ${counts(principals.knowledgeGrants)}. Role bindings: ${counts(principals.roleBindings)}.`);
-    lines.push(`  On the registrations this plan attaches: delegations ${counts(principals.runtimeDelegations)}; memberships ${counts(principals.runtimeMemberships)}; credential scopes ${counts(principals.credentialScopes)}; worker bindings ${counts(principals.workerBindings)}.`);
-    lines.push(`  On the remote identities this plan maps: principal grants ${counts(principals.remotePrincipalGrants)}.`);
+    const rows = project.authorityRows;
+    lines.push("  Stored authority rows by principal kind, each counted by its own revocation field (a credential scope by its credential's stored status): row counts, not distinct principals and not effective access; a revoked principal or an expired credential is not taken into account.");
+    lines.push(`  Knowledge grants: ${counts(rows.knowledgeGrants)}. Role bindings: ${counts(rows.roleBindings)}.`);
+    lines.push(`  On the registrations this plan attaches: delegations ${counts(rows.runtimeDelegations)}; memberships ${counts(rows.runtimeMemberships)}; credential scopes ${counts(rows.credentialScopes)}; worker bindings ${counts(rows.workerBindings)}.`);
+    lines.push(`  On the remote identities this plan maps: principal grants ${counts(rows.remotePrincipalGrants)}.`);
     lines.push("  Grant tables keep only the latest value of each grant; they are not a complete history.");
   }
   lines.push(`${review.untouchedProjects} other project(s) are not touched.`);
