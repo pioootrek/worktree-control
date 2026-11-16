@@ -1712,7 +1712,7 @@ always complete.
 | `upgrade_mapping_divergent` | Accepted bindings that disagree, or an undecided identity whose bindings lead to several projects. |
 | `upgrade_mapping_unexpected` | A registration or identity with a parent while the upgrade is needed. A quarantine clears every parent, so a parent here is a state the protocol does not produce. |
 | `upgrade_mapping_journal` | A project with more than one `created_project` entry, a `created_project` entry for a project accepted by an earlier entry, an incarnation above the clock, or an illegal kind and basis. |
-| `upgrade_mapping_malformed` | A stored value of another storage class than its column needs (see below), a non-text or unbounded subject ID, malformed stamps or parent, a malformed link, binding, journal row or clock, or a principal of unknown kind. |
+| `upgrade_mapping_malformed` | A stored value of another storage class than its column needs (see below), an identifier whose stored bytes are not the UTF-8 encoding of the text read back (see below), a non-text or unbounded subject ID, malformed stamps or parent, a malformed link, binding, journal row or clock, or a principal of unknown kind. |
 | `upgrade_mapping_clock` | The clock cannot advance once for every attach and map act of the plan (its value plus their number would pass 2^53 − 1). |
 | `upgrade_plan_bounds` | More than 50 000 acts, more than 500 000 rows of the read tables, or a plan above 8 MiB. Refused, never truncated. |
 | `upgrade_decisions_invalid` | A decision that is malformed, conflicting, not allowed at this target, or names no such row. |
@@ -1750,6 +1750,27 @@ grant, role, delegation, membership and remote-principal-grant tables;
 every `revoked_at`. Integer for `incarnation`, `mapping_version`, the journal's
 `sequence` and `subject_incarnation`, and the clock's `singleton` and `value`.
 `MAPPING_STORED_COLUMNS` in `mapping-upgrade-acts.ts` is the list.
+
+SQLite also keeps the bytes of a text value as given, without checking that
+they are UTF-8, and better-sqlite3 reads an invalid sequence back as U+FFFD.
+Such an ID read back and bound again is other bytes than the stored ones: the
+plan would name it, `attach_registration` or `map_remote_identity` would then
+match no row (`WHERE id=?`) or find no project, and the transaction would fail
+after the pending witness. Two stored IDs that differ can also read back
+equal. So, after the storage classes, the pass refuses every identifier it
+compares or an act writes back or matches on, on every row, unless its stored
+bytes (`CAST(column AS BLOB)`) are exactly the UTF-8 encoding of the string
+read back: `projects.id` and `parent_project_id`,
+`remote_project_identities.id` and `parent_project_id`, `knowledge_projects.id`,
+`knowledge_project_runtime_links.knowledge_project_id` and
+`runtime_project_id`, `remote_worker_project_grants.worker_id`, `project_id`
+and `local_project_id`, `remote_workers.id`, and the journal's `subject_id`
+and `project_id` (`MAPPING_TEXT_COLUMNS`). Ownership's foreign-key validation
+does not refuse such an ID when every reference to it holds the same bytes;
+it refuses only a reference whose bytes name no row. A decision is JavaScript
+text and reaches an act only through equality with one of these IDs. The
+check (`stored-text.ts`) is shared with the authority acts and the test-run
+recovery's predictor, and only they may import it.
 
 #### The review
 
@@ -1986,8 +2007,9 @@ on the original, by storage class and bytes and with a fixed clock, so a rule
 changed on one side only fails it. Its limits:
 
 - identifiers and ordered texts must be text whose bytes are the UTF-8 encoding
-  of the string read back, so that JavaScript equality and byte order are
-  SQLite's `BINARY` comparisons;
+  of the string read back (the check of `stored-text.ts`, shared with both act
+  domains), so that JavaScript equality and byte order are SQLite's `BINARY`
+  comparisons;
 - counters and byte totals are JavaScript numbers, so every one and every sum
   the recovery can reach must be a safe integer;
 - it uses one instant for the whole recovery; with a moving clock only results
@@ -2097,7 +2119,7 @@ interrupted, and what is kept.
 
 | Stop | Meaning |
 | --- | --- |
-| `upgrade_authority_malformed` | A value the pass reads has another storage class; a principal or credential has an unknown kind or status; a revision or a live attempt's version cannot advance; a run to be interrupted holds stored JSON that does not parse; the test-run recovery's predictor refuses a row (see the list above; naming the row by its key or rowid and the kind of problem, never a stored value); or the single active owner's ID cannot be a grant's account. |
+| `upgrade_authority_malformed` | A value the pass reads has another storage class; a principal's ID (`remote_principals.id`, every row) is text whose stored bytes are not the UTF-8 encoding of the string read back, so that the owner's would be granted as an account that does not exist (`AUTHORITY_TEXT_COLUMNS`, the check of `stored-text.ts`); a principal or credential has an unknown kind or status; a revision or a live attempt's version cannot advance; a run to be interrupted holds stored JSON that does not parse; the test-run recovery's predictor refuses a row (see the list above; naming the row by its key or rowid and the kind of problem, never a stored value); or the single active owner's ID cannot be a grant's account. |
 | `upgrade_authority_unexpected` | Grants of the new model are stored while the upgrade is needed. A quarantine deletes every one, so the protocol does not produce this. |
 | `upgrade_plan_bounds` | More than 64 principals of kind `owner`, the fence's own bound (through the protocol the fence refuses first). |
 
