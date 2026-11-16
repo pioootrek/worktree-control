@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase, ownedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -275,7 +276,7 @@ describe("K6b Hub import execution",()=>{
     const f=fixture(),path=join(f.root,"state.sqlite3");f.store.close();
     const legacy=unmanagedFixtureDatabase(path);stripMigrationProvenance(legacy); legacy.exec("DROP INDEX knowledge_import_sources_target; DELETE FROM schema_migrations WHERE version >= 27");legacy.close();
     establishFixtureSecurity(path);
-    const reopened=new SqliteStateStore(path),db=unmanagedFixtureDatabase(path);
+    const reopened=openStoreAt49(path),db=unmanagedFixtureDatabase(path);
     expect(reopened.schemaVersion()).toBe(49);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='knowledge_import_sources_target'").get()).toBeTruthy();
     expect(db.prepare("SELECT 1 FROM schema_migrations WHERE version=27").get()).toBeTruthy();
@@ -531,7 +532,7 @@ describe("K6b Hub import execution",()=>{
     expect((old.prepare("SELECT count(*) AS count FROM knowledge_import_batches").get() as {count:number}).count).toBe(2);
     old.close();
     establishFixtureSecurity(path);
-    const store=new SqliteStateStore(path),identity=new IdentityService(store,()=>NOW);
+    const store=openStoreAt49(path),identity=new IdentityService(store,()=>NOW);
     expect(store.schemaVersion()).toBe(49);
     expect(store.getHubImport(publishedInput.batchId)).toMatchObject({status:"published",authenticationMethod:"legacy_unknown"});
     expect(store.getHubImport(stagedInput.batchId)).toMatchObject({status:"staging",cursor:1,authenticationMethod:"legacy_unknown"});
@@ -551,12 +552,12 @@ describe("K6b Hub import execution",()=>{
     damaged.close();
 
     establishFixtureSecurity(path);
-    const repaired=new SqliteStateStore(path);
+    const repaired=openStoreAt49(path);
     expect(repaired.schemaVersion()).toBe(49);
     expect(repaired.getHubImport("current-batch")).toEqual(current);
     expect(repaired.getHubImport("legacy-batch")).toMatchObject({actorPrincipalId:f.owner.principalId,authenticationMethod:"legacy_unknown"});
     repaired.close();
-    const reopened=new SqliteStateStore(path);
+    const reopened=openStoreAt49(path);
     expect(reopened.getHubImport("current-batch")).toEqual(current);
     expect(reopened.getHubImport("legacy-batch")?.authenticationMethod).toBe("legacy_unknown");
     reopened.close();

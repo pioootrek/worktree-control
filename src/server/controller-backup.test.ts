@@ -7,7 +7,6 @@ import { SqliteStateStore } from "./sqlite-store";
 import { OwnedSqliteDatabase } from "./infrastructure/sqlite";
 import { createControllerBackup, restoreControllerBackup } from "./controller-backup";
 import Database from "better-sqlite3";
-import { enableProvisionalSchema } from "./infrastructure/sqlite/provisional-schema-gate";
 import { initializeSchema } from "./infrastructure/sqlite/migrations";
 import { inspectSchema } from "./infrastructure/sqlite/schema-inspection";
 import { configureDurability } from "./infrastructure/sqlite/database-validation";
@@ -42,7 +41,7 @@ describe("controller backup", () => {
     restoreControllerBackup(backupPath, databasePath);
     expect(existsSync(`${databasePath}.initializing`)).toBe(false);
     expect(existsSync(`${databasePath}-journal`)).toBe(false);
-    resumeFixtureSecurity(databasePath);
+    await resumeFixtureSecurity(databasePath);
     const restored = new SqliteStateStore(databasePath);
     try {
       expect(restored.listProjects().map(project => project.name)).toEqual(["Recovered"]);
@@ -69,34 +68,32 @@ describe("controller backup", () => {
     const directory=root(), databasePath=join(directory,"state.sqlite3"), backupPath=join(directory,"backup");
     const store=new SqliteStateStore(databasePath); store.addProject({name:"Before",repositoryPath:join(directory,"repo"),port:3456,executable:"pnpm",args:["dev"]});
     const manifest=await createControllerBackup(store, backupPath, { applicationVersion:"test-version", attachmentDirectory:join(directory,"attachments") });
-    expect(manifest).toMatchObject({formatVersion:1,applicationVersion:"test-version",database:{file:"state.sqlite3",schemaVersion:49}});
+    expect(manifest).toMatchObject({formatVersion:1,applicationVersion:"test-version",database:{file:"state.sqlite3",schemaVersion:52}});
     expect(existsSync(join(backupPath,"state.sqlite3"))).toBe(true); store.close();
     const changed=new SqliteStateStore(databasePath); changed.addProject({name:"After",repositoryPath:join(directory,"repo-2"),port:3457,executable:"pnpm",args:["dev"]}); changed.close();
     restoreControllerBackup(backupPath,databasePath);
-    resumeFixtureSecurity(databasePath); const restored=new SqliteStateStore(databasePath); expect(restored.listProjects().map(p=>p.name)).toEqual(["Before"]); restored.close();
+    await resumeFixtureSecurity(databasePath); const restored=new SqliteStateStore(databasePath); expect(restored.listProjects().map(p=>p.name)).toEqual(["Before"]); restored.close();
     const manifestPath=join(backupPath,"manifest.json"); const source=readFileSync(manifestPath,"utf8"); writeFileSync(manifestPath,source.replace(/"sha256":\s*"[a-f0-9]+"/, '"sha256":"'+"0".repeat(64)+'"'));
     expect(()=>restoreControllerBackup(backupPath,databasePath)).toThrow(/integrity/i);
   });
 
-  it("refuses a snapshot above the supported schema without schemaCeiling, and accepts it at the ceiling it names", async () => {
-    // Schema 52 is provisional: the switch is on only for this test, so the default ceiling stays the supported 49.
-    const restoreGate = enableProvisionalSchema(); cleanups.push(restoreGate);
+  it("refuses a snapshot above the ceiling it names, and accepts it at the default ceiling, the supported schema", async () => {
     const directory=root(), databasePath=join(directory,"state.sqlite3");
     const source=new Database(databasePath); cleanups.push(()=>source.close());
     chmodSync(databasePath,0o600); configureDurability(source);
     initializeSchema(source,true,current=>{inspectSchema(current,52);},{target:52});
     const snapshots={backup:async(destination:string)=>{await source.backup(destination);}};
     const options={applicationVersion:"test-version",attachmentDirectory:join(directory,"attachments")};
-    // Without the option: refused at the snapshot's inspection, and the staging tree is removed.
-    await expect(createControllerBackup(snapshots,join(directory,"default"),options)).rejects.toThrow();
-    expect(readdirSync(directory).filter(name=>name.includes("default"))).toEqual([]);
-    // At 52 it is accepted and validates at that ceiling only.
-    const manifest=await createControllerBackup(snapshots,join(directory,"provisional"),{...options,schemaCeiling:52});
+    // At ceiling 49: refused at the snapshot's inspection, and the staging tree is removed.
+    await expect(createControllerBackup(snapshots,join(directory,"at-49"),{...options,schemaCeiling:49})).rejects.toThrow();
+    expect(readdirSync(directory).filter(name=>name.includes("at-49"))).toEqual([]);
+    // At the default ceiling (52) it is accepted and validates; a lower ceiling refuses its manifest.
+    const manifest=await createControllerBackup(snapshots,join(directory,"default"),options);
     expect(manifest).toMatchObject({formatVersion:1,database:{file:"state.sqlite3",schemaVersion:52}});
-    expect(()=>validateBackup(join(directory,"provisional"),parseManifest(manifest,52),true,52)).not.toThrow();
-    expect(()=>parseManifest(manifest)).toThrow(/Unsupported or invalid backup manifest/);
-    // A supported-schema source is unaffected by naming the ceiling.
+    expect(()=>validateBackup(join(directory,"default"),parseManifest(manifest),true)).not.toThrow();
+    expect(()=>parseManifest(manifest,51)).toThrow(/Unsupported or invalid backup manifest/);
+    // A store of this release backs up at 52 whether or not the ceiling is named.
     const supported=new SqliteStateStore(join(directory,"supported.sqlite3")); cleanups.push(()=>supported.close());
-    expect(await createControllerBackup(supported,join(directory,"supported"),{...options,schemaCeiling:52})).toMatchObject({database:{schemaVersion:49}});
+    expect(await createControllerBackup(supported,join(directory,"supported"),{...options,schemaCeiling:52})).toMatchObject({database:{schemaVersion:52}});
   }, 30_000);
 });

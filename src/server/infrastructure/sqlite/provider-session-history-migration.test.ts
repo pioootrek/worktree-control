@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity, resumeFixtureSecurity, openProtectedUpgradeFixture } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -95,7 +96,7 @@ describe("provider session history migration 39", () => {
     // Restore the genuine old snapshot through the supported restore path, then migrate on open.
     const restoredPath = join(f.root, "restored38", "state.sqlite3");
     restoreControllerBackup(join(backups, backup!), restoredPath);
-    resumeFixtureSecurity(restoredPath);
+    await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
     try { expect(restored.schemaVersion()).toBe(49); } finally { restored.close(); }
     raw(restoredPath, db => {
@@ -139,14 +140,14 @@ describe("provider session history migration 39", () => {
   it("round-trips provider history through full backup/restore and authorized logical export/import", async () => {
     const f = genuine38();
     establishFixtureSecurity(f.path);
-    const store = new SqliteStateStore(f.path), identity = new IdentityService(store);
+    const store = openStoreAt49(f.path), identity = new IdentityService(store);
     const owner = identity.recoverOwnerSession(), actor = identity.authenticateBearer(owner.token);
     const knowledge = new KnowledgeService(store, identity);
     const task = knowledge.createTask("kept", { title: "New", description: "Kept" }, { idempotencyKey: "new" }, actor);
     // The real-provider suite writes this method through the public application; here verify persistence formats.
     store.close();
     raw(f.path, db => db.prepare("UPDATE knowledge_history SET authentication_method='provider_session' WHERE record_id=?").run(task.value.id));
-    const reopened = new SqliteStateStore(f.path), backup = join(f.root, "new-backup");
+    const reopened = openStoreAt49(f.path), backup = join(f.root, "new-backup");
     const exported = join(f.root, "logical-export");
     try {
       const current = identityFor(reopened);
@@ -156,7 +157,7 @@ describe("provider session history migration 39", () => {
     } finally { reopened.close(); }
     const restoredPath = join(f.root, "restored39", "state.sqlite3");
     restoreControllerBackup(backup, restoredPath);
-    resumeFixtureSecurity(restoredPath);
+    await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
     try {
       expect(restored.schemaVersion()).toBe(49);

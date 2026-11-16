@@ -6,7 +6,6 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAppPaths, type AppPaths } from "../server/paths";
 import { createFencedAt49 } from "../server/infrastructure/sqlite/fixtures/released-schema";
-import { enableProvisionalSchema } from "../server/infrastructure/sqlite/provisional-schema-gate";
 import { SecurityFenceBackupError, SecurityFenceError } from "../server/infrastructure/sqlite/security-fence";
 import { boundedFindings, UpgradeError } from "../server/infrastructure/sqlite/upgrade-contract";
 import { ProviderAdminError } from "../server/modules/authentication";
@@ -25,9 +24,8 @@ const inspectUpgrade = vi.mocked(composition.inspectUpgrade), applyUpgrade = vi.
 const TARGET = 52;
 const HASH = "a".repeat(64);
 const roots: string[] = [];
-let restoreGate: () => void;
-beforeEach(() => { restoreGate = enableProvisionalSchema(); inspectUpgrade.mockClear(); applyUpgrade.mockClear(); });
-afterEach(() => { restoreGate(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+beforeEach(() => { inspectUpgrade.mockClear(); applyUpgrade.mockClear(); });
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const temporary = () => { const root = mkdtempSync(join(tmpdir(), "cli-upgrade-")); roots.push(root); return root; };
 /** Paths of a data directory that does not exist: any lock or database access would create something under it. */
 const absent = () => { const root = temporary(); return { root, paths: resolveAppPaths(join(root, "data"), join(root, "state")) }; };

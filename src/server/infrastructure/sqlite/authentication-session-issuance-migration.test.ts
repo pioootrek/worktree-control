@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity, resumeFixtureSecurity, openProtectedUpgradeFixture } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,8 +27,9 @@ function directory() {
 function raw<T>(path: string, operation: (db: Database.Database) => T): T {
   const db = unmanagedFixtureDatabase(path); try { return operation(db); } finally { db.close(); }
 }
+/** The guarded sole handle of the store on an established schema-49 fixture. */
 function guarded<T>(path:string,operation:(db:Database.Database)=>T):T {
-  const store=new SqliteStateStore(path);
+  const store=openStoreAt49(path);
   try{return operation((store as unknown as {database:Database.Database}).database);}finally{store.close();}
 }
 const session = (id: string, expires = DEADLINE) => `INSERT INTO "authentication_ba_session"("id","expiresAt","token","createdAt","updatedAt","userId") VALUES('${id}','${expires}','token-${id}','2026-10-28T00:00:00.000Z','2026-10-28T00:00:00.000Z','subject');`;
@@ -64,11 +66,11 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
   it("creates recognized empty storage on a fresh database and bumps the storage revision", () => {
     const f = directory(), store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(49);
+      expect(store.schemaVersion()).toBe(52);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
-      expect(inspectSchema(db)).toEqual({ version: 49, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 52, fresh: false });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=41").get()).toEqual({ name: authenticationSessionIssuanceMigration.name, checksum: authenticationSessionIssuanceChecksum });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=40").get()).toEqual({ name: authenticationFactorMigration.name, checksum: authenticationFactorChecksum });
       // No token, cookie, password, actor or process identity has a column here.
@@ -80,7 +82,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     const f = genuine40(), attachmentDirectory = join(f.root, "attachments"), backups = join(f.root, "backups");
     const before = raw(f.path, db => ({ rows: preserved(db), registry: registry(db), bytes: readFileSync(f.path) }));
     expect(raw(f.path, db => inspectSchema(db).version)).toBe(40);
-    const store = await openProtectedUpgradeFixture(f.path, { backupBeforeMigration: true, backupDirectory: backups, applicationVersion: "test", attachmentDirectory });
+    const store = await openProtectedUpgradeFixture(f.path, { backupDirectory: backups, applicationVersion: "test", attachmentDirectory });
     try { expect(store.schemaVersion()).toBe(49); } finally { store.close(); }
     raw(f.path, db => {
       expect(preserved(db)).toEqual(before.rows);
@@ -88,13 +90,13 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
       expect(db.prepare("SELECT count(*) n FROM authentication_session_issuance").get()).toEqual({ n: 0 });
       expect(new AuthenticationSessionIssuanceQueries(db).state("released")).toBe("unclassified");
     });
-    const backup = readdirSync(backups).find(name => name.startsWith("pre-migration-v40-"))!;
+    const backup = readdirSync(backups).find(name => name.startsWith("pre-establishment-v40-"))!;
     expect(JSON.parse(readFileSync(join(backups, backup, "manifest.json"), "utf8")).database.schemaVersion).toBe(40);
     const restoredPath = join(f.root, "restored", "state.sqlite3");
     restoreControllerBackup(join(backups, backup), restoredPath);
-    resumeFixtureSecurity(restoredPath);
+    await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
-    try { expect(restored.schemaVersion()).toBe(49); } finally { restored.close(); }
+    try { expect(restored.schemaVersion()).toBe(52); } finally { restored.close(); }
     raw(restoredPath, db => { expect(db.prepare("SELECT * FROM remote_principals ORDER BY rowid").all()).toEqual(before.rows.remote_principals); expect(db.prepare("SELECT * FROM authentication_totp_steps ORDER BY rowid").all()).toEqual(before.rows.authentication_totp_steps); expect(db.prepare("SELECT * FROM authentication_ba_session").all()).toEqual([]); });
   });
 
@@ -113,7 +115,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
       expect(inspectSchema(db).version).toBe(40);
     });
     establishFixtureSecurity(f.path);
-    const retry = new SqliteStateStore(f.path);
+    const retry = openStoreAt49(f.path);
     try { expect(retry.schemaVersion()).toBe(49); } finally { retry.close(); }
   });
 
@@ -122,7 +124,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     establishFixtureSecurity(f.path);
     guarded(f.path, db => db.exec(`${session("published")} ${evidence("published")} ${issuance("published", "may_publish")}
       ${session("pending")} ${evidence("pending")} ${issuance("pending", "pending")}`));
-    const target = join(f.root, "manual"), store = new SqliteStateStore(f.path);
+    const target = join(f.root, "manual"), store = openStoreAt49(f.path);
     try { await createControllerBackup(store, target, { applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") }); } finally { store.close(); }
     const ordinary = new OwnedSqliteDatabase(f.path);
     try { expect(ordinary.provenance).toBe("ordinary"); } finally { ordinary.close(); }
@@ -131,7 +133,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     const bytes = () => raw(restoredPath, db => ({ rows: preserved(db), markers: db.prepare("SELECT * FROM authentication_session_issuance ORDER BY session_id").all() }));
     const before = bytes();
     expect(before.markers).toHaveLength(2);
-    resumeFixtureSecurity(restoredPath);
+    await resumeFixtureSecurity(restoredPath);
     const reopened = new SqliteStateStore(restoredPath);
     try {
       expect(reopened.databaseProvenance).toBe("restored");
@@ -152,7 +154,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
       ${session("pending-a")} ${evidence("pending-a")} ${issuance("pending-a", "pending")}
       ${session("pending-b")} ${evidence("pending-b")} ${issuance("pending-b", "pending")}
       ${session("pending-c")} ${evidence("pending-c")} ${issuance("pending-c", "pending")}`));
-    const store = new SqliteStateStore(f.path);
+    const store = openStoreAt49(f.path);
     try {
       expect(store.databaseProvenance).toBe("ordinary");
       expect(store.authenticationProviderStorage().sessionRecoveryComplete()).toBe(false);
@@ -174,7 +176,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     const opened = genuine40();
     establishFixtureSecurity(opened.path);
     guarded(opened.path, db => db.exec(`${session("pending")} ${evidence("pending")} ${issuance("pending", "pending")}`));
-    const live = new SqliteStateStore(opened.path);
+    const live = openStoreAt49(opened.path);
     try {
       // After the open-time validation: only a row changed under a running owner can look like this.
       const database = (live as unknown as { database: { prepare(sql: string): { run(): void } } }).database;
@@ -215,7 +217,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     establishFixtureSecurity(f.path);
     raw(f.path, db => { db.exec("INSERT INTO remote_principals VALUES('owner-2','owner','revoked')"); db.pragma("foreign_keys = OFF"); db.exec(change); });
     const bytes = readFileSync(f.path);
-    expect(() => new SqliteStateStore(f.path)).toThrow(message);
+    expect(() => openStoreAt49(f.path)).toThrow(message);
     expect(readFileSync(f.path)).toEqual(bytes);
   });
 

@@ -1,4 +1,5 @@
 import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { createHash } from "node:crypto";
@@ -62,7 +63,7 @@ describe("identity and knowledge access SQLite persistence", () => {
     legacy.close();
 
     establishFixtureSecurity(path);
-    const migrated = new SqliteStateStore(path);
+    const migrated = openStoreAt49(path);
     expect(migrated.getPrincipal("agent-before-k1")).toEqual({
       id: "agent-before-k1", kind: "agent", status: "active",
     });
@@ -86,7 +87,7 @@ describe("identity and knowledge access SQLite persistence", () => {
     legacy.close();
 
     establishFixtureSecurity(path);
-    const migrated = new SqliteStateStore(path);
+    const migrated = openStoreAt49(path);
     expect(migrated.listPrincipalCredentials("owner-1")[0]?.tokenPrefix).toBe(`wts_${OWNER_CREDENTIAL_ID}`);
     migrated.close();
   });

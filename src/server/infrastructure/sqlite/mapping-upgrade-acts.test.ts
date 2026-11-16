@@ -3,14 +3,13 @@ import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, m
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { resolveAppPaths, type AppPaths } from "../../paths";
 import { createControllerBackup, restoreControllerBackup } from "../../controller-backup";
 import { IdentityService, type AuthenticatedPrincipal } from "../../modules/identity";
 import { KnowledgeService } from "../../modules/knowledge";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
-import { enableProvisionalSchema } from "./provisional-schema-gate";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { SecurityFence, securityFenceRoot } from "./security-fence";
 import { maintainSqliteSecurityFence } from "./security-maintenance";
@@ -31,12 +30,9 @@ import { parseKnowledgeProjectSnapshot } from "../../modules/knowledge/project-t
 import { exact, plain } from "./fixtures/exact-rows";
 import { openStoreAt49 } from "./fixtures/released-schema";
 
-// Every test here needs target 51; the switch is restored after each one.
 const TARGET = 51;
 const roots: string[] = [];
-let restoreGate: () => void;
-beforeEach(() => { restoreGate = enableProvisionalSchema(); });
-afterEach(() => { vi.restoreAllMocks(); restoreGate(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const temporary = () => { const root = mkdtempSync(join(tmpdir(), "mapping-acts-")); roots.push(root); return root; };
 
 /** Historical time of every fixture write that takes a clock. */

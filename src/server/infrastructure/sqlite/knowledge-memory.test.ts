@@ -1,4 +1,5 @@
 import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -391,7 +392,7 @@ describe("K4 memory and session context", () => {
     const old = unmanagedFixtureDatabase(f.path);
     stripMigrationProvenance(old); old.exec("DROP TABLE knowledge_memories; DELETE FROM schema_migrations WHERE version >= 20;"); old.close();
     establishFixtureSecurity(f.path);
-    const migrated = new SqliteStateStore(f.path); cleanups.push(() => migrated.close());
+    const migrated = openStoreAt49(f.path); cleanups.push(() => migrated.close());
     expect(migrated.listHistory(f.project.id, "task", f.task.id, 25, 0)).toEqual(before);
     const service = new KnowledgeService(migrated, new IdentityService(migrated), undefined, () => "collision");
     const input: KnowledgeInput<"create_memory"> = { ...f.input, projectId: f.project.id };

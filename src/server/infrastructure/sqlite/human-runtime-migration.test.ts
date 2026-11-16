@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity, resumeFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -51,19 +52,19 @@ describe("human runtime schema46 and durable intents",()=>{
     const root=mkdtempSync(join(tmpdir(),"human-runtime-reboot-")),path=join(root,"state.sqlite3");
     let store:SqliteStateStore|undefined;
     try {
-      const db=unmanagedFixtureDatabase(path);genuine45(db);db.close();establishFixtureSecurity(path);store=new SqliteStateStore(path);
+      const db=unmanagedFixtureDatabase(path);genuine45(db);db.close();establishFixtureSecurity(path);store=openStoreAt49(path);
       const a=authority(),q=store.humanRuntime();
       expect(q.begin(a,"p","interrupted","c".repeat(64))).toBeNull();
       const lease=q.claim(a,{projectId:"p",worktreePath:"/code/runtime",reason:"finite",key:"interrupted",fingerprint:"c".repeat(64),ttlSeconds:60});
       expect(q.begin(a,"p","complete","d".repeat(64))).toBeNull();q.attach(a,"complete",lease.id);q.finish(a,"complete",{operation:"stop",safe:true});
-      const expected=q.lease(lease.id);store.close();store=new SqliteStateStore(path);
+      const expected=q.lease(lease.id);store.close();store=openStoreAt49(path);
       expect(store.humanRuntime().lease(lease.id)).toEqual(expected);
       expect(store.humanRuntime().begin(a,"p","interrupted","c".repeat(64))).toMatchObject({state:"pending",result:null,reservationId:lease.id});
       expect(store.humanRuntime().begin(a,"p","complete","d".repeat(64))).toMatchObject({state:"complete",result:{safe:true}});
       expect(()=>store!.humanRuntime().begin(a,"p","complete","e".repeat(64))).toThrowError(expect.objectContaining({code:"idempotency_conflict"}));
       await createControllerBackup(store,join(root,"backup"),{applicationVersion:"test",attachmentDirectory:join(root,"attachments")});
       const restoredPath=join(root,"restored.sqlite3");restoreControllerBackup(join(root,"backup"),restoredPath);
-      resumeFixtureSecurity(restoredPath); const restored=new SqliteStateStore(restoredPath);try{
+      await resumeFixtureSecurity(restoredPath); const restored=new SqliteStateStore(restoredPath);try{
         expect(restored.humanRuntime().lease(lease.id)).toMatchObject({...expected,released:true});
         expect(restored.runtimeMemberships().getRuntimeMembership("human","p")!.revokedAt).not.toBeNull();
         expect(restored.listPrincipalCredentials("human")).toEqual([]);

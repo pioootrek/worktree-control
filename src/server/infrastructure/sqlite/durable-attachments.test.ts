@@ -40,7 +40,7 @@ describe("attachment publication process interruption", () => {
       // Pure attachment interruption preserves credentials. Hub/project creation
       // changes authority; its uncertain transaction requires explicit quarantine.
       if(operation==="upload")expect(status.trusted).toBe(true);
-      if(!status.trusted)resumeFixtureSecurity(databasePath);
+      if(!status.trusted)await resumeFixtureSecurity(databasePath);
       const store = new SqliteStateStore(databasePath);
       try {
         const identity = new IdentityService(store);

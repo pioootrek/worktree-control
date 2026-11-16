@@ -70,7 +70,7 @@ describe("test requester migration 44", () => {
     const backup = join(f.root, "backup");
     await createControllerBackup(f.store, backup, { applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") }); f.store.close();
     const path = join(f.root, "restored.sqlite3"); restoreControllerBackup(backup, path);
-    resumeFixtureSecurity(path);
+    await resumeFixtureSecurity(path);
     const restored = new SqliteStateStore(path);
     try { expect(restored.getTestRunRequester("run")).toEqual(f.requester); expect(restored.getTestRun("run")?.exitCode).toBe(42); }
     finally { restored.close(); }

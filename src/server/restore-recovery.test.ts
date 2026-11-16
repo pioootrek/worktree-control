@@ -55,7 +55,7 @@ async function kill(f: Awaited<ReturnType<typeof fixture>>, point: string, mode 
   }
 }
 function assertNew(f: Awaited<ReturnType<typeof fixture>>) {
-  resumeFixtureSecurity(f.database);
+  await resumeFixtureSecurity(f.database);
   const store = new SqliteStateStore(f.database);
   try { expect(store.listProjects().map(project => project.name)).toEqual(["New runtime"]); }
   finally { store.close(); }
@@ -91,7 +91,7 @@ describe("recoverable multi-file restore", { timeout: 20_000 }, () => {
   }, 30_000);
   it("does not apply an already verified backup over subsequent application writes", async () => {
     const f = await fixture(); restoreControllerBackup(f.backup, f.database, f.attachments); assertNew(f);
-    resumeFixtureSecurity(f.database);
+    await resumeFixtureSecurity(f.database);
   const store = new SqliteStateStore(f.database); store.addProject({ name: "After restore", repositoryPath: join(f.root, "another"), port: 4569, executable: "pnpm", args: ["dev"] }); store.close();
     const reopened = new SqliteStateStore(f.database); expect(reopened.listProjects()).toHaveLength(2); reopened.close();
   });
@@ -113,7 +113,7 @@ describe("recoverable multi-file restore", { timeout: 20_000 }, () => {
   }, 20_000);
   it("restores an initially absent target, including a crash after new database rename", async () => {
     const f = await fixture(); rmSync(f.database); for (const suffix of ["-wal", "-shm", "-journal", ".initializing"]) rmSync(`${f.database}${suffix}`); rmSync(f.attachments, { recursive: true });
-    await kill(f, "after-6"); resumeFixtureSecurity(f.database); const store = new SqliteStateStore(f.database); expect(store.listProjects()[0]?.name).toBe("New runtime"); store.close(); expect(readFileSync(join(f.attachments, sha.slice(0, 2), sha))).toEqual(bytes);
+    await kill(f, "after-6"); await resumeFixtureSecurity(f.database); const store = new SqliteStateStore(f.database); expect(store.listProjects()[0]?.name).toBe("New runtime"); store.close(); expect(readFileSync(join(f.attachments, sha.slice(0, 2), sha))).toEqual(bytes);
   }, 20_000);
   it.each(["invalid-json", "checksum", "missing-file", "conflicting-file"])("refuses %s without losing recovery material", async damage => {
     const f = await fixture(); await kill(f, "after-0"); const root = restoreRoot(f.database), journal = join(root, "journal.json");
@@ -205,7 +205,7 @@ describe("strict restore validation before replacement", { timeout: 20_000 }, ()
     expect(readFileSync(f.database)).toEqual(f.before); expect(existsSync(parent)).toBe(mode === "interrupted"); expect(existsSync(restoreRoot(f.database))).toBe(false);
     vi.restoreAllMocks(); restoreControllerBackup(f.backup, f.database, target);
     expect(readFileSync(join(target, sha.slice(0, 2), sha))).toEqual(bytes);
-    resumeFixtureSecurity(f.database); const restored = new SqliteStateStore(f.database);
+    await resumeFixtureSecurity(f.database); const restored = new SqliteStateStore(f.database);
     try { expect(restored.listProjects().map(project => project.name)).toEqual(["New runtime"]); } finally { restored.close(); }
   });
   it("refuses actual different-device attachments before replacing data", async () => {
@@ -337,7 +337,7 @@ describe("restore durability and historical snapshots", { timeout: 20_000 }, () 
     } finally { ownership.lock.release(); }
     expect(getControllerRestoreRequestStatus(f.database, actor, policy).state).toBe("requested");
     restoreControllerBackup(f.backup, f.database, f.attachments);
-    resumeFixtureSecurity(f.database);
+    await resumeFixtureSecurity(f.database);
   const store = new SqliteStateStore(f.database); store.addProject({ name: "After", repositoryPath: join(f.root, "after"), port: 5678, executable: "pnpm", args: ["dev"] }); store.close();
     expect(executeControllerRestoreRequest(f.database, f.attachments, actor, policy).state).toBe("verified");
     const reopened = new SqliteStateStore(f.database); expect(reopened.listProjects()).toHaveLength(2); reopened.close();

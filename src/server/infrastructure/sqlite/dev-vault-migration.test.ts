@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,7 +52,7 @@ describe("Knowledge 33 and DEV vault 34 integration", () => {
     } finally { db.close(); }
 
     establishFixtureSecurity(f.path);
-    const upgraded = new SqliteStateStore(f.path);
+    const upgraded = openStoreAt49(f.path);
     try {
       expect(upgraded.schemaVersion()).toBe(49);
       expect(upgraded.getProject(f.project.id)).toEqual(f.project);
@@ -70,7 +71,7 @@ describe("Knowledge 33 and DEV vault 34 integration", () => {
       });
       expect(check.pragma("foreign_key_check")).toEqual([]);
     } finally { check.close(); }
-    new SqliteStateStore(f.path).close();
+    openStoreAt49(f.path).close();
   });
 
   it("refuses the old experimental vault-33 lineage without changing ciphertext or provenance", () => {

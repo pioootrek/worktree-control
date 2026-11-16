@@ -43,7 +43,7 @@ describe("vault SQLite atomicity and backup", () => {
     }
     restoreControllerBackup(backup, restoredPath);
     expect(()=>new SqliteStateStore(restoredPath)).toThrow(/security_fence/);
-    resumeFixtureSecurity(restoredPath);
+    await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
     try {
       expect(restored.devVault.load(f.project.id)).toEqual(f.store.devVault.load(f.project.id));

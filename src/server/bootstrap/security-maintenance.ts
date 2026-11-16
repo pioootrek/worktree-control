@@ -11,9 +11,11 @@ const HANDOFF = {
 };
 
 /** Protected offline composition. SQLite owns both locks; application handoffs
- * are validated before any writes and acknowledged only after quarantine. */
-export function maintainSecurityFence(paths:AppPaths,command:SecurityMaintenanceCommand) {
-  return maintainSqliteSecurityFence(paths,command,HANDOFF);
+ * are validated before any writes and acknowledged only after quarantine.
+ * `target` is for tests at an explicit lower target; omitted, it is the
+ * supported schema, as the `auth fence` command runs it. */
+export function maintainSecurityFence(paths:AppPaths,command:SecurityMaintenanceCommand,target?:number) {
+  return maintainSqliteSecurityFence(paths,command,HANDOFF,target);
 }
 
 /**

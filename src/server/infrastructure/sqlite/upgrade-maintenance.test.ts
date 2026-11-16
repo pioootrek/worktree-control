@@ -4,7 +4,7 @@ import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, m
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { resolveAppPaths, type AppPaths } from "../../paths";
@@ -21,13 +21,12 @@ import { configureDurability, validateDatabase } from "./database-validation";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
-import { enableProvisionalSchema } from "./provisional-schema-gate";
 import { hashFile, parseManifest, readBoundedJson, validateBackup, BACKUP_LIMITS } from "./backup-validation";
 import { UPGRADE_MARKER_VERSION, upgradeMarkerChecksum, upgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup, type UpgradeBackupSource } from "./upgrade-maintenance";
 import { takeBoundBackup } from "./backup-binding";
 import {
-  assertUpgradeAvailable, canonicalJson, describeUpgradeActs, executeUpgradeActs, normaliseUpgradeDecisions, parseUpgradePlan, proposeUpgrade, readUpgradePlan, structuralSteps,
+  canonicalJson, describeUpgradeActs, executeUpgradeActs, normaliseUpgradeDecisions, parseUpgradePlan, proposeUpgrade, readUpgradePlan, structuralSteps,
   UPGRADE_ACT_DOMAINS, UPGRADE_PLAN_LIMITS, upgradePlanHash, upgradePlanPath, upgradePlanRoot, validateUpgradeProposal, writeUpgradePlan,
   type UpgradeActDomain, type UpgradePlan,
 } from "./upgrade-plan";
@@ -38,9 +37,7 @@ vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs
 // The upgrade to step 51 is covered in mapping-structure-migration.test.ts.
 const TARGET = UPGRADE_MARKER_VERSION;
 const roots: string[] = [];
-let restoreGate: () => void;
-beforeEach(() => { restoreGate = enableProvisionalSchema(); });
-afterEach(() => { vi.restoreAllMocks(); restoreGate(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const temporary = (prefix: string) => { const root = mkdtempSync(join(tmpdir(), prefix)); roots.push(root); return root; };
@@ -1278,16 +1275,14 @@ describe("explicit offline upgrade: witness compatibility", () => {
     expect(inspect(paths)).toMatchObject({ state: "current", appliedPlan: result.planHash });
   });
 
-  it("reads, verifies and carries a format-2 witness with the provisional switch off; only the upgrade helpers refuse", async () => {
+  it("reads and verifies a confirmed format-2 witness; the upgrade's receipt helper refuses a witness that is not this run's pending one", async () => {
     const paths = installation(), result = await apply(paths, inspect(paths).planHash!), path = canonical(paths);
     const bytes = readFileSync(witnessPath(paths), "utf8"), boundary = securityRecoveryBoundary(paths.databasePath);
-    restoreGate();
-    expect(() => assertUpgradeAvailable()).toThrowError(expect.objectContaining({ code: "upgrade_unsupported" }));
     expect(securityRecoveryBoundary(paths.databasePath)).toEqual(boundary);
     read(paths, db => {
       expect(() => SecurityFence.inspect(path, db, false)).not.toThrow();
       expect(SecurityFence.preflight(path, db, 50)).toMatchObject({ trusted: true, code: "security_fence_current" });
-      expect(() => SecurityFence.upgradeReceipt(path, db, result.receipt!, "confirmed")).toThrowError(expect.objectContaining({ code: "upgrade_unsupported" }));
+      expect(() => SecurityFence.upgradeReceipt(path, db, result.receipt!, "confirmed")).toThrowError(expect.objectContaining({ code: "security_fence_recovery_required" }));
     });
     expect(readFileSync(witnessPath(paths), "utf8")).toBe(bytes);
     expect(witness(paths)).toMatchObject({ format: 2, state: "confirmed", upgrade: { receipt: result.receipt, plan: result.planHash } });

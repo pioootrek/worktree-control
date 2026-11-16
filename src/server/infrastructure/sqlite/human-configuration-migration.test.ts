@@ -101,7 +101,7 @@ describe("human configuration schema48 and atomic ledger", () => {
       expect(reopened.getProjectConfigurationRevision(f.project.id)).toBe(1);
       reopened.close();
       const restored = join(f.root, "restored.sqlite3"); restoreControllerBackup(backup, restored);
-      resumeFixtureSecurity(restored);
+      await resumeFixtureSecurity(restored);
       reopened = new SqliteStateStore(restored);
       expect(()=>reopened!.beginHumanConfiguration(f.intent)).toThrow();
       const evidence=unmanagedFixtureDatabase(restored,{readonly:true});

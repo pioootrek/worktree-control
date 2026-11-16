@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { createHash } from "node:crypto";
 import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -63,7 +64,7 @@ describe("SqliteStateStore", () => {
     legacy.exec("ALTER TABLE knowledge_import_batches DROP COLUMN authentication_method; ALTER TABLE projects DROP COLUMN launch_preset; DELETE FROM schema_migrations WHERE version > 12;");
     legacy.close();
     establishFixtureSecurity(path);
-    const repaired = new SqliteStateStore(path);
+    const repaired = openStoreAt49(path);
     expect(repaired.getProject(project.id)?.launchPreset).toBe("auto");
     expect(repaired.listProjects()[0].launchPreset).toBe("auto");
     writeFileSync(join(directory, "manage.py"), "");
@@ -72,7 +73,7 @@ describe("SqliteStateStore", () => {
       .toEqual(resolver.resolve(directory, 3218, undefined));
     const django = repaired.addProject({ ...projectInput("Django", "/code/django", 3217), launchPreset: "django" });
     repaired.close();
-    const reopened = new SqliteStateStore(path);
+    const reopened = openStoreAt49(path);
     expect(reopened.getProject(django.id)?.launchPreset).toBe("django");
     reopened.close();
   });
@@ -90,7 +91,7 @@ describe("SqliteStateStore", () => {
     legacy.exec("DELETE FROM schema_migrations WHERE version >= 13");
     legacy.close();
     establishFixtureSecurity(path);
-    const repaired = new SqliteStateStore(path);
+    const repaired = openStoreAt49(path);
     expect(repaired.getProject(auto.id)?.launchPreset).toBe("auto");
     expect(repaired.getProject(django.id)?.launchPreset).toBe("django");
     repaired.close();
@@ -162,10 +163,10 @@ describe("SqliteStateStore", () => {
     database.close();
 
     establishFixtureSecurity(databasePath);
-    const migrated = new SqliteStateStore(databasePath);
+    const migrated = openStoreAt49(databasePath);
     expect(migrated.getTestRun(run.id)?.source).toMatchObject({ attribution: "legacy_unknown", enqueue: null, processOutcome: null });
     migrated.close();
-    const replay = new SqliteStateStore(databasePath);
+    const replay = openStoreAt49(databasePath);
     expect(replay.getTestRun(run.id)?.source.attribution).toBe("legacy_unknown");
     replay.close();
   });
@@ -273,7 +274,7 @@ describe("SqliteStateStore", () => {
     database.close();
 
     establishFixtureSecurity(databasePath);
-    const migrated = new SqliteStateStore(databasePath);
+    const migrated = openStoreAt49(databasePath);
     expect(migrated.getProject(project.id)?.args).toEqual(["run", "dev"]);
     migrated.close();
   });
@@ -334,7 +335,7 @@ describe("SqliteStateStore", () => {
     database.close();
 
     establishFixtureSecurity(databasePath);
-    const migrated = new SqliteStateStore(databasePath);
+    const migrated = openStoreAt49(databasePath);
     expect(migrated.getProject(project.id)?.environmentProfiles).toEqual([
       { name: "default", environment: {} },
       { name: "staging", environment: { FEATURE_MODE: "staging" } },
@@ -400,7 +401,7 @@ describe("SqliteStateStore", () => {
     database.close();
 
     establishFixtureSecurity(databasePath);
-    const migrated = new SqliteStateStore(databasePath);
+    const migrated = openStoreAt49(databasePath);
     expect(migrated.getProject("legacy")).toMatchObject({ tlsMode: "off", tlsKeyPath: null, launchPreset: "node" });
     migrated.close();
   });
@@ -426,9 +427,9 @@ describe("SqliteStateStore", () => {
     database.close();
 
     establishFixtureSecurity(databasePath);
-    const migrated = new SqliteStateStore(databasePath);
+    const migrated = openStoreAt49(databasePath);
     migrated.close();
-    new SqliteStateStore(databasePath).close();
+    openStoreAt49(databasePath).close();
     const inspected = unmanagedFixtureDatabase(databasePath);
     const columns = inspected.prepare("PRAGMA table_info(reservations)").all() as Array<{ name: string }>;
     expect(columns.map(({ name }) => name)).toEqual(expect.arrayContaining([

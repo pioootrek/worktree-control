@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity, resumeFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { initializeSchema } from "./migrations";
 import { configureDurability } from "./database-validation";
 import { inspectSchema } from "./schema-inspection";
@@ -62,10 +63,10 @@ describe("durable SQLite initialization and migration", () => {
         VALUES('active','kept','/code/kept','agent','agent','now','later','maximum',printf('%064d',0),'request');
     `));
     establishFixtureSecurity(f.path);
-    const store = new SqliteStateStore(f.path);
+    const store = openStoreAt49(f.path);
     try { expect(store.schemaVersion()).toBe(49); expect(store.getProject("kept")?.name).toBe("Kept"); }
     finally { store.close(); }
-    new SqliteStateStore(f.path).close();
+    openStoreAt49(f.path).close();
     raw(f.path, db => {
       expect(db.prepare("SELECT id,released_at FROM reservations ORDER BY id").all()).toEqual([
         { id: "active", released_at: null }, { id: "released", released_at: "released" },
@@ -102,18 +103,19 @@ describe("durable SQLite initialization and migration", () => {
 
   it.each([undefined, 12, 24, 26] as const)("initializes/upgrades %s with verified FULL and honest provenance", version => {
     const f = fixture(version);
+    // A fresh database is created at the supported version; an older one is established at the released 49 and opened there.
     if(version)establishFixtureSecurity(f.path);
-    const owned = new OwnedSqliteDatabase(f.path, true);
+    const owned = new OwnedSqliteDatabase(f.path, true, version ? 49 : undefined, { ordinary: true });
     const store = new SqliteStateStore(f.path, owned);
     try {
       assertDurability(owned.database);
-      expect(store.schemaVersion()).toBe(49);
+      expect(store.schemaVersion()).toBe(version ? 49 : 52);
       expect(store.getAuthenticationPolicy().mode).toBe(version && version < 25 ? "legacy" : "token");
       expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version<28").all()).toEqual(Array.from({length:27},()=>({name:null,checksum:null})));
       expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version=28").get()).toEqual({name:registryMigration.name,checksum:registryChecksum});
     } finally { store.close(); }
     expect(existsSync(`${f.path}.initializing`)).toBe(false);
-    new SqliteStateStore(f.path).close();
+    (version ? openStoreAt49(f.path) : new SqliteStateStore(f.path)).close();
     released(f.path);
   });
 
@@ -154,7 +156,8 @@ describe("durable SQLite initialization and migration", () => {
       else {expect(db.prepare("SELECT max(version) version FROM schema_migrations").get()).toEqual({version:26});expect(db.prepare("PRAGMA table_info(schema_migrations)").all()).toHaveLength(2);}
     });
     if(!fresh)establishFixtureSecurity(f.path);
-    const retried=new SqliteStateStore(f.path);expect(retried.getAuthenticationPolicy().mode).toBe("token");retried.close();
+    // A fresh retry creates this release's schema; the older source is established at 49 and opened there.
+    const retried=fresh?new SqliteStateStore(f.path):openStoreAt49(f.path);expect(retried.getAuthenticationPolicy().mode).toBe("token");retried.close();
   });
 
   it.each(["fresh","migration"])("recovers a real SIGKILL during uncommitted %s without auth downgrade",async stage=>{
@@ -164,11 +167,11 @@ describe("durable SQLite initialization and migration", () => {
       const [message]=await once(child,"message",{signal:AbortSignal.timeout(5000)});expect(message).toEqual({interrupted:true});
     } finally { const ended=once(child,"exit");child.kill("SIGKILL");await ended; }
     if(stage!=="fresh")establishFixtureSecurity(f.path);
-    const retry=new SqliteStateStore(f.path);try{expect(retry.schemaVersion()).toBe(49);expect(retry.getAuthenticationPolicy().mode).toBe("token");}finally{retry.close();}
+    const retry=stage==="fresh"?new SqliteStateStore(f.path):openStoreAt49(f.path);try{expect(retry.schemaVersion()).toBe(stage==="fresh"?52:49);expect(retry.getAuthenticationPolicy().mode).toBe("token");}finally{retry.close();}
     released(f.path);
   },10000);
 
-  it.each(["fk","integrity","policy","reply-project"])("rejects %s failures and releases resources",kind=>{
+  it.each(["fk","integrity","policy","reply-project"])("rejects %s failures and releases resources",async kind=>{
     const f=fixture();new SqliteStateStore(f.path).close();
     raw(f.path,db=>{
       if(kind==="fk") db.exec("PRAGMA foreign_keys=OFF; INSERT INTO principal_credentials(id,principal_id,kind,label,token_prefix,verifier_hash,status,created_at) VALUES('bad','missing','agent_token','x','x',printf('%064d',0),'active','now')");
@@ -178,7 +181,7 @@ describe("durable SQLite initialization and migration", () => {
     });
     const before=readFileSync(f.path);expect(()=>new SqliteStateStore(f.path)).toThrow();expect(readFileSync(f.path)).toEqual(before);released(f.path);
     raw(f.path,db=>{db.exec("DELETE FROM principal_credentials; DELETE FROM knowledge_relations; DELETE FROM knowledge_replies; UPDATE remote_principals SET status='active'; UPDATE controller_settings SET value_json='{\"mode\":\"token\",\"token\":null,\"generation\":0}' WHERE key='authentication'");});
-    resumeFixtureSecurity(f.path);new SqliteStateStore(f.path).close();
+    await resumeFixtureSecurity(f.path);new SqliteStateStore(f.path).close();
   });
 
   it.each(["foreign-key", "integrity"])("rolls back a %s failure detected after migration DDL", kind => {
@@ -200,7 +203,7 @@ describe("durable SQLite initialization and migration", () => {
     expect(owned.database.open).toBe(false);
     released(f.path);
     raw(f.path, db => expect(db.prepare("SELECT max(version) version FROM schema_migrations").get()).toEqual({version:26}));
-    establishFixtureSecurity(f.path);new SqliteStateStore(f.path).close();
+    establishFixtureSecurity(f.path);openStoreAt49(f.path).close();
   });
 
   it("refuses mismatched effective PRAGMA settings and closes the connection", () => {
@@ -224,12 +227,13 @@ describe("durable SQLite initialization and migration", () => {
     expect(readFileSync(f.path)).toEqual(before);expect(readFileSync(`${f.path}.initializing`)).toEqual(marker);
   });
 
-  it("recognizes a committed initialization if marker cleanup failed",()=>{
+  it("recognizes a committed initialization if marker cleanup failed, its witness already published",()=>{
     const f=fixture();
     const cleanup=vi.spyOn(OwnedSqliteDatabase.prototype,"completeInitialization").mockImplementation(()=>{throw Error("injected marker cleanup failure");});
     expect(()=>new SqliteStateStore(f.path)).toThrow(/marker cleanup/);released(f.path);
     cleanup.mockRestore();
-    resumeFixtureSecurity(f.path);
+    // The creation completes only after the fence published its witness, so the retry needs no recovery.
+    expect(existsSync(`${f.path}.initializing`)).toBe(true);
     const retry=new SqliteStateStore(f.path);expect(retry.getAuthenticationPolicy().mode).toBe("token");retry.close();
     expect(existsSync(`${f.path}.initializing`)).toBe(false);
   });

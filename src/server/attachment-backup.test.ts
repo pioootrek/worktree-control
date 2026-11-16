@@ -17,7 +17,7 @@ function fixture(executeOnlyAncestor = false) {
   const outer = fs.mkdtempSync(join(tmpdir(), "attachment-backup-")), root = executeOnlyAncestor ? join(outer, "data") : outer;
   if (executeOnlyAncestor) fs.mkdirSync(root, { mode: 0o700 });
   cleanups.push(() => { fs.chmodSync(outer, 0o700); fs.rmSync(outer, { recursive: true, force: true }); });
-  const owned = new OwnedSqliteDatabase(join(root, "state.sqlite3"), true), store = new SqliteStateStore(join(root, "state.sqlite3"), owned); cleanups.push(() => store.close());
+  const owned = new OwnedSqliteDatabase(join(root, "state.sqlite3"), true, undefined, { ordinary: true }), store = new SqliteStateStore(join(root, "state.sqlite3"), owned); cleanups.push(() => store.close());
   const ids = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
   const identity = new IdentityService(store, undefined, () => ids.shift() ?? randomUUID());
   const owner = identity.authenticateBearer(identity.bootstrapOwnerSession().token), project = identity.createKnowledgeProject({ name: "Original" }, owner);

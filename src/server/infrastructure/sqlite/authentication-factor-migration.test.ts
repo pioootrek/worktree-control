@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity, resumeFixtureSecurity, openProtectedUpgradeFixture } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,11 +54,11 @@ describe("authentication factor migration 40", () => {
   it("creates recognized empty storage on a fresh database", () => {
     const f = directory(), store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(49);
+      expect(store.schemaVersion()).toBe(52);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
-      expect(inspectSchema(db)).toEqual({ version: 49, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 52, fresh: false });
       expect(factorTables(db)).toEqual(FACTOR_TABLES);
       for (const table of FACTOR_TABLES) expect(db.prepare(`SELECT count(*) n FROM "${table}"`).get()).toEqual({ n: 0 });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=40").get()).toEqual({ name: authenticationFactorMigration.name, checksum: authenticationFactorChecksum });
@@ -78,37 +79,37 @@ describe("authentication factor migration 40", () => {
       expect(db.prepare("PRAGMA table_info(\"authentication_ba_user\")").all()).not.toContainEqual(expect.objectContaining({ name: "twoFactorEnabled" }));
     });
     const backups = join(f.root, "backups");
-    const store = await openProtectedUpgradeFixture(f.path, { backupBeforeMigration: true, backupDirectory: backups, applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
+    const store = await openProtectedUpgradeFixture(f.path, { backupDirectory: backups, applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") });
     try { expect(store.schemaVersion()).toBe(49); } finally { store.close(); }
     const [backup] = readdirSync(backups);
-    expect(backup).toMatch(/^pre-migration-v39-/);
+    expect(backup).toMatch(/^pre-establishment-v39-/);
     raw(f.path, db => {
       expect(preserved(db)).toEqual(before.rows);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=39 ORDER BY version").all()).toEqual(before.registry);
       for (const table of FACTOR_TABLES) expect(db.prepare(`SELECT count(*) n FROM "${table}"`).get()).toEqual({ n: 0 });
       expect(db.prepare('SELECT "twoFactorEnabled" flag FROM "authentication_ba_user"').all()).toEqual([{ flag: 0 }]);
     });
-    // The old snapshot restores through the supported path, then migrates on open.
+    // The old snapshot restores through the supported path; resume and the explicit upgrade make it current.
     const restoredPath = join(f.root, "restored39", "state.sqlite3");
     restoreControllerBackup(join(backups, backup!), restoredPath);
-    resumeFixtureSecurity(restoredPath);
+    await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
-    try { expect(restored.schemaVersion()).toBe(49); } finally { restored.close(); }
+    try { expect(restored.schemaVersion()).toBe(52); } finally { restored.close(); }
     raw(restoredPath, db => { expect(db.prepare("SELECT * FROM remote_principals ORDER BY rowid").all()).toEqual(before.rows.remote_principals); expect(db.prepare("SELECT * FROM authentication_totp_steps ORDER BY rowid").all()).toEqual(before.rows.authentication_totp_steps ?? []); expect(db.prepare("SELECT * FROM authentication_ba_session").all()).toEqual([]); });
   });
 
   it("backs up and restores recognized authority rows without inventing or losing any", async () => {
     const f = genuine39();
     establishFixtureSecurity(f.path);
-    const staged=new SqliteStateStore(f.path);
+    const staged=openStoreAt49(f.path);
     (staged as unknown as {database:Database.Database}).database.exec(authority);staged.close();
-    const store = new SqliteStateStore(f.path), target = join(f.root, "manual");
+    const store = openStoreAt49(f.path), target = join(f.root, "manual");
     try { await createControllerBackup(store, target, { applicationVersion: "test", attachmentDirectory: join(f.root, "attachments") }); } finally { store.close(); }
     const restoredPath = join(f.root, "restored", "state.sqlite3");
     restoreControllerBackup(target, restoredPath);
-    resumeFixtureSecurity(restoredPath);
+    await resumeFixtureSecurity(restoredPath);
     const reopened = new SqliteStateStore(restoredPath);
-    try { expect(reopened.schemaVersion()).toBe(49); } finally { reopened.close(); }
+    try { expect(reopened.schemaVersion()).toBe(52); } finally { reopened.close(); }
     raw(restoredPath, db => {
       expect(db.prepare("SELECT last_step FROM authentication_totp_steps").all()).toEqual([{ last_step: 59788416 }]);
       expect(db.prepare("SELECT method, generation FROM authentication_session_evidence").all()).toEqual([]);
@@ -154,7 +155,7 @@ describe("authentication factor migration 40", () => {
     establishFixtureSecurity(f.path);
     raw(f.path, db => { db.exec("INSERT INTO remote_principals VALUES('owner-2','owner','revoked')"); db.pragma("foreign_keys = OFF"); db.exec(change); });
     const bytes = readFileSync(f.path);
-    expect(() => new SqliteStateStore(f.path)).toThrow(message);
+    expect(() => openStoreAt49(f.path)).toThrow(message);
     expect(readFileSync(f.path)).toEqual(bytes);
   });
 

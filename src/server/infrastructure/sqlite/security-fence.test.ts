@@ -27,7 +27,6 @@ import { BACKUP_LIMITS, hashFile, parseManifest, readBoundedJson, validateBackup
 import { initializeSchema } from "./migrations";
 import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { UPGRADE_MARKER_VERSION } from "./upgrade-marker-migration";
-import { enableProvisionalSchema, provisionalSchemaEnabled } from "./provisional-schema-gate";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
 import { openStoreAt49, RELEASED_SCHEMA_VERSION } from "./fixtures/released-schema";
 
@@ -535,10 +534,7 @@ describe("external security checkpoint",()=>{
   },30_000);
 });
 
-describe("provisional upgrade marker under the security fence (target 50)",()=>{
-  let restoreGate:()=>void;
-  beforeEach(()=>{restoreGate=enableProvisionalSchema();});
-  afterEach(()=>{restoreGate();});
+describe("the upgrade marker under the security fence (target 50)",()=>{
   it("publishes a pending witness for every marker write exactly as for a schema-49 authority table",()=>{
     const root=mkdtempSync(join(tmpdir(),"security-marker-"));roots.push(root);
     const paths=resolveAppPaths(join(root,"data"));mkdirSync(paths.dataDirectory,{mode:0o700});
@@ -628,15 +624,12 @@ describe("provisional upgrade marker under the security fence (target 50)",()=>{
   });
 });
 
-describe("default maintenance of a step-50 database (provisional switch off)",()=>{
+describe("maintenance at the released target 49 of a step-50 database",()=>{
   const UNKNOWN_NEWER="INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(50,'2026-11-15T00:00:00.000Z','unknown-newer','"+"0".repeat(64)+"')";
   let provisional:ReturnType<typeof resolveAppPaths>,unknown:ReturnType<typeof resolveAppPaths>;
-  // Only building the step-50 fixture needs the switch; every test body runs with it off.
   beforeEach(()=>{
     provisional=released49();unknown=released49();
-    const restore=enableProvisionalSchema();
-    try{const db=unmanagedFixtureDatabase(provisional.databasePath);try{initializeSchema(db,false,current=>{inspectSchema(current,TARGET);},{target:TARGET});}finally{db.close();}}
-    finally{restore();}
+    {const db=unmanagedFixtureDatabase(provisional.databasePath);try{initializeSchema(db,false,current=>{inspectSchema(current,TARGET);},{target:TARGET});}finally{db.close();}}
     const db=unmanagedFixtureDatabase(unknown.databasePath);try{db.exec(UNKNOWN_NEWER);}finally{db.close();}
   });
   /** The database rows and catalogue, the database file bytes and the fence witness. */
@@ -646,16 +639,15 @@ describe("default maintenance of a step-50 database (provisional switch off)",()
     ["inspect",{action:"inspect"}],
     ["establish",{action:"establish",expect:"0".repeat(64)}],
     ["resume",{action:"resume",expect:"0".repeat(64),mode:"token"}],
-  ] as const)("refuses %s without a target, changes nothing and reports what the base reports for an unknown newer schema",(_name,command)=>{
-    expect(provisionalSchemaEnabled()).toBe(false);
+  ] as const)("refuses %s at target 49, changes nothing and reports what the base reports for an unknown newer schema",(_name,command)=>{
     read(provisional,db=>{expect(db.prepare("SELECT max(version) FROM schema_migrations").pluck().get()).toBe(50);expect(db.prepare("SELECT state FROM upgrade_marker").pluck().all()).toEqual(["pending"]);});
     const before=state(provisional),beforeUnknown=state(unknown);
-    const refused=failure(()=>maintainSqliteSecurityFence(provisional,command,HANDOFF));
+    const refused=failure(()=>maintainSqliteSecurityFence(provisional,command,HANDOFF,RELEASED_SCHEMA_VERSION));
     // committed defaults to false in AuthenticationProviderError: nothing was committed.
     expect(refused).toEqual({name:"SecurityFenceError",code:"security_fence_pending",committed:false});
-    expect(failure(()=>maintainSqliteSecurityFence(unknown,command,HANDOFF))).toEqual(refused);
-    // The production composition gives the same answer.
-    expect(failure(()=>maintainSecurityFence(provisional,command))).toEqual(refused);
+    expect(failure(()=>maintainSqliteSecurityFence(unknown,command,HANDOFF,RELEASED_SCHEMA_VERSION))).toEqual(refused);
+    // The bootstrap composition at the same target gives the same answer.
+    expect(failure(()=>maintainSecurityFence(provisional,command,RELEASED_SCHEMA_VERSION))).toEqual(refused);
     expect(state(provisional)).toEqual(before);
     expect(state(unknown)).toEqual(beforeUnknown);
   });

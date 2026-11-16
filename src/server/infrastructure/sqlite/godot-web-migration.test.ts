@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -81,7 +82,7 @@ describe("Godot Web migration 43", () => {
   it("opens schema 42 through the store and counts Godot Web configuration as a configuration revision", () => {
     const path = v42();
     establishFixtureSecurity(path);
-    const store = new SqliteStateStore(path);
+    const store = openStoreAt49(path);
     try {
       expect(store.schemaVersion()).toBe(49);
       expect(store.getProject("kept")).toMatchObject({ launchPreset: "none", godotWeb: null });
@@ -103,14 +104,14 @@ describe("Godot Web migration 43", () => {
   it("refuses an unknown preset and a tampered migration record", () => {
     const path = v42();
     establishFixtureSecurity(path);
-    new SqliteStateStore(path).close();
+    openStoreAt49(path).close();
     const db = unmanagedFixtureDatabase(path);
     try {
       expect(() => db.prepare("UPDATE projects SET launch_preset='unity'").run()).toThrow(/CHECK constraint/);
       db.prepare("UPDATE schema_migrations SET checksum='tampered' WHERE version=43").run();
     } finally { db.close(); }
     const before = readFileSync(path);
-    expect(() => new SqliteStateStore(path)).toThrow(/migration checksum or name/);
+    expect(() => openStoreAt49(path)).toThrow(/migration checksum or name/);
     expect(readFileSync(path)).toEqual(before);
   });
 

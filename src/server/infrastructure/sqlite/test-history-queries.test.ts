@@ -26,7 +26,7 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "wtc-history-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-  const path = join(root, "state.sqlite3"), owned = new OwnedSqliteDatabase(path, true), store = new SqliteStateStore(path, owned);
+  const path = join(root, "state.sqlite3"), owned = new OwnedSqliteDatabase(path, true, undefined, { ordinary: true }), store = new SqliteStateStore(path, owned);
   cleanup.push(() => store.close());
   const project = store.addProject({ name: "App", repositoryPath: root, port: 3210, executable: "node", args: [] });
   const other = store.addProject({ name: "Other", repositoryPath: join(root, "other"), port: 3211, executable: "node", args: [] });

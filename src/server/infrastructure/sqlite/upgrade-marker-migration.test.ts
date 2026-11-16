@@ -4,9 +4,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
-import { enableProvisionalSchema } from "./provisional-schema-gate";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { validateDatabase } from "./database-validation";
@@ -16,14 +15,10 @@ import { UPGRADE_MARKER_SECURITY_TABLES, UPGRADE_MARKER_VERSION, upgradeMarkerCh
 import { PROJECT_MAPPING_SECURITY_TABLES } from "./mapping-structure-migration";
 import { SECURITY_COVERAGE, securityTriggersAt } from "./security-coverage";
 import { rewindUpgradeMarker } from "./fixtures/schema-rewind";
-import { schemaAt49 } from "./fixtures/released-schema";
-import { SqliteStateStore } from "./sqlite-state-store";
+import { openStoreAt, schemaAt49 } from "./fixtures/released-schema";
 
 const roots: string[] = [];
-// Every test here needs target 50; the switch is restored after each one.
-let restoreGate: () => void;
-beforeEach(() => { restoreGate = enableProvisionalSchema(); });
-afterEach(() => { restoreGate(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const temporary = () => { const root = mkdtempSync(join(tmpdir(), "upgrade-marker-")); roots.push(root); return root; };
 
 // Step 50 exactly; step 51 has its own tests.
@@ -92,7 +87,7 @@ function backupTree(build: (database: Database.Database) => void, schemaVersion:
   return { root, path, manifest };
 }
 
-describe("provisional schema step 50: upgrade marker", () => {
+describe("schema step 50: upgrade marker", () => {
   it("keeps schema-49 coverage frozen and covers the marker with the same trigger body", () => {
     expect(SECURITY_TABLES).not.toContain("upgrade_marker");
     // Steps 49 to 51; step 52's entry is pinned in account-grants-migration.test.ts.
@@ -110,7 +105,7 @@ describe("provisional schema step 50: upgrade marker", () => {
     expect(upgradeMarkerMigration.sql).toContain("INSERT INTO upgrade_marker(singleton,state,changed_at) VALUES(1,?,");
     for (const trigger of upgradeMarkerTriggers) expect(upgradeMarkerMigration.sql).toContain(trigger.sql);
     expect(upgradeMarkerChecksum).toMatch(/^[0-9a-f]{64}$/);
-    // Pinned while provisional: a change to the step's text is a visible edit here.
+    // Pinned: a change to the step's text is a visible edit here.
     expect(upgradeMarkerChecksum).toBe("d720c5eef040ff328401426cc18fefb560a6be7460cc355a789f169d5d07315c");
     expect(upgradeMarkerMigration.sql.startsWith(`${MARKER_TABLE};\n`)).toBe(true);
     expect(securityFenceMigration).toMatchObject({ version: 49, name: "external-security-checkpoint" });
@@ -127,30 +122,29 @@ describe("provisional schema step 50: upgrade marker", () => {
     expect(securityTriggers[0].sql).toBe("CREATE TRIGGER security_reservations_insert BEFORE INSERT ON reservations BEGIN SELECT worktree_security_pending(); UPDATE security_checkpoint SET epoch=lower(hex(randomblob(32))) WHERE singleton=1; END");
   });
 
-  it("does not apply or recognise step 50 by default, and refuses a step-50 database like an unknown newer schema", () => {
+  it("does not apply or recognise step 50 at target 49, and refuses a step-50 database there like an unknown newer schema", () => {
     const current = fresh49();
     try {
-      expect(SUPPORTED_SCHEMA_VERSION).toBe(49);
-      expect(inspectSchema(current)).toEqual({ version: 49, fresh: false });
+      expect(SUPPORTED_SCHEMA_VERSION).toBe(52);
+      expect(inspectSchema(current, 49)).toEqual({ version: 49, fresh: false });
       expect(current.prepare("SELECT 1 FROM sqlite_master WHERE name='upgrade_marker'").get()).toBeUndefined();
       expect(triggers(current)).toEqual(byName(securityTriggers));
     } finally { current.close(); }
     const provisional = fresh50(), unknown = fresh49();
     try {
       unknown.exec(UNKNOWN_NEWER);
-      const refusal = message(() => inspectSchema(unknown));
+      const refusal = message(() => inspectSchema(unknown, 49));
       expect(refusal).toMatch(SCHEMA_REFUSAL);
-      expect(message(() => inspectSchema(provisional))).toBe(refusal);
-      expect(message(() => inspectSchema(provisional, SUPPORTED_SCHEMA_VERSION))).toBe(refusal);
-      // A default initialisation does not recognise it either.
-      expect(message(() => initializeSchema(provisional, false, inspectSchema))).toBe(refusal);
+      expect(message(() => inspectSchema(provisional, 49))).toBe(refusal);
+      // An initialisation at 49 does not recognise it either.
+      expect(message(() => initializeSchema(provisional, false, database => { inspectSchema(database, 49); }, { target: 49 }))).toBe(refusal);
     } finally { provisional.close(); unknown.close(); }
-    // Ordinary store opening.
+    // A store opened at 49 (the test-side opener: an ordinary owner at that target).
     const provisionalPath = privateDatabase(database => fresh50(database));
     const unknownPath = privateDatabase(database => { fresh49(database); database.exec(UNKNOWN_NEWER); });
-    const opening = message(() => new SqliteStateStore(unknownPath));
+    const opening = message(() => openStoreAt(unknownPath, 49));
     expect(opening).toMatch(SCHEMA_REFUSAL);
-    expect(message(() => new SqliteStateStore(provisionalPath))).toBe(opening);
+    expect(message(() => openStoreAt(provisionalPath, 49))).toBe(opening);
   });
 
   it("initialises a fresh database at target 50 with a complete marker, on a connection without the fence function", () => {
@@ -367,25 +361,28 @@ describe("provisional schema step 50: upgrade marker", () => {
     } finally { database.close(); }
   });
 
-  it("accepts a schema-50 backup only with the ceiling 50", () => {
+  it("accepts a schema-50 backup only with a ceiling of 50 or more", () => {
     const provisional = backupTree(database => fresh50(database), 50);
     const unknown = backupTree(database => { fresh49(database); database.exec(UNKNOWN_NEWER); }, 49);
     const current = backupTree(database => fresh49(database), 49);
     const manifestRefusal = "Unsupported or invalid backup manifest (types, paths, versions or limits).";
-    expect(() => parseManifest(provisional.manifest)).toThrow(manifestRefusal);
+    expect(() => parseManifest(provisional.manifest, 49)).toThrow(manifestRefusal);
+    expect(parseManifest(provisional.manifest).database.schemaVersion).toBe(50);
     expect(() => parseManifest({ ...provisional.manifest, database: { ...provisional.manifest.database, schemaVersion: 51 } }, TARGET)).toThrow(manifestRefusal);
     const parsed = parseManifest(provisional.manifest, TARGET);
     expect(parsed.database.schemaVersion).toBe(50);
     expect(() => validateBackup(provisional.root, parsed, false, TARGET)).not.toThrow();
-    // By default the snapshot itself is refused as the unknown newer one is.
-    const refusal = message(() => validateSnapshot(unknown.path, parseManifest(unknown.manifest)));
+    // At ceiling 49 the snapshot itself is refused as the unknown newer one is; the default (52) accepts it.
+    const refusal = message(() => validateSnapshot(unknown.path, parseManifest(unknown.manifest, 49), 49));
     expect(refusal).toMatch(SCHEMA_REFUSAL);
-    expect(message(() => validateSnapshot(provisional.path, parsed))).toBe(refusal);
-    expect(message(() => validateBackup(provisional.root, parsed))).toBe(refusal);
-    // A schema-49 backup is accepted at both ceilings.
+    expect(message(() => validateSnapshot(provisional.path, parsed, 49))).toBe(refusal);
+    expect(message(() => validateBackup(provisional.root, parsed, false, 49))).toBe(refusal);
+    expect(() => validateBackup(provisional.root, parsed)).not.toThrow();
+    // A schema-49 backup is accepted at every ceiling.
     expect(() => validateBackup(current.root, parseManifest(current.manifest))).not.toThrow();
+    expect(() => validateBackup(current.root, parseManifest(current.manifest, 49), false, 49)).not.toThrow();
     expect(() => validateBackup(current.root, parseManifest(current.manifest, TARGET), false, TARGET)).not.toThrow();
-    // The first target above the highest provisional step (52 since C3a).
+    // The first target above the supported version.
     expect(() => parseManifest(current.manifest, 53)).toThrow("Unsupported schema target.");
   });
 });

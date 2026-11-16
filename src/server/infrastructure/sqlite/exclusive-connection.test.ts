@@ -115,7 +115,7 @@ describe("exclusive provider borrow of the controller connection", () => {
     stores.splice(stores.indexOf(f.store), 1);
     expect(f.core.open).toBe(false);
     expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
-    resumeFixtureSecurity(f.path);
+    await resumeFixtureSecurity(f.path);
     const reopened = new SqliteStateStore(f.path); stores.push(reopened);
     expect(reopened.schemaVersion()).toBe(49);
   });
@@ -293,7 +293,7 @@ describe("exclusive provider borrow of the controller connection", () => {
     expect(await asyncCode(() => f.storage.borrow(async () => undefined))).toBe("poisoned");
     stores.splice(stores.indexOf(f.store), 1); f.store.close();
     expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
-    resumeFixtureSecurity(f.path);
+    await resumeFixtureSecurity(f.path);
     const reopened = new SqliteStateStore(f.path); stores.push(reopened);
     expect(providerUsers(f.path)).toBe(0);
     expect(reopened.schemaVersion()).toBe(49);

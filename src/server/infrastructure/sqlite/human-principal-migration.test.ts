@@ -127,7 +127,7 @@ describe("ordinary human principal migration 42", () => {
     const reopened = new SqliteStateStore(path);
     expect(reopened.getPrincipal(human.id)).toEqual(human); await reopened.closeAfterDrain();
     const restoredPath = join(root, "restored", "state.sqlite3"); restoreControllerBackup(target, restoredPath);
-    resumeFixtureSecurity(restoredPath);
+    await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
     try {
       expect(restored.getPrincipal(human.id)).toEqual(human);

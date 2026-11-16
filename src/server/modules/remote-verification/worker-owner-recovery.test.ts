@@ -163,7 +163,7 @@ it("refuses copied installation state even on the same simulated host and differ
   const copiedPath = join(f.root, "copy.sqlite3");
   copyFileSync(f.databasePath, copiedPath); copyFileSync(`${f.databasePath}.worker-recovery-key`, `${copiedPath}.worker-recovery-key`);
   expect(()=>new SqliteStateStore(copiedPath)).toThrow(/security_fence/);
-  resumeFixtureSecurity(copiedPath);
+  await resumeFixtureSecurity(copiedPath);
   const copied = new SqliteStateStore(copiedPath);
   try {
     const identity = new IdentityService(copied);

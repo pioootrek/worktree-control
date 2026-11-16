@@ -69,7 +69,7 @@ describe("human test attribution schema47",()=>{
   it("retains typed nonsecret attribution through backup/restore/reopen, without granting provider authority",async()=>{
     const f=fixture();try{
       f.store.saveTestRun(f.run,"key",f.requester);const backup=join(f.root,"backup");await createControllerBackup(f.store,backup,{applicationVersion:"test",attachmentDirectory:join(f.root,"attachments")});f.store.close();
-      const path=join(f.root,"restored.sqlite3");restoreControllerBackup(backup,path);resumeFixtureSecurity(path);const store=new SqliteStateStore(path);try{
+      const path=join(f.root,"restored.sqlite3");restoreControllerBackup(backup,path);await resumeFixtureSecurity(path);const store=new SqliteStateStore(path);try{
         expect(store.getHumanTestRunRequester(f.run.id)).toEqual(f.requester);expect(store.schemaVersion()).toBe(49);
         const identity=new IdentityService(store,undefined,undefined,undefined,undefined,store,undefined,store.runtimeMemberships());
         expect(()=>identity.validateHumanVerificationAuthority(f.requester.authority,f.requester.reference,f.run.projectId)).toThrow();
