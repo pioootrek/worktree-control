@@ -6,16 +6,19 @@ import { UpgradeError } from "./upgrade-contract";
 import { readUpgradeMarker, upgradeState } from "./upgrade-state";
 
 /**
- * The admission check of an ordinary opening of the store (integration branch,
- * C3c-1): not called anywhere yet. The activation calls it at every ordinary
- * opening, after ownership inspected the database read-only and before
- * anything enables writes, migrates or attaches the fence.
+ * The admission check of an ordinary opening of the store. Its one caller is
+ * the constructor of `OwnedSqliteDatabase` opened with `ordinary: true`, after
+ * ownership inspected the database read-only and before anything enables
+ * writes, migrates, attaches the fence or copies the database. Every store
+ * (`SqliteStateStore`) and the read-only remote recovery inspection open their
+ * database that way; maintenance openings (fence maintenance, the upgrade,
+ * backup creation, snapshot verification and restore) do not.
  */
 
 /**
  * What the check reads: the canonical database path, the read-only inspection
- * connection and its schema inspection, as `OwnedSqliteDatabase` holds them
- * after its constructor (which also ran `validateDatabase` at that version).
+ * connection and its schema inspection, as `OwnedSqliteDatabase` holds them in
+ * its constructor (which already ran `validateDatabase` at that version).
  */
 export interface OrdinaryAdmissionSource {
   readonly canonicalPath: string;

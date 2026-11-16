@@ -5,10 +5,10 @@ import { readBoundedJson, UPGRADE_PLAN_LIMITS, UpgradeError } from "../server/in
 import { applyUpgrade, inspectUpgrade, type UpgradeInspection } from "../server/bootstrap/upgrade-maintenance";
 
 /*
- * The `upgrade` command's runner (integration branch, provisional). It is not
- * registered: no file but its tests imports it until the activation adds it
- * to `src/cli/index.ts` and its help (`provisional-schema.test.ts` guards
- * this). No secret arguments, no online fallback, offline only.
+ * The `upgrade` command's runner, registered in `src/cli/index.ts` before the
+ * generic start parsing; only that entry imports it
+ * (`schema-entry-points.test.ts` guards this). No secret arguments, no online
+ * fallback, offline only; it does not pass the ordinary admission check.
  *
  *   upgrade inspect [--decisions <file>]
  *   upgrade apply --expect <64 hex> --backup-dir <dir>
@@ -81,7 +81,7 @@ export function upgradeInspectionOutput(inspection: UpgradeInspection) {
 /**
  * Runs `upgrade inspect` or `upgrade apply` and writes one JSON document.
  * Errors are thrown; the caller prints them with {@link upgradeErrorBody}.
- * `target` is for tests at the provisional target.
+ * `target` is for tests at an explicit lower target.
  */
 export async function runUpgradeCommand(args: readonly string[], paths: AppPaths, write: (line: string) => void, options: { applicationVersion: string; target?: number }): Promise<void> {
   const command = parseUpgradeArguments(args);

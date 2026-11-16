@@ -75,7 +75,9 @@ import { ProcessManager } from "../server/process-manager";
 import type { GodotWebService } from "../server/modules/godot-web";
 import { createGodotWebRuntime } from "./godot-web-runtime";
 import { loadOrCreateSecret } from "../server/secret-file";
-import { openControllerStore } from "../server/controller-storage";
+import { MIGRATION_BACKUP_DEPRECATION, openControllerStore } from "../server/controller-storage";
+import { UpgradeError } from "../server/infrastructure/sqlite";
+import { runUpgradeCommand, upgradeErrorBody } from "./upgrade";
 import { parseMigrationBackupOptions } from "./migration-backup-options";
 import { mcpSessionLimits, parseMcpSessionOptions } from "./mcp-session-options";
 import { WorktreeStorageManager } from "../server/worktree-storage";
@@ -109,9 +111,16 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   }
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
+  if (command === "upgrade") {
+    // Offline maintenance before the generic start parsing, which would reject --backup-dir here.
+    // It does not pass the ordinary admission check: it is how a database becomes current.
+    const raw = process.argv.slice(2);
+    await runUpgradeCommand(raw, resolveAppPaths(option("--data-dir", raw), option("--state-dir", raw)), writeCliLine, { applicationVersion: packageJson.version });
+    return;
+  }
   if (command === "auth" && process.argv[3] === "fence") {
     const raw=process.argv.slice(3);
-    await runAuthCommand(raw, resolveAppPaths(option("--data-dir",raw), option("--state-dir",raw)), {write:writeCliLine});
+    await runAuthCommand(raw, resolveAppPaths(option("--data-dir",raw), option("--state-dir",raw)), {write:writeCliLine, applicationVersion: packageJson.version});
     return;
   }
   if (command === "auth" && isProviderCommandArgs(process.argv.slice(3))) {
@@ -246,10 +255,14 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const controllerLock = retainedLock ?? acquireControllerLock(paths.controllerLockPath);
   let maintenance = false;
 
+  // Accepted for installed service definitions; it takes no copy (see MIGRATION_BACKUP_DEPRECATION).
+  if (migrationBackup.backupBeforeMigration && !retainedLock) console.error(MIGRATION_BACKUP_DEPRECATION);
   let store;
   try {
     const handoff = recoverBackupHandoff(paths.databasePath, paths.knowledgeAttachmentDirectory, backupPolicy);
-    store = await openControllerStore(paths.databasePath, { ...migrationBackup, applicationVersion: packageJson.version, attachmentDirectory: paths.knowledgeAttachmentDirectory });
+    // Admission before anything is written to an existing database: a database that needs
+    // the upgrade, fence establishment or recovery is refused here, before any listener.
+    store = openControllerStore(paths.databasePath);
     if (handoff) finishBackupHandoff(paths.databasePath, handoff, store);
   } catch (error) { store?.close(); controllerLock.release(); throw error; }
   // Every producer below shares this store's single connection gate for database admission.
@@ -780,6 +793,11 @@ function findLanAddress(): string | null {
 }
 
 main().catch((error) => {
+  // Every family prints the upgrade refusals (upgrade_required at an ordinary opening, and
+  // the upgrade command's own errors) as the same JSON body, unchanged by its own translation.
+  if (error instanceof UpgradeError || process.argv[2] === "upgrade") {
+    console.error(JSON.stringify(upgradeErrorBody(error))); process.exitCode = 1; return;
+  }
   if (process.argv[2] === "auth" && process.argv[3] === "fence") {
     console.error(JSON.stringify(providerAdminErrorBody(error))); process.exitCode=1; return;
   }

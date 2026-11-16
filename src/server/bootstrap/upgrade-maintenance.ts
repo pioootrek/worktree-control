@@ -5,12 +5,10 @@ export type { UpgradeApplyResult, UpgradeInspection } from "../infrastructure/sq
 export type { MaintenanceBackupOptions } from "./maintenance-backup";
 
 /*
- * The explicit offline upgrade's composition (integration branch, provisional).
- * Only `src/cli/upgrade.ts` imports this file, and no registered command
- * imports that one: the activation mounts both (`provisional-schema.test.ts`
- * guards this). `target` exists for tests at the provisional target; omitted,
- * it resolves to the supported schema, where the upgrade refuses as
- * unsupported before any lock or file.
+ * The explicit offline upgrade's composition. Only the command runner
+ * `src/cli/upgrade.ts` imports this file, and only the CLI entry imports the
+ * runner (`schema-entry-points.test.ts` guards this). `target` exists for
+ * tests at an explicit lower target; omitted, it is the supported schema.
  */
 
 /** `upgrade inspect`: reads the state and, only when an upgrade is needed, writes the plan. */

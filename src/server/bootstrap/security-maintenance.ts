@@ -17,13 +17,13 @@ export function maintainSecurityFence(paths:AppPaths,command:SecurityMaintenance
 }
 
 /**
- * `auth fence establish` with a pre-establishment backup written by
- * `createControllerBackup` into
+ * `auth fence establish --backup-dir` with a pre-establishment backup written
+ * by `createControllerBackup` into
  * `<backup.directory>/pre-establishment-v<source schema>-<UUID>`, with the same
- * handoff as {@link maintainSecurityFence} (integration branch: nothing outside
- * tests calls it until the activation; `provisional-schema.test.ts` guards
+ * handoff as {@link maintainSecurityFence}. Only the fence command
+ * (`src/cli/security-fence.ts`) calls it (`schema-entry-points.test.ts` guards
  * this). A failed backup is `security_fence_backup_failed`. `target` is for
- * tests at the provisional target; omitted, it is the supported schema.
+ * tests at an explicit lower target; omitted, it is the supported schema.
  */
 export function establishSecurityFenceWithBackup(paths: AppPaths, command: { action: "establish"; expect: string }, backup: MaintenanceBackupOptions, target?: number) {
   return establishSqliteSecurityFence(paths, command, HANDOFF, controllerMaintenanceBackup(paths, "pre-establishment", backup, target), target);
