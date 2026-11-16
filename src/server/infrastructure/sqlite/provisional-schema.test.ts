@@ -57,7 +57,8 @@ import { SecurityFence } from "./security-fence";
  * revocations may be reached only through its two listed importers; and the
  * read-only predictor of the test-run recovery (RECOVERY_PREDICTION), whose
  * only importer is the authority acts: no other code may rely on its copies
- * of the recovery's rules.
+ * of the recovery's rules; and the exact-text check (STORED_TEXT) shared by
+ * the predictor and both act domains, which nothing else may import.
  *
  * Limits, not covered here:
  * - non-literal specifiers (`import(name)`, `require(name)`, `createRequire`
@@ -85,8 +86,8 @@ const MARKER_STEP = `${SQLITE}/upgrade-marker-migration.ts`, COVERAGE = `${SQLIT
 const MAPPING_STEP = `${SQLITE}/mapping-structure-migration.ts`, DIRECTORY = `${SQLITE}/project-directory-queries.ts`;
 const MAPPING_ACTS = `${SQLITE}/mapping-upgrade-acts.ts`;
 const GRANTS_STEP = `${SQLITE}/account-grants-migration.ts`, AUTHORITY_ACTS = `${SQLITE}/authority-upgrade-acts.ts`;
-const AUTHORITY_RESET = `${SQLITE}/authority-reset.ts`, RECOVERY_PREDICTION = `${SQLITE}/test-run-recovery-prediction.ts`;
-const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY, MAPPING_ACTS, GRANTS_STEP, AUTHORITY_ACTS, AUTHORITY_RESET, RECOVERY_PREDICTION]);
+const AUTHORITY_RESET = `${SQLITE}/authority-reset.ts`, RECOVERY_PREDICTION = `${SQLITE}/test-run-recovery-prediction.ts`, STORED_TEXT = `${SQLITE}/stored-text.ts`;
+const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY, MAPPING_ACTS, GRANTS_STEP, AUTHORITY_ACTS, AUTHORITY_RESET, RECOVERY_PREDICTION, STORED_TEXT]);
 /**
  * The only non-test importers of the step modules, each with the modules it may
  * import and why. The project directory (step 51) has no importer: it is not mounted.
@@ -102,10 +103,13 @@ const STEP_IMPORTS: Readonly<Record<string, Readonly<Record<string, string>>>> =
   [`${SQLITE}/upgrade-plan.ts`]: { [MARKER_STEP]: "names step 50 and its checksum among the structural steps", [MAPPING_STEP]: "names step 51 and its checksum among the structural steps",
     [MAPPING_ACTS]: "registers the step-51 project-mapping act domain in the upgrade's registry", [GRANTS_STEP]: "names step 52 and its checksum among the structural steps",
     [AUTHORITY_ACTS]: "registers the step-52 authority act domain in the upgrade's registry, after the mapping domain" },
-  [MAPPING_ACTS]: { [MAPPING_STEP]: "passes the step-51 gate with the step's version before reading the mapping columns" },
+  [MAPPING_ACTS]: { [MAPPING_STEP]: "passes the step-51 gate with the step's version before reading the mapping columns",
+    [STORED_TEXT]: "refuses every identifier it compares or an act writes back whose stored bytes do not read back exactly" },
   [AUTHORITY_ACTS]: { [GRANTS_STEP]: "passes the step-52 gate with the step's version before reading or writing the grants table",
     [AUTHORITY_RESET]: "runs the quarantine's reset statements as the upgrade's revoke and release acts",
-    [RECOVERY_PREDICTION]: "refuses what the test-run recovery could fail on and checks the recovery's outcome against its prediction" },
+    [RECOVERY_PREDICTION]: "refuses what the test-run recovery could fail on and checks the recovery's outcome against its prediction",
+    [STORED_TEXT]: "refuses every principal ID whose stored bytes do not read back exactly, the owner's being written into the grant" },
+  [RECOVERY_PREDICTION]: { [STORED_TEXT]: "refuses every identifier and ordered text it reads whose stored bytes do not read back exactly" },
   [`${SQLITE}/database-validation.ts`]: { [MAPPING_STEP]: "validates the step-51 clock, stamps, parents and journal at version 51",
     [GRANTS_STEP]: "validates the shape of the step-52 grants at version 52" },
   [`${SQLITE}/security-maintenance.ts`]: { [MAPPING_STEP]: "plans and applies the step-51 mapping quarantine at target 51",
@@ -508,6 +512,13 @@ describe("provisional schema steps stay switched off", () => {
     expect(stepFindings(AUTHORITY_ACTS, prediction)).toEqual([]);
     for (const file of [`${SQLITE}/test-run-queries.ts`, `${SQLITE}/test-summary-queries.ts`, AUTHORITY_RESET, `${SQLITE}/security-maintenance.ts`, `${SQLITE}/upgrade-plan.ts`, `${SQLITE}/sqlite-state-store.ts`, `${SQLITE}/example.ts`]) {
       expect(strip(stepFindings(file, prediction)), file).toEqual([`import of ${predictionModule} (${RECOVERY_PREDICTION})`]);
+    }
+    // The exact-text check: the predictor and both act domains only; the recovery itself, the plan, the maintenance and every other file are reported.
+    const textModule = "./stored-text";
+    const text = `import { readsBack } from "${textModule}";`;
+    for (const file of [RECOVERY_PREDICTION, MAPPING_ACTS, AUTHORITY_ACTS]) expect(stepFindings(file, text), file).toEqual([]);
+    for (const file of [`${SQLITE}/test-run-queries.ts`, `${SQLITE}/upgrade-plan.ts`, `${SQLITE}/upgrade-maintenance.ts`, `${SQLITE}/security-maintenance.ts`, `${SQLITE}/database-validation.ts`, `${SQLITE}/example.ts`]) {
+      expect(strip(stepFindings(file, text)), file).toEqual([`import of ${textModule} (${STORED_TEXT})`]);
     }
   });
 

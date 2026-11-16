@@ -3,6 +3,7 @@ import type { TestRun } from "@/shared/contracts";
 import { emptyTelemetry, resourceReason } from "@/server/modules/verification";
 import { mapTestRun, type TestRunRow } from "./test-run-queries";
 import { summarizeTestRun, TEST_SUMMARY_POLICY, type TestSummaryPolicy } from "./test-summary-queries";
+import { readsBack } from "./stored-text";
 
 /**
  * A read-only predictor of the test-run recovery (`markInterruptedTestRuns` in
@@ -138,7 +139,7 @@ const ERROR_KINDS = new Set(["SyntaxError", "TypeError", "RangeError", "SqliteEr
 const errorKind = (error: unknown) => error instanceof Error && ERROR_KINDS.has(error.name) ? error.name : "error";
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
-/** Storage classes and UTF-8 of every predictor column, row by row. */
+/** Storage classes of every predictor column, row by row, and every text one read back exactly (`readsBack`, shared with the upgrade's acts). */
 function storedValues(database: Database.Database, refused: Refusals): void {
   for (const entry of PREDICTOR_COLUMNS) {
     const select = entry.columns.map(([column]) => `typeof("${column}"),CAST("${column}" AS BLOB),"${column}"`).join(",");
@@ -147,9 +148,9 @@ function storedValues(database: Database.Database, refused: Refusals): void {
       const problems: string[] = [];
       let keyPrintable = false;
       entry.columns.forEach(([column, rule], index) => {
-        const type = row[1 + index * 3], bytes = row[2 + index * 3] as Buffer | null, value = row[3 + index * 3];
+        const type = row[1 + index * 3], bytes = row[2 + index * 3], value = row[3 + index * 3];
         if (type !== rule) { problems.push(`${column} is ${String(type)}, expected ${rule}`); return; }
-        if (rule === "text" && !utf8(value as string).equals(bytes!)) { problems.push(`${column} is not valid UTF-8 text`); return; }
+        if (rule === "text" && !readsBack(value, bytes)) { problems.push(`${column} is not valid UTF-8 text`); return; }
         if (index === keyIndex) keyPrintable = true;
       });
       if (problems.length === 0) continue;

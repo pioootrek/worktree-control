@@ -7,6 +7,7 @@ import {
   releaseReservations, REVISED_GRANT_TABLES, revokeCredentials, revokeOldGrants, type OldGrantTable,
 } from "./authority-reset";
 import { predictRecovery, recoveryBaseline, recoveryDisagreements, recoveryRefusals, type RecoveryPrediction } from "./test-run-recovery-prediction";
+import { unreadableTexts, type TextColumns } from "./stored-text";
 import {
   compareText, escapeDisplay, FindingList, UPGRADE_FINDINGS_LIMIT, UpgradeError,
   type UpgradeAct, type UpgradeActContext, type UpgradeActDomain, type UpgradeActKind, type UpgradeProposalContext,
@@ -220,6 +221,18 @@ export const AUTHORITY_STORED_COLUMNS: ReadonlyArray<StoredColumns> = Object.fre
   { table: "test_run_summaries", key: "run_id", columns: [["run_id", "text"], ["project_id", "text"], ["queued_at", "text"], ["terminal", "integer"], ["bytes", "integer"]] },
   { table: "test_summary_coverage", key: "project_id", columns: [["project_id", "text"], ["records", "integer"], ["bytes", "integer"], ["evicted", "integer"]] },
 ] as StoredColumns[]);
+/**
+ * Every identifier the authority pass compares in JavaScript or an act writes
+ * back, on every row: each must read back exactly (`stored-text.ts`), or it is
+ * refused as `upgrade_authority_malformed` before a value is used. A
+ * principal's ID is the account `grant_admin` writes into `account_grants`
+ * (the owner's) and what the review lists (the owners). The reset acts match
+ * no value read here (fixed SQL); the test-run recovery's identifiers are the
+ * predictor's ({@link recoveryRefusals}).
+ */
+export const AUTHORITY_TEXT_COLUMNS: ReadonlyArray<TextColumns> = Object.freeze([
+  { table: "remote_principals", key: "id", columns: ["id"] },
+]);
 const RULE_TEXT: Readonly<Record<StorageRule, string>> = { text: "text", text_or_null: "text or null", integer: "integer" };
 const holds = (type: unknown, rule: StorageRule) => rule === "text" ? type === "text" : rule === "integer" ? type === "integer" : type === "text" || type === "null";
 const holdsSql = (column: string, rule: StorageRule) => rule === "text_or_null" ? `typeof("${column}") IN ('text','null')` : `typeof("${column}")='${rule}'`;
@@ -234,6 +247,14 @@ function storageClasses(database: Database.Database, findings: FindingList): voi
       findings.add(entry.table, String(row[0]), entry.columns.flatMap(([column, rule], index) => holds(row[index + 1], rule) ? [] : [`${column} is ${String(row[index + 1])}, expected ${RULE_TEXT[rule]}`]).join("; "));
     }
     if (rows.length === UPGRADE_FINDINGS_LIMIT) findings.more((database.prepare(`SELECT count(*) FROM "${entry.table}" WHERE ${where}`).pluck().get() as number) - rows.length);
+  }
+}
+/** Adds a finding for every row of {@link AUTHORITY_TEXT_COLUMNS} whose identifier does not read back exactly (the first 100 listed, all counted). */
+function texts(database: Database.Database, findings: FindingList): void {
+  for (const entry of AUTHORITY_TEXT_COLUMNS) {
+    const { rows, count } = unreadableTexts(database, entry, UPGRADE_FINDINGS_LIMIT);
+    for (const row of rows) findings.add(row.table, row.id, row.problem);
+    if (count > rows.length) findings.more(count - rows.length);
   }
 }
 /** Adds a finding for each row a query selects (bounded), naming it by its first column. */
@@ -283,6 +304,11 @@ export function proposeAuthority(database: Database.Database, context: UpgradePr
   const storage = new FindingList();
   storageClasses(database, storage);
   storage.raise("upgrade_authority_malformed");
+  // 0b. Identifiers compared in JavaScript or written back read back exactly: an owner's ID that SQLite
+  //     stores as other bytes than its UTF-8 (U+FFFD read back) would be granted to an account that does not exist.
+  const unreadable = new FindingList();
+  texts(database, unreadable);
+  unreadable.raise("upgrade_authority_malformed");
 
   // 1. Values the acts depend on: known principal kinds and statuses, known
   //    credential kinds and statuses, revisions and versions that can advance,
@@ -342,7 +368,7 @@ export function proposeAuthority(database: Database.Database, context: UpgradePr
   const requestPhases = phases("remote_verification_requests", REQUEST_PHASES), attemptPhases = phases("remote_verification_attempts", ATTEMPT_PHASES);
   const queued = number(database, "SELECT count(*) FROM test_runs WHERE phase='queued'"), running = number(database, "SELECT count(*) FROM test_runs WHERE phase='running'");
   const interrupts = recovery.interrupted.length;
-  // Kinds, statuses and storage classes were checked above: every owner has a text ID and a known status.
+  // Kinds, statuses, storage classes and exact text were checked above: every owner has a text ID, read back as stored, and a known status.
   const ownerList = ownerRows.map(row => ({ id: row.id as string, status: row.status as "active" | "revoked" })).sort((a, b) => compareText(a.id, b.id));
   if (ownerList.length === 1 && ownerList[0].status === "active" && !grantId(ownerList[0].id)) {
     // The owner's ID cannot be stored as a grant's account: a stop, never a silently skipped grant.
