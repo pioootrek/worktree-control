@@ -124,10 +124,17 @@ const SCRIPT_EXTENSION = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 
 const repository = resolve(".");
 
-interface ModuleImport { specifier: string; form: string; line: number; readOnly: boolean }
+/** `star`: an `export *` or `export * as` re-export, which carries every export of its module without naming one. */
+interface ModuleImport { specifier: string; form: string; line: number; readOnly: boolean; star: boolean }
+/** Where an unmounted entry point's name is written; see {@link nameContext}. */
+interface NameOccurrence { name: string; context: string; line: number }
 
-/** Every literal module specifier of a source text, with its form; `identifiers`, when given, also collects every identifier's text. */
-function moduleImports(fileName: string, text: string, identifiers?: Set<string>): ModuleImport[] {
+/**
+ * Every literal module specifier of a source text, with its form; `names`, when
+ * given, also collects each identifier or string literal that is exactly one of
+ * the unmounted entry points (UNMOUNTED_NAMES), with its context.
+ */
+function moduleImports(fileName: string, text: string, names?: NameOccurrence[]): ModuleImport[] {
   const kind = /\.[jt]sx$/.test(fileName) ? ts.ScriptKind.TSX : /\.[cm]?js$/.test(fileName) ? ts.ScriptKind.JS : ts.ScriptKind.TS;
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind);
   const found: ModuleImport[] = [];
@@ -138,23 +145,26 @@ function moduleImports(fileName: string, text: string, identifiers?: Set<string>
       const clause = node.importClause, bindings = clause?.namedBindings;
       const readOnly = Boolean(clause && !clause.isTypeOnly && !clause.name && bindings && ts.isNamedImports(bindings) && bindings.elements.length > 0
         && bindings.elements.every(element => !element.isTypeOnly && (element.propertyName ?? element.name).text === READ_FUNCTION));
-      found.push({ specifier: node.moduleSpecifier.text, form: "import", line: line(node), readOnly });
+      found.push({ specifier: node.moduleSpecifier.text, form: "import", line: line(node), readOnly, star: false });
     }
     if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
-      found.push({ specifier: node.moduleSpecifier.text, form: "re-export", line: line(node), readOnly: false });
+      const star = !node.exportClause || ts.isNamespaceExport(node.exportClause);
+      found.push({ specifier: node.moduleSpecifier.text, form: "re-export", line: line(node), readOnly: false, star });
     }
     if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && ts.isStringLiteralLike(node.moduleReference.expression)) {
-      found.push({ specifier: node.moduleReference.expression.text, form: "import = require()", line: line(node), readOnly: false });
+      found.push({ specifier: node.moduleReference.expression.text, form: "import = require()", line: line(node), readOnly: false, star: false });
     }
     if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteralLike(node.argument.literal)) {
-      found.push({ specifier: node.argument.literal.text, form: "import() type", line: line(node), readOnly: false });
+      found.push({ specifier: node.argument.literal.text, form: "import() type", line: line(node), readOnly: false, star: false });
     }
     if (ts.isCallExpression(node)) {
       const callee = node.expression, first = node.arguments[0];
       const form = callee.kind === ts.SyntaxKind.ImportKeyword ? "import()" : ts.isIdentifier(callee) && callee.text === "require" ? "require()" : undefined;
-      if (form && first && ts.isStringLiteralLike(first)) found.push({ specifier: first.text, form, line: line(node), readOnly: false });
+      if (form && first && ts.isStringLiteralLike(first)) found.push({ specifier: first.text, form, line: line(node), readOnly: false, star: false });
     }
-    if (identifiers && ts.isIdentifier(node)) identifiers.add(node.text);
+    if (names && (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) && UNMOUNTED_NAMES.has(node.text)) {
+      names.push({ name: node.text, context: nameContext(source, node), line: line(node) });
+    }
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -235,26 +245,37 @@ function sources(): string[] {
   return files.map(file => relative(repository, file).split(sep).join("/")).sort();
 }
 
-interface ScannedSource { file: string; text: string; imports: ModuleImport[]; steps: Array<ModuleImport & { module: string }>; identifiers: ReadonlySet<string> }
+interface ScannedSource { file: string; text: string; imports: ModuleImport[]; steps: Array<ModuleImport & { module: string }>; names: readonly NameOccurrence[] }
 let scanned: ScannedSource[] | undefined;
 /** Every non-test source file under `src/`, read and parsed once for every rule of this file. */
 function scan(): ScannedSource[] {
   scanned ??= sources().map(file => {
-    const text = readFileSync(join(repository, file), "utf8"), identifiers = new Set<string>(), imports = moduleImports(file, text, identifiers);
-    return { file, text, imports, steps: stepImportEntries(file, text, imports), identifiers };
+    const text = readFileSync(join(repository, file), "utf8"), names: NameOccurrence[] = [], imports = moduleImports(file, text, names);
+    return { file, text, imports, steps: stepImportEntries(file, text, imports), names };
   });
   return scanned;
 }
 
 /*
  * C3b: the upgrade's composition and its command runner exist but are not
- * mounted. Only the runner may import the composition, nothing may import the
- * runner (the CLI entry `src/cli/index.ts` included), and only the files named
- * in UNMOUNTED_CALLS may name the entry points that reach the upgrade or
- * establishment with a backup. The activation (C3c) deletes or narrows this
- * rule deliberately. Same limits as the rules above: literal specifiers, files
- * under `src/`, test files excluded; a name is found wherever it is written,
- * so an alias still needs the name once.
+ * mounted. Only the runner may import the composition, and nothing may import
+ * the runner (the CLI entry `src/cli/index.ts` included). The entry points that
+ * reach the upgrade or establishment with a backup (UNMOUNTED_OCCURRENCES) may
+ * be written only where that table says, by file and context: their
+ * definitions, a plain re-export under the same name in the SQLite public API,
+ * a plain import and the body of the one function that composes each. So the
+ * released `auth fence establish`, through `maintainSecurityFence` in the same
+ * file, cannot reach the new workflow at schema 49, where no schema gate stops
+ * it. A string literal equal to an entry point's name is refused everywhere
+ * (string-keyed access, string-named imports and exports), and so is any
+ * `export *` of a module that defines or re-exports one. The activation (C3c)
+ * deletes or narrows this rule deliberately.
+ *
+ * Limits: the rules above (literal specifiers, files under `src/`, test files
+ * excluded); a computed, non-literal access (`sqlite[name]`, a concatenated or
+ * template key, `Reflect.get`) cannot be caught by a syntactic guard; nor can a
+ * value an allowed body passes out (assigning the function to a module variable
+ * there, then calling that elsewhere).
  */
 const UPGRADE_COMPOSITION = "src/server/bootstrap/upgrade-maintenance.ts", UPGRADE_RUNNER = "src/cli/upgrade.ts";
 const UNMOUNTED_IMPORTERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -262,21 +283,55 @@ const UNMOUNTED_IMPORTERS: Readonly<Record<string, readonly string[]>> = Object.
   [UPGRADE_RUNNER]: [],
 });
 const BOOTSTRAP_FENCE = "src/server/bootstrap/security-maintenance.ts";
-/** The only non-test files that may name each entry point: its definition, the SQLite public API that re-exports it, and its composition. */
-const UNMOUNTED_CALLS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  establishSecurityFenceWithBackup: [BOOTSTRAP_FENCE],
-  establishSqliteSecurityFence: [`${SQLITE}/security-maintenance.ts`, `${SQLITE}/index.ts`, BOOTSTRAP_FENCE],
-  inspectSqliteUpgrade: [`${SQLITE}/upgrade-maintenance.ts`, `${SQLITE}/index.ts`, UPGRADE_COMPOSITION],
-  applySqliteUpgrade: [`${SQLITE}/upgrade-maintenance.ts`, `${SQLITE}/index.ts`, UPGRADE_COMPOSITION],
+const SQLITE_FENCE = `${SQLITE}/security-maintenance.ts`, SQLITE_UPGRADE = `${SQLITE}/upgrade-maintenance.ts`, SQLITE_API = `${SQLITE}/index.ts`;
+/**
+ * The only places a non-test file may write each entry point: file, then the
+ * contexts allowed there (see {@link nameContext}). Every pair is one the tree
+ * uses today; nothing else is allowed. The defining modules have no other use
+ * of their entry point today, so only the declaration is allowed there.
+ */
+const UNMOUNTED_OCCURRENCES: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = Object.freeze({
+  establishSecurityFenceWithBackup: { [BOOTSTRAP_FENCE]: ["declaration"] },
+  establishSqliteSecurityFence: { [SQLITE_FENCE]: ["declaration"], [SQLITE_API]: ["re-export"], [BOOTSTRAP_FENCE]: ["import", "body of establishSecurityFenceWithBackup"] },
+  inspectSqliteUpgrade: { [SQLITE_UPGRADE]: ["declaration"], [SQLITE_API]: ["re-export"], [UPGRADE_COMPOSITION]: ["import", "body of inspectUpgrade"] },
+  applySqliteUpgrade: { [SQLITE_UPGRADE]: ["declaration"], [SQLITE_API]: ["re-export"], [UPGRADE_COMPOSITION]: ["import", "body of applyUpgrade"] },
 });
+const UNMOUNTED_NAMES: ReadonlySet<string> = new Set(Object.keys(UNMOUNTED_OCCURRENCES));
+/** Modules that define or re-export an entry point: an `export *` of one would carry it without naming it. */
+const UNMOUNTED_CARRIERS = Object.freeze([BOOTSTRAP_FENCE, SQLITE_FENCE, SQLITE_UPGRADE, SQLITE_API]);
+/**
+ * The context of a name: `string literal`; `import` or `aliased import` (an
+ * import specifier with `as`); `re-export`, `aliased export` or `local export`
+ * (an export specifier with a module, with `as`, or without a module);
+ * `declaration` (the name of a top-level function declaration); `body of F`
+ * (anywhere inside the body of the top-level function declaration F, nested
+ * functions included); `signature of F`; otherwise `module level`.
+ */
+function nameContext(source: ts.SourceFile, node: ts.Identifier | ts.StringLiteralLike): string {
+  if (ts.isStringLiteralLike(node)) return "string literal";
+  const parent = node.parent;
+  if (ts.isImportSpecifier(parent)) return parent.propertyName ? "aliased import" : "import";
+  if (ts.isExportSpecifier(parent)) return parent.propertyName ? "aliased export" : parent.parent.parent.moduleSpecifier ? "re-export" : "local export";
+  if (ts.isFunctionDeclaration(parent) && parent.name === node && parent.parent === source) return "declaration";
+  let top: ts.Node = node;
+  while (top.parent && top.parent !== source) top = top.parent;
+  if (ts.isFunctionDeclaration(top) && top.name) {
+    return top.body && node.pos >= top.body.pos && node.end <= top.body.end ? `body of ${top.name.text}` : `signature of ${top.name.text}`;
+  }
+  return "module level";
+}
 /** Imports of the unmounted composition or runner that UNMOUNTED_IMPORTERS does not permit. */
 function unmountedImportFindings(fileName: string, imports: readonly ModuleImport[]): string[] {
   return imports.flatMap(entry => Object.entries(UNMOUNTED_IMPORTERS).filter(([module, importers]) => !importers.includes(fileName) && reaches(fileName, entry.specifier, module))
     .map(([module]) => `${entry.form} of ${entry.specifier} (${module}) at line ${entry.line}`));
 }
-/** Entry points named by a file UNMOUNTED_CALLS does not list for them. */
-function unmountedCallFindings(fileName: string, identifiers: ReadonlySet<string>): string[] {
-  return Object.entries(UNMOUNTED_CALLS).filter(([name, files]) => identifiers.has(name) && !files.includes(fileName)).map(([name]) => name);
+/** Entry points written where UNMOUNTED_OCCURRENCES does not allow, and `export *` of a module that carries one. */
+function unmountedNameFindings(fileName: string, names: readonly NameOccurrence[], imports: readonly ModuleImport[]): string[] {
+  return [
+    ...names.filter(entry => !(UNMOUNTED_OCCURRENCES[entry.name]?.[fileName] ?? []).includes(entry.context)).map(entry => `${entry.name} (${entry.context}) at line ${entry.line}`),
+    ...imports.filter(entry => entry.star).flatMap(entry => UNMOUNTED_CARRIERS.filter(module => reaches(fileName, entry.specifier, module))
+      .map(module => `export * of ${entry.specifier} (${module}) at line ${entry.line}`)),
+  ];
 }
 
 const temporary: string[] = [];
@@ -441,10 +496,12 @@ describe("provisional schema steps stay switched off", () => {
     const scanned = scan();
     for (const file of [UPGRADE_COMPOSITION, UPGRADE_RUNNER, BOOTSTRAP_FENCE, "src/cli/index.ts"]) expect(scanned.map(({ file: name }) => name), file).toContain(file);
     expect(scanned.flatMap(({ file, imports }) => unmountedImportFindings(file, imports).map(finding => `${file}: ${finding}`))).toEqual([]);
-    expect(scanned.flatMap(({ file, identifiers }) => unmountedCallFindings(file, identifiers).map(name => `${file}: ${name}`))).toEqual([]);
-    // Each listed file needs its exception: it names the entry point (the composition calls it, the definition and the public API name it).
-    for (const [name, files] of Object.entries(UNMOUNTED_CALLS)) {
-      for (const file of files) expect(scanned.find(entry => entry.file === file)?.identifiers.has(name), `${file} → ${name}`).toBe(true);
+    expect(scanned.flatMap(({ file, names, imports }) => unmountedNameFindings(file, names, imports).map(finding => `${file}: ${finding}`))).toEqual([]);
+    // Each allowed place is used today: the definition declares the entry point, the public API re-exports it, the composition imports and calls it.
+    for (const [name, files] of Object.entries(UNMOUNTED_OCCURRENCES)) {
+      for (const [file, contexts] of Object.entries(files)) {
+        for (const context of contexts) expect(scanned.find(entry => entry.file === file)?.names.some(entry => entry.name === name && entry.context === context), `${file} → ${name} (${context})`).toBe(true);
+      }
     }
     // The runner is the composition's importer, and the entry of the CLI imports neither.
     expect(scanned.find(({ file }) => file === UPGRADE_RUNNER)!.imports.some(entry => reaches(UPGRADE_RUNNER, entry.specifier, UPGRADE_COMPOSITION))).toBe(true);
@@ -452,7 +509,7 @@ describe("provisional schema steps stay switched off", () => {
       || reaches("src/cli/index.ts", entry.specifier, UPGRADE_RUNNER))).toEqual([]);
   }, 30_000); // Shares the one parse of every source file with the scan above; this budget covers it when run alone.
 
-  it("reports every literal import of the unmounted modules outside their importer, and every call of the entry points outside their files", () => {
+  it("reports every literal import of the unmounted modules outside their importer, and every name of the entry points outside their allowed places", () => {
     const strip = (findings: string[]) => findings.map(entry => entry.replace(/ at line \d+$/, ""));
     const imports = (file: string, text: string) => strip(unmountedImportFindings(file, moduleImports(file, text)));
     expect(imports("src/cli/index.ts", [
@@ -471,14 +528,102 @@ describe("provisional schema steps stay switched off", () => {
     }
     // Not findings: a namesake elsewhere.
     expect(imports("src/server/example.ts", 'import { x } from "./upgrade"; import { y } from "./bootstrap/upgrade-maintenance-notes";')).toEqual([]);
-    const calls = (file: string, text: string) => { const names = new Set<string>(); moduleImports(file, text, names); return unmountedCallFindings(file, names); };
-    expect(calls("src/cli/security-fence.ts", "import { establishSecurityFenceWithBackup as establish } from \"../server/bootstrap/security-maintenance\"; void establish;")).toEqual(["establishSecurityFenceWithBackup"]);
-    expect(calls(UPGRADE_RUNNER, "applySqliteUpgrade(paths, command, backup);")).toEqual(["applySqliteUpgrade"]);
-    expect(calls(UPGRADE_COMPOSITION, "inspectSqliteUpgrade(paths); applySqliteUpgrade(paths, command, backup);")).toEqual([]);
-    expect(calls(BOOTSTRAP_FENCE, "establishSecurityFenceWithBackup; establishSqliteSecurityFence;")).toEqual([]);
-    // A string of the same text is not a name; a property access is.
-    expect(calls("src/server/example.ts", 'const text = "establishSecurityFenceWithBackup";')).toEqual([]);
-    expect(calls("src/server/example.ts", "bootstrap.establishSecurityFenceWithBackup(paths);")).toEqual(["establishSecurityFenceWithBackup"]);
+    const calls = (file: string, text: string) => { const found: NameOccurrence[] = []; return strip(unmountedNameFindings(file, found, moduleImports(file, text, found))); };
+    expect(calls("src/cli/security-fence.ts", "import { establishSecurityFenceWithBackup as establish } from \"../server/bootstrap/security-maintenance\"; void establish;")).toEqual(["establishSecurityFenceWithBackup (aliased import)"]);
+    expect(calls(UPGRADE_RUNNER, "applySqliteUpgrade(paths, command, backup);")).toEqual(["applySqliteUpgrade (module level)"]);
+    // Allowed files are allowed only in their allowed places: a module-level use there is a finding.
+    expect(calls(UPGRADE_COMPOSITION, "inspectSqliteUpgrade(paths); applySqliteUpgrade(paths, command, backup);")).toEqual(["inspectSqliteUpgrade (module level)", "applySqliteUpgrade (module level)"]);
+    expect(calls(BOOTSTRAP_FENCE, "establishSecurityFenceWithBackup; establishSqliteSecurityFence;")).toEqual(["establishSecurityFenceWithBackup (module level)", "establishSqliteSecurityFence (module level)"]);
+    // A string of the same text is refused (see the string-keyed access below); so is a property access.
+    expect(calls("src/server/example.ts", 'const text = "establishSecurityFenceWithBackup";')).toEqual(["establishSecurityFenceWithBackup (string literal)"]);
+    expect(calls("src/server/example.ts", "bootstrap.establishSecurityFenceWithBackup(paths);")).toEqual(["establishSecurityFenceWithBackup (module level)"]);
+  });
+
+  it("allows each entry point only in its definition, a plain re-export of the public API and the body of its composing function", () => {
+    const names = (file: string, text: string | string[]) => {
+      const found: NameOccurrence[] = [], source = Array.isArray(text) ? text.join("\n") : text;
+      return unmountedNameFindings(file, found, moduleImports(file, source, found)).map(entry => entry.replace(/ at line \d+$/, ""));
+    };
+    // The shape in the tree today passes.
+    const fenceImport = 'import { establishSqliteSecurityFence, maintainSqliteSecurityFence, type SecurityMaintenanceCommand } from "../infrastructure/sqlite";';
+    const facade = "export function maintainSecurityFence(paths: AppPaths, command: SecurityMaintenanceCommand) { return maintainSqliteSecurityFence(paths, command, HANDOFF); }";
+    const withBackup = "export function establishSecurityFenceWithBackup(paths: AppPaths, command: Establish, backup: Options, target?: number) {\n  return establishSqliteSecurityFence(paths, command, HANDOFF, controllerMaintenanceBackup(paths, \"pre-establishment\", backup, target), target);\n}";
+    expect(names(BOOTSTRAP_FENCE, [fenceImport, facade, withBackup])).toEqual([]);
+    const composition = [
+      'import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeInspection } from "../infrastructure/sqlite";',
+      "export function inspectUpgrade(paths: AppPaths, decisions?: unknown, target?: number): UpgradeInspection { return inspectSqliteUpgrade(paths, target, decisions); }",
+      "export function applyUpgrade(paths: AppPaths, command: { expect: string }, backup: Options, target?: number) { return applySqliteUpgrade(paths, command, controllerMaintenanceBackup(paths, \"pre-upgrade\", backup, target), target); }",
+    ];
+    expect(names(UPGRADE_COMPOSITION, composition)).toEqual([]);
+    const api = [
+      'export { establishSqliteSecurityFence, maintainSqliteSecurityFence, type SecurityMaintenanceCommand } from "./security-maintenance";',
+      'export { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeApplyResult } from "./upgrade-maintenance";',
+      'export * from "./upgrade-contract";',
+    ];
+    expect(names(SQLITE_API, api)).toEqual([]);
+    expect(names(SQLITE_FENCE, "export function establishSqliteSecurityFence(paths: AppPaths, command: Establish): Promise<Result> { return run(paths, command); }")).toEqual([]);
+    expect(names(SQLITE_UPGRADE, ["export function inspectSqliteUpgrade(paths: AppPaths) { return inspect(paths); }", "export function applySqliteUpgrade(paths: AppPaths) { return apply(paths); }"])).toEqual([]);
+
+    // A call inside the mounted facade: the released `auth fence establish` would reach the new workflow.
+    expect(names(BOOTSTRAP_FENCE, [fenceImport,
+      "export function maintainSecurityFence(paths: AppPaths, command: SecurityMaintenanceCommand) { return command.action === \"establish\" ? establishSecurityFenceWithBackup(paths, command, {}) : maintainSqliteSecurityFence(paths, command, HANDOFF); }",
+      withBackup])).toEqual(["establishSecurityFenceWithBackup (body of maintainSecurityFence)"]);
+    expect(names(BOOTSTRAP_FENCE, [fenceImport,
+      "export function maintainSecurityFence(paths: AppPaths, command: SecurityMaintenanceCommand) { return establishSqliteSecurityFence(paths, command, HANDOFF, backup); }",
+      withBackup])).toEqual(["establishSqliteSecurityFence (body of maintainSecurityFence)"]);
+    // Other shapes in the same file: an aliased import, a module-level binding, a nested namesake, a local export, a parameter.
+    expect(names(BOOTSTRAP_FENCE, [
+      'import { establishSqliteSecurityFence as establish } from "../infrastructure/sqlite";',
+      "const helper = establishSqliteSecurityFence;",
+      "export function maintainSecurityFence() { function establishSecurityFenceWithBackup() { return 1; } return establishSecurityFenceWithBackup(); }",
+      "export { establishSqliteSecurityFence };",
+      "export function establishSecurityFenceWithBackup(establishSqliteSecurityFence: Run) { return establishSqliteSecurityFence(); }",
+    ])).toEqual([
+      "establishSqliteSecurityFence (aliased import)", "establishSqliteSecurityFence (module level)",
+      "establishSecurityFenceWithBackup (body of maintainSecurityFence)", "establishSecurityFenceWithBackup (body of maintainSecurityFence)",
+      "establishSqliteSecurityFence (local export)", "establishSqliteSecurityFence (signature of establishSecurityFenceWithBackup)",
+    ]);
+    // Each composing function names its own entry point only.
+    expect(names(UPGRADE_COMPOSITION, [composition[0]!,
+      "export function inspectUpgrade(paths: AppPaths) { return applySqliteUpgrade(paths, { expect: \"\" }, backup); }",
+      "export function applyUpgrade(paths: AppPaths) { return inspectSqliteUpgrade(paths); }",
+    ])).toEqual(["applySqliteUpgrade (body of inspectUpgrade)", "inspectSqliteUpgrade (body of applyUpgrade)"]);
+    // The definitions allow the declaration only.
+    expect(names(SQLITE_FENCE, ["export function establishSqliteSecurityFence() { return 1; }", "export function maintainSqliteSecurityFence() { return establishSqliteSecurityFence(); }"]))
+      .toEqual(["establishSqliteSecurityFence (body of maintainSqliteSecurityFence)"]);
+
+    // The public API: an alias, a local binding or an `export *` that carries an entry point under any name.
+    expect(names(SQLITE_API, [
+      'export { establishSqliteSecurityFence as establishFence } from "./security-maintenance";',
+      'export { maintainSqliteSecurityFence as inspectSqliteUpgrade } from "./security-maintenance";',
+      'import { applySqliteUpgrade } from "./upgrade-maintenance";',
+      "export { applySqliteUpgrade };",
+      "export const apply = applySqliteUpgrade;",
+      'export * from "./upgrade-maintenance";',
+      'export * as fence from "@/server/infrastructure/sqlite/security-maintenance";',
+    ])).toEqual([
+      "establishSqliteSecurityFence (aliased export)", "inspectSqliteUpgrade (aliased export)",
+      "applySqliteUpgrade (import)", "applySqliteUpgrade (local export)", "applySqliteUpgrade (module level)",
+      `export * of ./upgrade-maintenance (${SQLITE_UPGRADE})`, `export * of @/server/infrastructure/sqlite/security-maintenance (${SQLITE_FENCE})`,
+    ]);
+    // So is an `export *` of the public API or of the bootstrap facade elsewhere; one of an unrelated module is not.
+    expect(names("src/server/example.ts", ['export * from "@/server/infrastructure/sqlite";', 'export * from "./bootstrap/security-maintenance";', 'export * from "./modules/status";']))
+      .toEqual([`export * of @/server/infrastructure/sqlite (${SQLITE_API})`, `export * of ./bootstrap/security-maintenance (${BOOTSTRAP_FENCE})`]);
+
+    // String-keyed access, string-named imports and exports, and a literal in an allowed body.
+    expect(names("src/server/example.ts", [
+      'import * as sqlite from "@/server/infrastructure/sqlite";',
+      'void sqlite["establishSqliteSecurityFence"](paths);',
+      "void sqlite[`applySqliteUpgrade`];",
+      'import { "inspectSqliteUpgrade" as inspect } from "@/server/infrastructure/sqlite";',
+      'export { maintain as "establishSecurityFenceWithBackup" } from "./bootstrap/security-maintenance";',
+    ])).toEqual([
+      "establishSqliteSecurityFence (string literal)", "applySqliteUpgrade (string literal)", "inspectSqliteUpgrade (string literal)", "establishSecurityFenceWithBackup (string literal)",
+    ]);
+    expect(names(BOOTSTRAP_FENCE, [fenceImport, facade, 'export function establishSecurityFenceWithBackup() { return sqlite["establishSqliteSecurityFence"](); }']))
+      .toEqual(["establishSqliteSecurityFence (string literal)"]);
+    // Not findings (a stated limit): a computed key.
+    expect(names("src/server/example.ts", ['const key = ["establish", "Sqlite", "SecurityFence"].join("");', "void sqlite[key];", 'void sqlite["establish" + "SqliteSecurityFence"];'])).toEqual([]);
   });
 
   it("lists only existing files that need the exception", () => {
