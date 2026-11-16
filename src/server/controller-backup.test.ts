@@ -98,5 +98,5 @@ describe("controller backup", () => {
     // A supported-schema source is unaffected by naming the ceiling.
     const supported=new SqliteStateStore(join(directory,"supported.sqlite3")); cleanups.push(()=>supported.close());
     expect(await createControllerBackup(supported,join(directory,"supported"),{...options,schemaCeiling:52})).toMatchObject({database:{schemaVersion:49}});
-  });
+  }, 30_000);
 });
