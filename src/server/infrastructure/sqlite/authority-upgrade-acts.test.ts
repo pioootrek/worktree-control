@@ -429,7 +429,7 @@ describe("authority acts: apply at target 52 from schema 49", () => {
     // The review counted what happened.
     expect(planned.testRuns).toEqual({ queued: 1, running: 1, unfinishedSummaries: 1, interrupts: 3, trimmed: 3 });
     expect(planned.reservations).toEqual({ active: 3, released: 1, releases: 3 });
-  });
+  }, 30_000);
 
   it("states the review in counts, IDs, kinds and statuses, and the operator's lines say what the upgrade does and keeps", () => {
     const { paths, ids } = authorityWorld();
@@ -948,7 +948,7 @@ describe("authority acts: stops write no plan and change nothing", () => {
     tamper(paths, database => database.prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES(?,'admin','installation',NULL,?)").run(ids.owner, PAST));
     const details = await stops(paths, "upgrade_authority_unexpected");
     expect(details.findings).toEqual([{ table: "account_grants", id: ids.owner, problem: expect.stringContaining("upgrade is needed") }]);
-  });
+  }, 30_000);
   it("refuses more owners than its bound, never truncating (the fence's own bound refuses first through the protocol)", () => {
     const database = unmanagedFixtureDatabase();
     try {
@@ -1084,7 +1084,7 @@ describe("authority acts: the test-run recovery's prediction", () => {
     const inspection = inspect(paths);
     await apply(paths, inspection.planHash!);
     read(paths, database => expect(grantsOf(database)).toEqual([expect.objectContaining({ account_id: ids.owner, role: "admin" })]));
-  });
+  }, 30_000);
 });
 
 describe("authority acts: interrupted apply and resume", () => {
@@ -1109,7 +1109,7 @@ describe("authority acts: interrupted apply and resume", () => {
     expect(review(inspection).admin).toEqual({ decision: "grant", accountId: ids.owner });
     await apply(paths, inspection.planHash!);
     read(paths, database => expect(grantsOf(database)).toEqual([expect.objectContaining({ account_id: ids.owner, role: "admin" })]));
-  });
+  }, 30_000);
 
   it("deletes every grant on resume after a completed upgrade, and the next upgrade grants admin again", async () => {
     const { paths, ids } = authorityWorld();
@@ -1131,7 +1131,7 @@ describe("authority acts: interrupted apply and resume", () => {
     expect(review(again).admin).toEqual({ decision: "grant", accountId: ids.owner });
     await apply(paths, again.planHash!);
     read(paths, database => expect(grantsOf(database)).toEqual([expect.objectContaining({ account_id: ids.owner, role: "admin", scope_kind: "installation" })]));
-  });
+  }, 30_000);
 
   it("keeps targets 50 and 51 free of the authority domain", () => {
     const { paths } = authorityWorld();

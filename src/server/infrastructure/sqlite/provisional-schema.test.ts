@@ -162,6 +162,30 @@ function moduleImports(fileName: string, text: string): ModuleImport[] {
 
 function realOrSelf(path: string): string { try { return realpathSync(path); } catch { return path; } }
 
+/*
+ * Disk lookups, each made once per path. The scan resolves every one of a few
+ * thousand imports against the gate and every step module; uncached, that repeated
+ * the same existence and real-path checks for each module (over half a million
+ * calls, most of the scan's time). Neither the repository nor any path a fixture
+ * names under it changes while this file runs, so a cached answer is the answer.
+ */
+const existingReals = new Map<string, ReadonlySet<string>>(), targetReals = new Map<string, string>();
+/** The real path of every file that `base` names on disk, as written or with its script extension swapped, under each resolved extension. */
+function realsOnDisk(base: string): ReadonlySet<string> {
+  let reals = existingReals.get(base);
+  if (!reals) {
+    reals = new Set([base, base.replace(SCRIPT_EXTENSION, "")].flatMap(candidate => RESOLVE_EXTENSIONS.map(extension => candidate + extension))
+      .filter(path => existsSync(path)).map(realOrSelf));
+    existingReals.set(base, reals);
+  }
+  return reals;
+}
+function targetReal(target: string): string {
+  let real = targetReals.get(target);
+  if (real === undefined) { real = realOrSelf(join(repository, target)); targetReals.set(target, real); }
+  return real;
+}
+
 /** Whether a literal specifier written in `fromFile` (repository-relative) resolves to `target` (repository-relative). */
 function reaches(fromFile: string, specifier: string, target: string): boolean {
   let base: string;
@@ -174,11 +198,7 @@ function reaches(fromFile: string, specifier: string, target: string): boolean {
   const name = relative(repository, base).split(sep).join(posix.sep);
   const targetBase = target.replace(SCRIPT_EXTENSION, "");
   if (name === target || name.replace(SCRIPT_EXTENSION, "") === targetBase) return true;
-  const real = realOrSelf(join(repository, target));
-  return [base, base.replace(SCRIPT_EXTENSION, "")].some(candidate => RESOLVE_EXTENSIONS.some(extension => {
-    const path = candidate + extension;
-    return existsSync(path) && realOrSelf(path) === real;
-  }));
+  return realsOnDisk(base).has(targetReal(target));
 }
 
 /** Gate imports a non-test source file may not make. */
@@ -374,7 +394,7 @@ describe("provisional schema steps stay switched off", () => {
     // No non-test file imports the project directory.
     expect(Object.values(STEP_IMPORTS).some(modules => Object.hasOwn(modules, DIRECTORY))).toBe(false);
     expect(scanned.filter(({ steps }) => steps.some(entry => entry.module === DIRECTORY)).map(({ file }) => file)).toEqual([]);
-  });
+  }, 30_000); // One parse of every source file under src/: about a second here, growing with the tree.
 
   it("lists only existing files that need the exception", () => {
     for (const file of [GATE, ...STEP_MODULES]) expect(existsSync(join(repository, file)), file).toBe(true);
