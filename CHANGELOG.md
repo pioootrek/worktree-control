@@ -14,7 +14,10 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
   `knowledge`, `project`, `doctor`, `config mcp`, `remote-verification` and
   project export and import commands) refuses a database that is not current
   with `upgrade_required` (JSON body on stderr, exit code 1) before it writes
-  anything; fence refusals take precedence. New commands: `upgrade inspect
+  anything; fence refusals take precedence. With a restore handoff pending,
+  `service install` still proceeds without opening the database and issues no
+  token; the service's start completes the restore and is then refused until
+  `auth fence resume` and the upgrade. New commands: `upgrade inspect
   [--decisions <file>]` and `upgrade apply --expect <plan hash> --backup-dir
   <dir>`. `auth fence establish` now requires `--backup-dir` and writes a
   `pre-establishment-v<n>-<UUID>` backup first; establish and resume point to

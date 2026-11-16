@@ -1,4 +1,5 @@
 import { unmanagedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { acquireControllerLock } from "../server/controller-lock";
 import { FileLogWriter } from "../server/log-writer";
 import { writeRecord } from "../server/modules/backups/records";
+import { assertBackupHandoffCompleted, BackupHandoffPendingError, BackupOperations, backupPolicySchema, recoverBackupHandoff, RestoreOperations } from "../server/modules/backups";
+import { openControllerStore } from "../server/controller-storage";
+import { resumeFixtureSecurity, upgradeFixture } from "../server/infrastructure/sqlite/fixtures/protected-security";
 import { AuthenticationService } from "../server/modules/authentication";
 import { resolveAppPaths } from "../server/paths";
 import { SqliteStateStore } from "../server/sqlite-store";
@@ -231,6 +235,50 @@ describe("service install first-run token", () => {
     expect(readdirSync(appPaths.dataDirectory)).toEqual(["state.sqlite3.backup-operations"]);
     acquireControllerLock(appPaths.controllerLockPath).release();
   });
+
+  it("proceeds without a token when a restore handoff is pending; the service's start completes the restore and is refused until resume and the upgrade", async () => {
+    // The deliberate exception to "service install refuses before any change": the pre-bootstrap
+    // leaves a pending handoff to the controller, returns false, and `service install` goes on to
+    // write and start the service (its caller ignores the result).
+    const appPaths = paths();
+    const attachments = appPaths.knowledgeAttachmentDirectory;
+    const store = new SqliteStateStore(appPaths.databasePath), authentication = new AuthenticationService(store);
+    const actor = authentication.authenticateInstallation(authentication.generateToken("fixture").token)!;
+    const policy = backupPolicySchema.parse({ directory: join(appPaths.dataDirectory, "..", "copies"), uiActions: ["create", "restore"] });
+    let maintenance = false, work: (() => void) | null = null;
+    const backups = new BackupOperations(policy, { databasePath: appPaths.databasePath, attachmentDirectory: attachments, applicationVersion: "fixture", source: store,
+      estimateBytes: () => store.backupEstimateBytes(), authorize: candidate => authentication.isCurrentInstallationActor(candidate), maintenance: () => maintenance });
+    try {
+      const backup = backups.create(actor, "copy"); await backups.drain();
+      const restores = new RestoreOperations(backups, appPaths.databasePath, attachments, { authentication: () => store.getAuthenticationPolicy(), executionMode: () => authentication.mode(),
+        enterMaintenance: () => { maintenance = true; }, restart: async execute => { work = execute; }, failure: vi.fn() });
+      const input = { action: "restore", backupId: backup.backupId, idempotencyKey: "restore-one", confirmation: "replace-entire-installation" };
+      await restores.admit(actor, input);
+      restores.launch(actor, input);
+      // The replacement needs the controller's restart; with the store open it stops at the pending handoff.
+      const execute = () => { if (!work) throw new Error("No handoff was launched."); work(); };
+      expect(execute).toThrow(/already running/);
+    } finally { await backups.close(); store.close(); }
+    expect(() => assertBackupHandoffCompleted(appPaths.databasePath)).toThrow(BackupHandoffPendingError);
+
+    const database = () => createHash("sha256").update(readFileSync(appPaths.databasePath)).digest("hex"), before = database();
+    const tty = terminal(true);
+    expect(bootstrapServiceInstallationToken(appPaths, { terminal: tty, locale: "en" })).toBe(false);
+    expect(tty.output).toEqual([]);
+    expect(database()).toBe(before);
+    acquireControllerLock(appPaths.controllerLockPath).release();
+
+    // The service's start, in its order (src/cli/index.ts): the handoff replay completes the restore, then the
+    // ordinary opening refuses the restored database as fenced, before any token or listener.
+    const handoff = recoverBackupHandoff(appPaths.databasePath, attachments, policy);
+    expect(handoff?.state).toBe("executing");
+    expect(() => openControllerStore(appPaths.databasePath)).toThrowError(expect.objectContaining({ code: "security_fence_recovery_required" }));
+    // After `auth fence resume` the database needs the upgrade, and only after it does the start open it.
+    await resumeFixtureSecurity(appPaths.databasePath, "token", { attachmentDirectory: attachments, upgrade: false });
+    expect(() => openControllerStore(appPaths.databasePath)).toThrowError(expect.objectContaining({ code: "upgrade_required" }));
+    await upgradeFixture(appPaths.databasePath, { attachmentDirectory: attachments });
+    openControllerStore(appPaths.databasePath).close();
+  }, 30_000);
 
   it("fails the installation on an unreadable restore handoff record instead of skipping", () => {
     const appPaths = paths();

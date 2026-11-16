@@ -262,8 +262,11 @@ Every ordinary opening (the controller, the service and `service install`, and
 the offline `auth`, `auth provider`, `identity`, `knowledge`, `project`,
 `doctor`, `config mcp`, `remote-verification` and project export and import
 commands) runs the admission check before it writes anything. A fence refusal
-wins over `upgrade_required`. The refusal is printed as one JSON body on stderr
-with exit code 1:
+wins over `upgrade_required`. One exception: with a restore handoff pending,
+`service install` does not open the database, so it proceeds, issues no token
+and starts the service; that start completes the restore and is then refused
+until `auth fence resume` and the upgrade. The refusal is printed as one JSON
+body on stderr with exit code 1:
 
 ```json
 {"code":"upgrade_required","error":"upgrade_required: This database requires an explicit offline upgrade before ordinary access. Next step: upgrade inspect.","nextStep":"upgrade inspect","state":"upgrade_needed"}

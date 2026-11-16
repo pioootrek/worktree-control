@@ -1717,7 +1717,12 @@ takes no copy: start prints one fixed notice that backups are now taken by
 `--backup-dir` keeps its scheduling meaning. `service install` on a stopped
 installation that needs the upgrade, establishment or recovery fails with that
 refusal before it issues a token or changes a service definition; `--print`
-opens nothing.
+opens nothing. One exception is deliberate: with a restore handoff pending, the
+pre-bootstrap leaves the database to the controller and does not open it, so
+the installation proceeds as before, issues no token, and writes and starts
+the service. The service's start completes the restore and is then refused
+with `security_fence_recovery_required` until `auth fence resume` and the
+upgrade.
 
 ### Project mapping acts (integration branch only)
 

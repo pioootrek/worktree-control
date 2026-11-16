@@ -320,7 +320,11 @@ other one before it writes anything:
 | Fenced | a pending or mismatched witness, or an unacknowledged restore | `security_fence_recovery_required` | `auth fence inspect`, then `auth fence resume` |
 
 A fence refusal always wins: a rolled-back, restored or pending database goes
-to recovery, never to the upgrade.
+to recovery, never to the upgrade. `service install` with a restore handoff
+pending is the one exception to refusing first: it leaves the database to the
+controller, issues no token and starts the service as before; that start
+completes the restore and is then refused until `auth fence resume` and the
+upgrade.
 
 ### What the upgrade resets and keeps
 
