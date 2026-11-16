@@ -1179,7 +1179,7 @@ describe("step 51 in the quarantine of auth fence resume", () => {
 });
 
 describe("step 51 in the explicit offline upgrade", () => {
-  it("lists steps 50 and 51 in the plan and applies them from schema 49 without stamping a row", async () => {
+  it("lists steps 50 and 51 in the plan and applies them from schema 49 with the mapping acts, which stamp and map every row", async () => {
     const paths = installation();
     const inspection = inspectSqliteUpgrade(paths, TARGET);
     expect(inspection).toMatchObject({ state: "upgrade_needed", schemaVersion: 49, target: 51 });
@@ -1192,12 +1192,16 @@ describe("step 51 in the explicit offline upgrade", () => {
       const destination = join(paths.dataDirectory, "..", "backup-51");
       return { root: destination, manifest: await createControllerBackup(source, destination, { applicationVersion: "test", attachmentDirectory: paths.knowledgeAttachmentDirectory }) };
     };
+    // Since C2b the plan maps the two registrations and the identity: three new projects, then one attach or map each.
+    expect(inspection.plan?.acts.map(act => act.kind)).toEqual(["create_project", "create_project", "create_project", "attach_registration", "attach_registration", "map_remote_identity"]);
     expect(await applySqliteUpgrade(paths, { expect: inspection.planHash! }, backup, TARGET)).toMatchObject({ state: "current", schemaVersion: 51, planHash: inspection.planHash });
     read(paths, database => {
       expect(inspectSchema(database, TARGET).version).toBe(51);
       expect(database.prepare("SELECT state,plan_hash FROM upgrade_marker").get()).toEqual({ state: "complete", plan_hash: inspection.planHash });
-      expect(clock(database)).toBe(0);
-      for (const table of MAPPED_TABLES) for (const row of stamps(database, table)) expect(row).toMatchObject({ parent: null, incarnation: 0, version: 0 });
+      expect(clock(database)).toBe(3);
+      for (const table of MAPPED_TABLES) for (const row of stamps(database, table)) {
+        expect(row.parent).toEqual(expect.any(String)); expect(row.incarnation).toBeGreaterThan(0); expect(row.version).toBe(row.incarnation);
+      }
     });
   });
 
@@ -1249,7 +1253,9 @@ describe("step 51 in the explicit offline upgrade", () => {
     // At 51 the complete marker does not make it current: its schema is below the target. The plan lists step 51 only.
     const inspection = inspectSqliteUpgrade(paths, TARGET);
     expect(inspection).toMatchObject({ state: "upgrade_needed", nextStep: "upgrade apply", schemaVersion: 50, target: 51, marker: "complete", appliedPlan: applied50 });
-    expect(inspection.plan).toMatchObject({ source: 50, target: 51, acts: [] });
+    // The upgraded installation has two registrations and an identity, which the plan maps (C2b); the fresh one has none.
+    expect(inspection.plan).toMatchObject({ source: 50, target: 51 });
+    expect(inspection.plan?.acts.length).toBe(upgraded ? 6 : 0);
     expect(inspection.plan?.steps).toEqual([{ version: 51, name: projectMappingMigration.name, checksum: projectMappingChecksum }]);
     expect(inspection.planHash).toMatch(/^[0-9a-f]{64}$/);
     expect(inspection.planHash).not.toBe(applied50);
@@ -1262,8 +1268,8 @@ describe("step 51 in the explicit offline upgrade", () => {
       expect(inspectSchema(database, TARGET)).toEqual({ version: 51, fresh: false });
       expect(() => validateDatabase(database, 51)).not.toThrow();
       expect(database.prepare("SELECT state,plan_hash FROM upgrade_marker").get()).toEqual({ state: "complete", plan_hash: inspection.planHash });
-      expect(clock(database)).toBe(0);
-      for (const table of MAPPED_TABLES) for (const row of stamps(database, table)) expect(row).toMatchObject({ parent: null, incarnation: 0, version: 0 });
+      expect(clock(database)).toBe(upgraded ? 3 : 0);
+      for (const table of MAPPED_TABLES) for (const row of stamps(database, table)) expect(row.parent === null).toBe(false);
     });
     // Now current at 51: its own plan is already applied, the stale one is the wrong state.
     expect(inspectSqliteUpgrade(paths, TARGET)).toMatchObject({ state: "current", schemaVersion: 51, target: 51, marker: "complete", appliedPlan: inspection.planHash });

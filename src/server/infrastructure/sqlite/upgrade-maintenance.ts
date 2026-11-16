@@ -12,9 +12,9 @@ import { inspectSchema } from "./schema-inspection";
 import { BACKUP_LIMITS, hashFile } from "./backup-validation";
 import { takeBoundBackup, type MaintenanceBackup, type MaintenanceBackupSource } from "./backup-binding";
 import {
-  canonicalJson, describeUpgradeActs, executeUpgradeActs, proposeUpgradeActs, readUpgradePlan, removeUpgradePlan, structuralSteps,
-  UPGRADE_PLAN_FORMAT, UPGRADE_PLAN_KIND, UpgradeError, upgradePlanPath, upgradeTarget, writeUpgradePlan,
-  type UpgradeNextStep, type UpgradePlan, type UpgradeState,
+  canonicalJson, describeUpgradeActs, executeUpgradeActs, normaliseUpgradeDecisions, proposeUpgrade, readUpgradePlan, removeUpgradePlan, structuralSteps,
+  UPGRADE_PLAN_FORMAT, UPGRADE_PLAN_KIND, UPGRADE_PLAN_LIMITS, UpgradeError, upgradePlanPath, upgradeTarget, validateUpgradeProposal, writeUpgradePlan,
+  type UpgradeAct, type UpgradeNextStep, type UpgradePlan, type UpgradeState,
 } from "./upgrade-plan";
 
 /**
@@ -44,10 +44,16 @@ export interface UpgradeStatus {
   appliedPlan: string | null;
 }
 export interface UpgradeInspection extends UpgradeStatus {
-  /** Present only in `upgrade_needed`: the plan written, its hash and the operator's lines for its acts. */
+  /**
+   * Present only in `upgrade_needed`: the plan written, its hash, the
+   * decisions as normalised and stored in it, the operator's lines for its
+   * acts and review, and the review itself (by domain).
+   */
   plan?: UpgradePlan;
   planHash?: string;
+  decisions?: Record<string, unknown>;
   acts?: string[];
+  review?: Record<string, unknown>;
 }
 /** The upgrade's names for the shared maintenance backup (see `backup-binding.ts`). */
 export type UpgradeBackupSource = MaintenanceBackupSource;
@@ -135,33 +141,68 @@ function sourceImage(path: string): string {
 }
 
 /**
+ * The act list of the existing plan file when it was written for this same
+ * database state and these decisions (equal binding, installation, base,
+ * source, target, steps and decisions), so its generated project IDs are
+ * reused and a repeated inspect gives the same hash; otherwise null. A missing,
+ * unreadable or foreign plan is simply not reused (writing then decides
+ * whether the directory is usable).
+ */
+function reusableActs(path: string, header: Omit<UpgradePlan, "acts" | "review">): readonly UpgradeAct[] | null {
+  try {
+    const { plan } = readUpgradePlan(path);
+    const { acts: _acts, review: _review, ...previous } = plan;
+    void _acts; void _review;
+    return canonicalJson(previous) === canonicalJson(header) ? plan.acts : null;
+  } catch { return null; }
+}
+
+/**
  * Offline. Reads the database and the witness, writes neither. Recognises the
  * state; only in `upgrade_needed` it writes the plan (replacing any earlier
- * one) and returns it with its hash. In every other state it writes nothing and
- * reports the operator's next step. SQLite's read-only open may still create an
- * empty WAL and its shared-memory file beside a database that has none.
+ * one) and returns it with its hash, its normalised decisions, the operator's
+ * lines and the review. In every other state it writes nothing and reports the
+ * operator's next step. SQLite's read-only open may still create an empty WAL
+ * and its shared-memory file beside a database that has none.
+ *
+ * `decisions` are the operator's (see `mapping-upgrade-acts.ts`); their shape is
+ * checked before any lock or file, and at a target without act domains (50) any
+ * decision is refused. A refusal of the decisions, a stop of the proposal or a
+ * plan beyond its limits writes no plan and leaves an existing plan file as it
+ * was; the error names the offending rows (bounded).
  */
-export function inspectSqliteUpgrade(paths: AppPaths, target?: number): UpgradeInspection {
+export function inspectSqliteUpgrade(paths: AppPaths, target?: number, decisions?: unknown): UpgradeInspection {
   const version = upgradeTarget(target);
+  const normalised = normaliseUpgradeDecisions(decisions, version);
   const { lock, owner } = ownership(paths, version);
   try {
     const path = owner.canonicalPath, source = owner.inspection.version;
     const status = recognize(path, owner.database, source, version);
     if (status.state !== "upgrade_needed") return status;
-    const plan: UpgradePlan = {
+    const header = {
       kind: UPGRADE_PLAN_KIND, format: UPGRADE_PLAN_FORMAT, binding: securityFenceBinding(path), installation: checkpoint(owner.database).installation,
-      base: status.preflight, source, target: version, steps: structuralSteps(source, version),
-      acts: proposeUpgradeActs(owner.database, { source, target: version }),
-    };
+      base: status.preflight, source, target: version, steps: structuralSteps(source, version), decisions: normalised,
+    } as const;
+    const proposal = proposeUpgrade(owner.database, { schemaVersion: source, source, target: version }, normalised, reusableActs(path, header), true);
+    const plan: UpgradePlan = { ...header, acts: proposal.acts, review: proposal.review };
+    // Refused, never truncated: the envelope adds the hash and a few bytes to the canonical payload.
+    if (Buffer.byteLength(canonicalJson(plan), "utf8") + 256 > UPGRADE_PLAN_LIMITS.bytes) {
+      throw new UpgradeError("upgrade_plan_bounds", "upgrade inspect", false, undefined, { findings: [{ table: "plan", id: "bytes", problem: `the plan exceeds ${UPGRADE_PLAN_LIMITS.bytes} bytes` }], count: 1, truncated: false });
+    }
     const planHash = writeUpgradePlan(path, plan);
-    return { ...status, plan, planHash, acts: describeUpgradeActs(plan) };
+    return { ...status, plan, planHash, decisions: normalised, acts: describeUpgradeActs(plan), review: proposal.review };
   } finally { release(lock, owner); }
 }
 
-/** The schema transaction's acts: the plan's data acts, then the marker, then this run's commit evidence. */
+/**
+ * The schema transaction's acts: the whole plan validated again at the target
+ * (after the structural steps, before the first act), the plan's data acts,
+ * then the marker, then this run's commit evidence.
+ */
 function upgradeActs(database: Database.Database, plan: UpgradePlan, receipt: string, planHash: string): void {
-  executeUpgradeActs(database, plan);
   const now = new Date().toISOString();
+  validateUpgradeProposal(database, plan, plan.target);
+  executeUpgradeActs(database, plan, { source: plan.source, target: plan.target, planHash, receipt, at: now });
   if (database.prepare("UPDATE upgrade_marker SET state='complete',changed_at=?,plan_hash=? WHERE singleton=1").run(now, planHash).changes !== 1) throw new Error("Upgrade marker update failed.");
   // The last act and this run's durable commit evidence (see upgradeCommitted).
   database.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('authentication.upgrade_applied','local-cli',?,?)")
@@ -193,9 +234,11 @@ function witnessUnchanged(path: string, database: Database.Database, source: num
  * both locks; state `upgrade_needed` (or "already applied" for the plan the
  * `complete` marker records, only when the database is at the target);
  * owner continuity; the plan, its hash, binding,
- * base and steps; this run's validated backup and the base again; the pending
- * witness with the upgrade receipt; the reopened database proven to be the
- * inspected one; one schema transaction (steps, acts, marker, audit event);
+ * base and steps; the whole plan recomputed read-only at the source
+ * (`upgrade_plan_unproposed` on a difference); this run's validated backup and
+ * the base again; the pending witness with the upgrade receipt; the reopened
+ * database proven to be the inspected one; one schema transaction (steps, the
+ * plan recomputed at the target, acts, marker, audit event);
  * validation and the confirmed witness; the plan removed.
  *
  * The target and the command are checked synchronously, before any lock or file.
@@ -228,6 +271,9 @@ async function applyUpgrade(paths: AppPaths, expect: string, backup: UpgradeBack
     if (plan.binding !== securityFenceBinding(path) || plan.installation !== checkpoint(owner.database).installation) throw new UpgradeError("upgrade_plan_foreign", "upgrade inspect");
     if (plan.base !== status.preflight) throw new UpgradeError("upgrade_base_changed", "upgrade inspect");
     if (plan.source !== source || plan.target !== version || canonicalJson(plan.steps) !== canonicalJson(structuralSteps(source, version))) throw new UpgradeError("upgrade_step_mismatch", "upgrade inspect");
+    // Whole-plan validation, read-only at the source: the acts and review are
+    // exactly the proposal for this database and the plan's decisions.
+    validateUpgradeProposal(owner.database, plan, source);
     let backupRoot: string;
     try { backupRoot = await takeBoundBackup(owner, path, source, version, backup); } catch { throw new UpgradeError("upgrade_backup_failed", "upgrade apply"); }
     // The final preflight. The Backup API copy reads through the read-only

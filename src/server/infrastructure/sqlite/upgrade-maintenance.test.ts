@@ -27,9 +27,9 @@ import { UPGRADE_MARKER_VERSION, upgradeMarkerChecksum, upgradeMarkerMigration }
 import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup, type UpgradeBackupSource } from "./upgrade-maintenance";
 import { takeBoundBackup } from "./backup-binding";
 import {
-  assertUpgradeAvailable, canonicalJson, describeUpgradeActs, executeUpgradeActs, parseUpgradePlan, proposeUpgradeActs, readUpgradePlan, structuralSteps,
-  UPGRADE_ACT_KINDS, UPGRADE_PLAN_LIMITS, upgradePlanHash, upgradePlanPath, upgradePlanRoot, writeUpgradePlan,
-  type UpgradeActKind, type UpgradePlan,
+  assertUpgradeAvailable, canonicalJson, describeUpgradeActs, executeUpgradeActs, normaliseUpgradeDecisions, parseUpgradePlan, proposeUpgrade, readUpgradePlan, structuralSteps,
+  UPGRADE_ACT_DOMAINS, UPGRADE_PLAN_LIMITS, upgradePlanHash, upgradePlanPath, upgradePlanRoot, validateUpgradeProposal, writeUpgradePlan,
+  type UpgradeActDomain, type UpgradePlan,
 } from "./upgrade-plan";
 
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>() }));
@@ -239,9 +239,9 @@ describe("explicit offline upgrade: inspect", () => {
     const first = inspect(paths), second = inspect(paths);
     expect(second.planHash).toBe(first.planHash);
     expect(first.plan).toEqual({
-      kind: "worktree-control/upgrade-plan", format: 1, binding: securityFenceBinding(path),
+      kind: "worktree-control/upgrade-plan", format: 2, binding: securityFenceBinding(path),
       installation: read(paths, db => db.prepare("SELECT installation FROM security_checkpoint").pluck().get()), base: first.preflight,
-      source: 49, target: 50, steps: [{ version: 50, name: upgradeMarkerMigration.name, checksum: upgradeMarkerChecksum }], acts: [],
+      source: 49, target: 50, steps: [{ version: 50, name: upgradeMarkerMigration.name, checksum: upgradeMarkerChecksum }], decisions: {}, acts: [], review: {},
     });
     expect(first.planHash).toBe(sha(canonicalJson(first.plan)));
     expect(first.planHash).toBe(upgradePlanHash(first.plan!));
@@ -290,23 +290,26 @@ describe("explicit offline upgrade: inspect", () => {
     expect(readFileSync(target, "utf8")).toBe("preserve");
   });
 
-  it("refuses a plan that contains an act, with no act kind registered", async () => {
-    expect(UPGRADE_ACT_KINDS).toEqual([]);
+  it("refuses a plan at target 50 that contains an act or decisions: the only act domain (mapping) starts at 51", async () => {
+    expect(UPGRADE_ACT_DOMAINS.map(domain => [domain.name, domain.minimumTarget])).toEqual([["mapping", 51]]);
     const paths = installation(), status = inspect(paths);
-    const payload = { ...status.plan!, acts: [{ kind: "fixture.note", payload: {} }] };
-    expect(() => parseUpgradePlan(payload)).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
-    expect(() => writeUpgradePlan(canonical(paths), payload)).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
-    const hash = upgradePlanHash(payload);
-    writeFileSync(planFile(paths), JSON.stringify({ payload, sha256: hash }));
-    const before = files(paths);
-    expect(await failure(() => apply(paths, hash))).toMatchObject({ code: "upgrade_plan_invalid", nextStep: "upgrade inspect", committed: false });
-    expect(files(paths)).toEqual(before);
+    const mapping = { kind: "attach_registration", payload: { registrationId: "r", projectId: "p", basis: "created_project" } };
+    for (const payload of [{ ...status.plan!, acts: [{ kind: "fixture.note", payload: {} }] }, { ...status.plan!, acts: [mapping] },
+      { ...status.plan!, decisions: { mapping: { links: [], bindings: [], isolate: { registrations: [], remoteIdentities: [] } } } }]) {
+      expect(() => parseUpgradePlan(payload)).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
+      expect(() => writeUpgradePlan(canonical(paths), payload)).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
+      const hash = upgradePlanHash(payload);
+      writeFileSync(planFile(paths), JSON.stringify({ payload, sha256: hash }));
+      const before = files(paths);
+      expect(await failure(() => apply(paths, hash))).toMatchObject({ code: "upgrade_plan_invalid", nextStep: "upgrade inspect", committed: false });
+      expect(files(paths)).toEqual(before);
+    }
   });
 });
 
 describe("explicit offline upgrade: plan and act mechanism", () => {
-  const plan = (acts: UpgradePlan["acts"] = []): UpgradePlan => ({ kind: "worktree-control/upgrade-plan", format: 1, binding: "a".repeat(64), installation: "b".repeat(64), base: "c".repeat(64),
-    source: 49, target: 50, steps: structuralSteps(49, 50), acts });
+  const plan = (acts: UpgradePlan["acts"] = []): UpgradePlan => ({ kind: "worktree-control/upgrade-plan", format: 2, binding: "a".repeat(64), installation: "b".repeat(64), base: "c".repeat(64),
+    source: 49, target: 50, steps: structuralSteps(49, 50), decisions: {}, acts, review: {} });
   it("serialises canonically and refuses values without one spelling", () => {
     expect(canonicalJson({ b: 1, a: [true, null, "x"], "é": { z: 0, y: -1 } })).toBe('{"a":[true,null,"x"],"b":1,"é":{"y":-1,"z":0}}');
     for (const value of [1.5, -0, Number.MAX_SAFE_INTEGER + 1, Number.NaN, undefined, { a: undefined }, new Map(), new Date(0)]) {
@@ -331,32 +334,49 @@ describe("explicit offline upgrade: plan and act mechanism", () => {
     expect(structuralSteps(49, 51).map(step => step.version)).toEqual([50, 51]);
     expect(() => structuralSteps(49, 52)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
   });
-  it("lets a registered kind propose, execute and describe acts in order, every act covered by the hash", () => {
+  it("lets a registered domain propose, validate, execute and describe acts in order, every act, decision and review covered by the hash", () => {
     const executed: string[] = [];
-    const note: UpgradeActKind<{ name: string }> = {
-      kind: "fixture.note", payload: z.object({ name: z.string().max(16) }).strict(),
-      propose: () => [{ name: "b" }, { name: "a" }],
-      execute: (_database, payload) => { executed.push(payload.name); },
-      describe: payload => `note ${payload.name}`,
+    const note: UpgradeActDomain<{ names: string[] }, { count: number }> = {
+      name: "fixture", minimumTarget: 50, decisionKeys: ["names"],
+      decisions: z.object({ names: z.array(z.string().max(16)) }).strict(),
+      review: z.object({ count: z.number().int() }).strict(),
+      kinds: [{ kind: "fixture.note", payload: z.object({ name: z.string().max(16) }).strict(), execute: (_database, payload) => { executed.push((payload as { name: string }).name); } }],
+      normalise: input => ({ names: [...((input.names as string[] | undefined) ?? ["b", "a"])] }),
+      propose: (_database, _context, decisions) => ({ acts: decisions.names.map(name => ({ kind: "fixture.note", payload: { name } })), review: { count: decisions.names.length } }),
+      describe: (acts, review) => [...acts.map(act => `note ${(act.payload as { name: string }).name}`), `${review.count} notes`],
     };
-    const kinds = [note] as ReadonlyArray<UpgradeActKind>;
+    const domains = [note] as unknown as ReadonlyArray<UpgradeActDomain>;
     const database = new Database(":memory:");
     try {
-      const acts = proposeUpgradeActs(database, { source: 49, target: 50 }, kinds);
-      expect(acts).toEqual([{ kind: "fixture.note", payload: { name: "b" } }, { kind: "fixture.note", payload: { name: "a" } }]);
-      const parsed = parseUpgradePlan(plan(acts), kinds);
-      expect(describeUpgradeActs(parsed, kinds)).toEqual(["note b", "note a"]);
-      expect(() => executeUpgradeActs(database, parsed, kinds)).toThrow(/inside the schema transaction/);
-      database.transaction(() => executeUpgradeActs(database, parsed, kinds))();
-      expect(executed).toEqual(["b", "a"]);
-      // Order, payload and kind are all part of the hash.
-      expect(upgradePlanHash(plan([...acts].reverse()))).not.toBe(upgradePlanHash(parsed));
-      expect(upgradePlanHash(plan([acts[0], { kind: "fixture.note", payload: { name: "c" } }]))).not.toBe(upgradePlanHash(parsed));
-      // Strict payloads; unknown kinds; the default registry refuses every act.
-      for (const invalid of [[{ kind: "fixture.note", payload: { name: "a", extra: 1 } }], [{ kind: "fixture.other", payload: {} }], [{ kind: "fixture.note", payload: { name: "a" }, extra: 1 }]]) {
-        expect(() => parseUpgradePlan(plan(invalid as UpgradePlan["acts"]), kinds)).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
+      const decisions = normaliseUpgradeDecisions({}, 50, domains);
+      expect(decisions).toEqual({ fixture: { names: ["b", "a"] } });
+      expect(() => normaliseUpgradeDecisions({ other: 1 }, 50, domains)).toThrowError(expect.objectContaining({ code: "upgrade_decisions_invalid" }));
+      const proposal = proposeUpgrade(database, { schemaVersion: 49, source: 49, target: 50 }, decisions, null, true, domains);
+      expect(proposal.acts).toEqual([{ kind: "fixture.note", payload: { name: "b" } }, { kind: "fixture.note", payload: { name: "a" } }]);
+      const parsed = parseUpgradePlan({ ...plan(proposal.acts), decisions, review: proposal.review }, domains);
+      expect(describeUpgradeActs(parsed, domains)).toEqual(["note b", "note a", "2 notes"]);
+      expect(() => validateUpgradeProposal(database, parsed, 49, domains)).not.toThrow();
+      // A plan the proposal does not give, with valid shape, is refused by the validation.
+      for (const altered of [{ ...parsed, acts: [...parsed.acts].reverse() }, { ...parsed, review: { fixture: { count: 3 } } }]) {
+        expect(() => validateUpgradeProposal(database, altered, 49, domains)).toThrowError(expect.objectContaining({ code: "upgrade_plan_unproposed" }));
       }
-      expect(() => parseUpgradePlan(plan(acts))).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
+      const context = { source: 49, target: 50, planHash: "0".repeat(64), receipt: "00000000-0000-4000-8000-000000000000", at: new Date(0).toISOString() };
+      expect(() => executeUpgradeActs(database, parsed, context, domains)).toThrow(/inside the schema transaction/);
+      database.transaction(() => executeUpgradeActs(database, parsed, context, domains))();
+      expect(executed).toEqual(["b", "a"]);
+      // Order, payload, kind, decisions and review are all part of the hash.
+      expect(upgradePlanHash({ ...parsed, acts: [...parsed.acts].reverse() })).not.toBe(upgradePlanHash(parsed));
+      expect(upgradePlanHash({ ...parsed, acts: [parsed.acts[0], { kind: "fixture.note", payload: { name: "c" } }] })).not.toBe(upgradePlanHash(parsed));
+      expect(upgradePlanHash({ ...parsed, decisions: { fixture: { names: ["a"] } } })).not.toBe(upgradePlanHash(parsed));
+      expect(upgradePlanHash({ ...parsed, review: { fixture: { count: 1 } } })).not.toBe(upgradePlanHash(parsed));
+      // Strict payloads; unknown kinds; a domain's sections required exactly at its targets; the default registry refuses the fixture's act.
+      for (const invalid of [[{ kind: "fixture.note", payload: { name: "a", extra: 1 } }], [{ kind: "fixture.other", payload: {} }], [{ kind: "fixture.note", payload: { name: "a" }, extra: 1 }]]) {
+        expect(() => parseUpgradePlan({ ...parsed, acts: invalid as UpgradePlan["acts"] }, domains)).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
+      }
+      for (const invalid of [{ ...parsed, decisions: {} }, { ...parsed, review: {} }, { ...parsed, target: 49 }]) {
+        expect(() => parseUpgradePlan(invalid, domains)).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
+      }
+      expect(() => parseUpgradePlan(plan(proposal.acts))).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
       expect(UPGRADE_PLAN_LIMITS).toMatchObject({ bytes: 8 * 1024 * 1024, acts: 50_000 });
       expect(UPGRADE_PLAN_LIMITS.bytes).toBe(BACKUP_LIMITS.manifestBytes);
     } finally { database.close(); }
@@ -366,7 +386,8 @@ describe("explicit offline upgrade: plan and act mechanism", () => {
     const variants: Array<[string, () => void]> = [
       ["oversized", () => writeFileSync(planFile(paths), " ".repeat(UPGRADE_PLAN_LIMITS.bytes + 1))],
       ["readable by others", () => chmodSync(planFile(paths), 0o644)],
-      ["another format", () => { const payload = { ...status.plan!, format: 2 }; writeFileSync(planFile(paths), JSON.stringify({ payload, sha256: sha(canonicalJson(payload)) })); }],
+      ["the old format", () => { const payload = { ...status.plan!, format: 1 }; writeFileSync(planFile(paths), JSON.stringify({ payload, sha256: sha(canonicalJson(payload)) })); }],
+      ["another format", () => { const payload = { ...status.plan!, format: 3 }; writeFileSync(planFile(paths), JSON.stringify({ payload, sha256: sha(canonicalJson(payload)) })); }],
       ["an unknown field", () => { const payload = { ...status.plan!, extra: 1 }; writeFileSync(planFile(paths), JSON.stringify({ payload, sha256: sha(canonicalJson(payload)) })); }],
       ["duplicate keys", () => writeFileSync(planFile(paths), good.replace('{"payload":', `{"sha256":"${status.planHash}","payload":`))],
       ["a wrong envelope hash", () => writeFileSync(planFile(paths), good.replace(status.planHash!, "0".repeat(64)))],
