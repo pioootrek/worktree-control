@@ -28,7 +28,7 @@ export function readUpgradeMarker(database: Database.Database, schemaVersion: nu
  * The state, from the fence's verdict, the marker and the schema version.
  * `current` needs a trusted fence, the requested target reached and a
  * `complete` marker; below step 50 no database has a marker, so at such a
- * target (the released 49, which only the ordinary admission check asks for;
+ * target (the released 49, which only test fixtures ask the ordinary admission for;
  * the upgrade's targets are 50 and above) the target reached suffices. A
  * trusted database below the target is `upgrade_needed` whatever its marker
  * says, so a completed step-50 database still needs the steps up to 51.

@@ -524,15 +524,40 @@ async function writers(emitted) {
   record("orderly-shutdown-retention", { retained: marked.issuance.length, exitCode: 0, sessionStillCurrent: true });
 }
 
-/** R12 + R13 with a genuine schema-40 row: restore refuses, and a later publication stays possible. */
+/** The database file and a non-empty WAL by their bytes: what a refused opening must leave as it was. */
+function databaseFiles(inst) {
+  const path = join(inst.root, "data/state.sqlite3"), sha = file => createHash("sha256").update(readFileSync(file)).digest("hex");
+  const wal = `${path}-wal`;
+  return { database: sha(path), wal: existsSync(wal) && readFileSync(wal).length ? sha(wal) : "empty" };
+}
+/** An owner boot that the ordinary admission refuses before any store, recovery or listener exists. */
+async function refusedOpening(emitted, inst, code) {
+  const before = databaseFiles(inst), worker = start(emitted, inst);
+  const refusal = await worker.waitFor("refused-opening");
+  assert.equal(refusal.code, code); assert.equal(refusal.listening, false);
+  assert.deepEqual(await worker.exited, { code: 0, signal: null });
+  assert.deepEqual(databaseFiles(inst), before, "a refused opening writes nothing");
+}
+
+/**
+ * R12 + R13 with a genuine schema-40 row. Since the explicit offline upgrade, an ordinary start migrates
+ * nothing: the operator establishes the fence with a backup and upgrades; after a restore, the start is
+ * refused at its opening until the operator resumes and upgrades again, and the resume's quarantine leaves
+ * no restored or later session to recover.
+ */
 async function restored(emitted) {
   const schema40 = join(root, "src/server/infrastructure/sqlite/fixtures/schema-v40.sql");
   const bounds = { ...BOUNDS, sessionRows: 6 };
   const inst = installation("restored", bounds, { schema40 });
   await offline(emitted, inst, "seed-v40");
-  const premigration = join(inst.root, "premigration");
-  mkdirSync(premigration, { mode: 0o700 });
-  let worker = await owner(emitted, inst, "seed", { backup: premigration });
+  await refusedOpening(emitted, inst, "security_fence_establishment_required");
+  const maintenanceBackups = join(inst.root, "maintenance-backups");
+  mkdirSync(maintenanceBackups, { mode: 0o700 });
+  const established = await offline(emitted, inst, "maintain", { maintenance: "establish", backup: maintenanceBackups });
+  assert.equal(established.before.code, "security_fence_establishment_required"); assert.equal(established.before.schemaVersion, 40);
+  assert.equal(established.fence.trusted, true); assert.match(established.fence.backup, /\/pre-establishment-v40-[0-9a-f-]{36}$/);
+  assert.deepEqual(established.upgrade.state, "current"); assert.match(established.upgrade.backup, /\/pre-upgrade-v52-[0-9a-f-]{36}$/);
+  let worker = await owner(emitted, inst, "seed");
   assert(worker.opened.sessions.includes("legacy-unmarked"), "the upgrade preserved the expired unmarked row");
   assert.deepEqual(worker.opened.issuance, [], "nothing was backfilled");
   assert(worker.recovered.sessions.includes("legacy-unmarked"), "recovery and expiry never touch an unmarked row");
@@ -549,20 +574,27 @@ async function restored(emitted) {
   assert.equal((await pendingLogin).status, 200, "this session was published after the snapshot");
   assert(later.cookies.has(SESSION_COOKIE));
   await worker.shutdown();
-  await offline(emitted, inst, "restore", { backup: snapshotDirectory });
+  const { snapshot: restoredRows } = await offline(emitted, inst, "restore", { backup: snapshotDirectory });
+  assert.deepEqual(restoredRows.issuance, atBackup.issuance);
+  assert.deepEqual(restoredRows.sessions, atBackup.sessions);
+  assert(restoredRows.sessions.includes("legacy-unmarked"), "the restore brought back the unmarked row");
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const refused = start(emitted, inst);
-    const opened = await refused.waitFor("opened");
-    assert.equal(opened.provenance, "restored");
-    assert.deepEqual(opened.snapshot.issuance, atBackup.issuance);
-    assert.deepEqual(opened.snapshot.sessions, atBackup.sessions);
-    const { snapshot, listening: bound } = await refused.waitFor("refused");
-    assert.deepEqual(snapshot, opened.snapshot, "the refusal changed nothing, including the pending snapshot row");
-    assert.equal(bound, false);
-    assert.deepEqual(await refused.exited, { code: 0, signal: null });
+  // The restored database is refused at the start's opening, twice, with every byte (and so the pending
+  // snapshot row) as the restore left it.
+  for (let attempt = 0; attempt < 2; attempt++) await refusedOpening(emitted, inst, "security_fence_recovery_required");
+  // After a restore: resume, inspect and apply. The quarantine removes every restored session and issuance row.
+  const resumed = await offline(emitted, inst, "maintain", { maintenance: "resume", backup: maintenanceBackups });
+  assert.equal(resumed.before.code, "security_fence_recovery_required"); assert.equal(resumed.fence.trusted, true);
+  assert.deepEqual(resumed.upgrade.state, "current");
+  worker = await owner(emitted, inst);
+  for (const rows of [worker.opened, worker.recovered]) {
+    assert.deepEqual(rows.issuance, [], "no restored issuance row survives the resume"); assert.deepEqual(rows.pending, []);
+    assert.deepEqual(rows.sessions, [], "no restored session survives the resume");
   }
-  record("restored-snapshot-refused", { pending: atBackup.pending.length, publishedAfterSnapshot: true, unmarkedKept: true, refusedBoots: 2, rowsChanged: 0 });
+  for (const jar of [released, later]) assert.equal((await jar.session()).body.authenticated, false, "neither the restored nor the later session authenticates");
+  await worker.shutdown();
+  record("restored-snapshot-refused", { pending: atBackup.pending.length, publishedAfterSnapshot: true, unmarkedKept: true, refusedBoots: 2, rowsChanged: 0,
+    refusal: "security_fence_recovery_required", resumedAndUpgraded: true, sessionsAfterResume: 0 });
 }
 
 let primaryFailure;

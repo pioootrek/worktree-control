@@ -708,8 +708,10 @@ pending/running request bound to four. These are application limits, independent
 of host process limits. A timed-out operation cannot publish a successful copy;
 synchronous filesystem work may take longer before reaching its next limit check.
 
-`--backup-before-migration --backup-dir <directory>` retains its independent,
-default-off migration gate. This local policy does not enable remote transfer
+`--backup-before-migration` is deprecated in this build: start no longer
+migrates an existing database, so the flag takes no copy and prints a notice;
+`auth fence establish --backup-dir` and `upgrade apply --backup-dir` take the
+maintenance backups instead. This local policy does not enable remote transfer
 or attachment store garbage collection. Configure the optional remote transfer
 separately as described above. Local copies require a surviving host and
 filesystem to be useful.
@@ -818,8 +820,10 @@ queue when this repository is registered in Worktree Control.
 
 `pnpm test:rbac-artifact` tests the actual public npm 0.1.1 package (schema 28)
 against the release artifact in isolated installed prefixes, including backup
-creation, fence establishment, data and credential continuity, and supported restore with
-protected quarantine into existing and empty directories. The
+creation, fence establishment and the explicit upgrade with their backups, the
+upgrade's authority reset (old grants and credentials revoked, data and the
+installation token kept), and supported restore with protected quarantine and
+the upgrade again into existing and empty directories. The
 `test:rbac-artifact:fresh` preset covers a new installation. Both test the
 separately packaged provider with its locked dependencies. Use the managed
 queue and see [release packaging](docs/release-packaging.md).

@@ -118,9 +118,9 @@ export type SecurityMaintenanceResult = ReturnType<typeof maintainSqliteSecurity
 const establishSchema=z.object({action:z.literal("establish"),expect:z.string().regex(/^[0-9a-f]{64}$/)}).strict();
 
 /**
- * Offline. `auth fence establish` with a durable pre-establishment backup, for
- * the activation to compose (integration branch: no command or bootstrap path
- * calls it yet). Everything `maintainSqliteSecurityFence` does for establish
+ * Offline. `auth fence establish` with a durable pre-establishment backup, as
+ * the command runs it (`auth fence establish --backup-dir`, composed in
+ * `src/server/bootstrap/security-maintenance.ts`). Everything `maintainSqliteSecurityFence` does for establish
  * happens in the same order and through the same code: both locks and
  * ownership, the status, the `expect` comparison, `handoff.preflight`, the
  * trusted no-op (which takes no backup), `establishmentAllowed` and owner

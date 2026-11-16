@@ -1273,9 +1273,12 @@ incarnations, `knowledge_projects` and the journal stay as they are, and the
 quarantine writes no journal row. A clock that cannot advance (missing,
 malformed, behind a stamp, or at its maximum) refuses with
 `security_fence_recovery_required` and rolls back everything, schema steps
-included. At the default target and at 50 the quarantine runs exactly the
-statements it ran before. The explicit offline upgrade lists step 51 among its
-structural steps, and at target 51 its plan carries the project mapping acts.
+included. At target 49 the quarantine runs exactly the statements it ran
+before step 50; target 50 adds only the marker reset. The default target is the
+supported schema 52, so a default resume also runs this mapping quarantine and
+deletes every account grant (step 52). The explicit offline upgrade lists step
+51 among its structural steps, and at target 51 and above its plan carries the
+project mapping acts.
 
 The step's operations check their step against the supported version before
 they touch a database: the migration, the validation rule, the quarantine's
@@ -1593,14 +1596,17 @@ record as recovery required instead of misreading it. An upgrade never writes
 `applyUpgrade(paths, { expect }, { directory, applicationVersion }, target?)`.
 The pre-upgrade backup of step 5 is the real `createControllerBackup`, writing
 into `<directory>/pre-upgrade-v<source schema>-<UUID>` with the installation's
-Knowledge attachments, beside the existing `pre-migration-v…` convention.
+Knowledge attachments. Its name follows the `pre-migration-v…` copies that
+released versions take at start; this build takes none at start.
 `src/server/bootstrap/maintenance-backup.ts` holds this one backup
 composition, which establishment with a backup shares. The run's target is
 the backup's schema ceiling (`createControllerBackup`'s optional
-`schemaCeiling`), so a source above the supported schema, such as a step-52
-database whose marker a resume set to `pending`, can be backed up. Without
-the option every backup keeps the supported ceiling. Omitted, `target` is the
-supported schema, where the upgrade refuses as unsupported.
+`schemaCeiling`), so the backup recognises exactly the schemas the run
+recognises; a test run at a lower target cannot back up a newer source.
+Without the option every backup keeps the supported ceiling. Omitted, `target`
+is the supported schema 52: the default upgrade is the one the commands run,
+and a step-52 database whose marker a resume set to `pending` is its ordinary
+source.
 
 `src/cli/upgrade.ts` holds the runner of the `upgrade inspect [--decisions
 <file>]` and `upgrade apply --expect <plan hash> --backup-dir <dir>` commands,
