@@ -95,6 +95,21 @@ const RECOVERY_RETENTION_EXCESS = `
   ) WHERE rank > 50`;
 
 /**
+ * How many runs {@link TestRunQueries.markInterruptedTestRuns} deletes, read
+ * without writing (for the upgrade's review). After recovery no run is queued
+ * or running, so its final trim ranks every run of a project; the per-run trim
+ * of each save deletes only runs beyond the newest 50 of a subset of the same
+ * runs in the same order, which that final trim would delete too, and never
+ * one of the newest 50. The total is therefore every run beyond its project's
+ * newest 50 by `queued_at` and ID.
+ */
+export function recoveryTrimmedRuns(database: Database.Database): number {
+  return database.prepare(`SELECT count(*) FROM (
+    SELECT ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY queued_at DESC, id DESC) AS rank FROM test_runs
+  ) WHERE rank > 50`).pluck().get() as number;
+}
+
+/**
  * Deletes the selected runs and, first, their requester rows. The rows go
  * explicitly rather than by ON DELETE CASCADE, so trimming is the same with
  * foreign keys on and with them off (as inside the schema transaction, where

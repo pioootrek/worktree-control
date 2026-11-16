@@ -2,6 +2,7 @@ import { securityFenceMigration, securityFenceChecksum } from "./security-fence-
 import { upgradeMarkerMigration, upgradeMarkerChecksum } from "./upgrade-marker-migration";
 import { schemaTriggersAt } from "./security-coverage";
 import { PROJECT_MAPPING_COLUMN_SUFFIX, PROJECT_MAPPING_VERSION, projectMappingChecksum, projectMappingMigration } from "./mapping-structure-migration";
+import { accountGrantsChecksum, accountGrantsMigration } from "./account-grants-migration";
 import { humanConfigurationMigration, humanConfigurationChecksum } from "./human-configuration-migration";
 import { humanTestRunMigration, humanTestRunChecksum } from "./human-test-run-migration";
 import { humanRuntimeMigration, humanRuntimeChecksum } from "./human-runtime-migration";
@@ -35,6 +36,7 @@ type ForeignKey = { table: string; from: string; to: string; on_delete: string; 
 // them only after their introducing migration, but validate any that are present.
 // A table introduced above the inspection ceiling is unknown at that ceiling.
 const tableVersions: Record<string, number> = {
+  account_grants: 52,
   project_mapping_clock: 51, project_mapping_journal: 51,
   upgrade_marker: 50,
   security_checkpoint: 49,
@@ -212,6 +214,7 @@ export function inspectSchema(database: Database.Database, ceiling?: number): Sc
       : x.version === 42 ? x.name !== humanPrincipalMigration.name || x.checksum !== humanPrincipalChecksum
       : x.version === 43 ? x.name !== godotWebMigration.name || x.checksum !== godotWebChecksum
       : x.version === 44 ? x.name !== testRunRequesterMigration.name || x.checksum !== testRunRequesterChecksum
+      : x.version === 52 ? x.name !== accountGrantsMigration.name || x.checksum !== accountGrantsChecksum
       : x.version === 51 ? x.name !== projectMappingMigration.name || x.checksum !== projectMappingChecksum
       : x.version === 50 ? x.name !== upgradeMarkerMigration.name || x.checksum !== upgradeMarkerChecksum
       : x.version === 49 ? x.name !== securityFenceMigration.name || x.checksum !== securityFenceChecksum

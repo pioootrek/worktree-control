@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { ProviderAdminError } from "../../modules/authentication";
-import { TestRunQueries } from "./test-run-queries";
 import { randomUUID } from "node:crypto";
 import type { AppPaths } from "../../paths";
 import { acquireControllerLock, ControllerAlreadyRunningError } from "../../controller-lock";
@@ -11,6 +10,8 @@ import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { schemaTarget } from "./migration-registry";
 import { applyMappingQuarantine, planMappingQuarantine } from "./mapping-structure-migration";
+import { clearAccountGrants } from "./account-grants-migration";
+import { cancelRemoteWork, interruptTestRuns, releaseReservations, revokeCredentials, revokeOldGrants } from "./authority-reset";
 import { takeBoundBackup, type MaintenanceBackup } from "./backup-binding";
 import type Database from "better-sqlite3";
 
@@ -43,15 +44,12 @@ export function quarantineAuthority(database: Database.Database, receipt: string
   // steps. Regrant/reissue/recover are subsequent explicit protected acts.
   // Foreign keys are off here (see initializeSchema's acts): every row whose
   // parent a statement deletes is deleted explicitly, before that parent. All
-  // sessions and passkeys go, so all their dependents go.
+  // sessions and passkeys go, so all their dependents go. The reset statements
+  // shared with the upgrade's authority acts (authority-reset.ts) run in the
+  // quarantine's own order around the statements only the quarantine runs.
+  revokeCredentials(database, now);
+  revokeOldGrants(database, now);
   database.exec(`
-    UPDATE principal_credentials SET status='revoked', revoked_at=coalesce(revoked_at,'${now}');
-    UPDATE knowledge_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
-    UPDATE knowledge_role_bindings SET revoked_at=coalesce(revoked_at,'${now}'),revision=revision+1,updated_at='${now}';
-    UPDATE runtime_delegations SET revoked_at=coalesce(revoked_at,'${now}'),revision=revision+1,updated_at='${now}';
-    UPDATE runtime_human_memberships SET revoked_at=coalesce(revoked_at,'${now}'),revision=revision+1,updated_at='${now}';
-    UPDATE remote_principal_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
-    UPDATE remote_worker_project_grants SET revoked_at=coalesce(revoked_at,'${now}');
     UPDATE authentication_ba_account SET password=NULL,accessToken=NULL,refreshToken=NULL,idToken=NULL;
     DELETE FROM authentication_session_issuance;
     DELETE FROM authentication_session_evidence;
@@ -65,10 +63,9 @@ export function quarantineAuthority(database: Database.Database, receipt: string
     UPDATE authentication_account_policies SET generation=generation+1,policy_revision=policy_revision+1,totp_selected=0,passkey_selected=0,updated_at='${now}';
     UPDATE authentication_factor_contexts SET used=1;
     UPDATE authentication_factor_receipts SET state='failed' WHERE state='charged';
-    UPDATE reservations SET released_at=coalesce(released_at,'${now}');
-    UPDATE remote_verification_requests SET phase='cancelled',updated_at='${now}' WHERE phase IN ('pending','assigned');
-    UPDATE remote_verification_attempts SET phase='cancel_requested',version=version+1,last_reported_at='${now}' WHERE phase IN ('assigned','preparing','running');
   `);
+  releaseReservations(database, now);
+  cancelRemoteWork(database, now);
   // Provisional step 50: a quarantined installation needs the data upgrade again,
   // whatever the marker said, and no applied plan stands for it any more. The
   // acts run after every schema step, so the marker exists here both when this
@@ -78,12 +75,15 @@ export function quarantineAuthority(database: Database.Database, receipt: string
   // every registration and remote identity gets a mapping version from one advance of
   // the clock; projects (`knowledge_projects`), issued incarnations and the journal stay.
   if (mapping) applyMappingQuarantine(database, mapping);
+  // Provisional step 52: no grant written after an upgrade stands either; the next
+  // upgrade grants `admin` again when its rule holds.
+  if (version >= 52) clearAccountGrants(database);
   // Mode is an explicit protected decision, never a restored selection or fallback.
   // All shared and legacy verifier material is removed; first-run issuance is fresh.
   database.prepare("UPDATE controller_settings SET value_json=?,updated_at=? WHERE key='authentication'")
     .run(JSON.stringify({mode,generation:old.generation+1,token:null}),now);
   // Its trimming deletes the requester rows of the runs it trims.
-  new TestRunQueries(database).markInterruptedTestRuns();
+  interruptTestRuns(database);
   // The last act and this run's durable commit evidence (see the catch below).
   database.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('authentication.security_quarantined','local-cli',?,?)")
     .run(JSON.stringify({receipt,mode}),now);

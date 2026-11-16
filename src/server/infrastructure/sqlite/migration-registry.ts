@@ -10,7 +10,7 @@ export const SUPPORTED_SCHEMA_VERSION = 49;
  * turned on, which only tests do. Every default stays SUPPORTED_SCHEMA_VERSION.
  * Activation raises SUPPORTED_SCHEMA_VERSION; no call site changes.
  */
-export const PROVISIONAL_SCHEMA_VERSION = 51;
+export const PROVISIONAL_SCHEMA_VERSION = 52;
 
 /**
  * A schema target or recognition ceiling: from the supported version up to the

@@ -5,7 +5,7 @@ import type { z } from "zod";
  * The shared vocabulary of the explicit offline upgrade (integration branch,
  * provisional): its errors, canonical JSON, limits and the interface of an act
  * domain. It imports no upgrade module, so `upgrade-plan.ts` (the plan and its
- * registry) and each domain (`mapping-upgrade-acts.ts`) can both depend on it
+ * registry) and each domain (`mapping-upgrade-acts.ts`, `authority-upgrade-acts.ts`) can both depend on it
  * without importing each other in a cycle. `upgrade-plan.ts` re-exports it.
  */
 
@@ -20,7 +20,8 @@ export type UpgradeErrorCode =
   | "upgrade_source_changed" | "upgrade_outcome_uncertain"
   | "upgrade_decisions_invalid" | "upgrade_plan_unproposed" | "upgrade_plan_bounds"
   | "upgrade_mapping_collision" | "upgrade_mapping_dangling" | "upgrade_mapping_divergent" | "upgrade_mapping_unexpected"
-  | "upgrade_mapping_journal" | "upgrade_mapping_malformed" | "upgrade_mapping_clock";
+  | "upgrade_mapping_journal" | "upgrade_mapping_malformed" | "upgrade_mapping_clock"
+  | "upgrade_authority_malformed" | "upgrade_authority_unexpected";
 const MESSAGES: Readonly<Record<UpgradeErrorCode, string>> = {
   upgrade_unsupported: "Unsupported schema target.",
   upgrade_invalid_input: "The upgrade command is invalid.",
@@ -49,6 +50,8 @@ const MESSAGES: Readonly<Record<UpgradeErrorCode, string>> = {
   upgrade_mapping_journal: "The project mapping journal is inconsistent; no plan was written.",
   upgrade_mapping_malformed: "A stored value the project mapping depends on is malformed; no plan was written.",
   upgrade_mapping_clock: "The project mapping clock cannot advance once for every attach and map act; no plan was written.",
+  upgrade_authority_malformed: "A stored value the authority reset depends on is malformed, of an unknown kind or status, or cannot advance; no plan was written.",
+  upgrade_authority_unexpected: "Grants of the new model are stored although the upgrade is needed; no plan was written.",
 };
 
 /** One offending row of a refusal: where it is, its ID (control characters escaped) and what is wrong. */

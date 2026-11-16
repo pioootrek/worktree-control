@@ -162,7 +162,8 @@ const LOOSE_JOURNAL = "CREATE TABLE project_mapping_journal(sequence INTEGER PRI
 
 describe("provisional schema step 51: project mapping structure", () => {
   it("pins step 51 and its coverage, and leaves steps 49 and 50 as they were", () => {
-    expect(PROVISIONAL_SCHEMA_VERSION).toBe(51);
+    // Step 52 (C3a) is the highest provisional step; it is pinned in account-grants-migration.test.ts.
+    expect(PROVISIONAL_SCHEMA_VERSION).toBe(52);
     expect(SUPPORTED_SCHEMA_VERSION).toBe(49);
     expect(projectMappingMigration).toMatchObject({ version: 51, name: "project-mapping-structure" });
     // Pinned while provisional: a change to the step's text is a visible edit here.
@@ -171,9 +172,9 @@ describe("provisional schema step 51: project mapping structure", () => {
     expect(securityFenceChecksum).toBe("320f46981c17c44f4d14ee48298bd91f43d01ab78bf4162c607d2118f29486ae");
     expect(upgradeMarkerChecksum).toBe("d720c5eef040ff328401426cc18fefb560a6be7460cc355a789f169d5d07315c");
     expect(SECURITY_TABLES).not.toContain("project_mapping_clock");
-    expect(SECURITY_COVERAGE.map(step => [step.version, step.tables])).toEqual([[49, SECURITY_TABLES], [50, UPGRADE_MARKER_SECURITY_TABLES], [51, PROJECT_MAPPING_SECURITY_TABLES]]);
+    expect(SECURITY_COVERAGE.slice(0, 3).map(step => [step.version, step.tables])).toEqual([[49, SECURITY_TABLES], [50, UPGRADE_MARKER_SECURITY_TABLES], [51, PROJECT_MAPPING_SECURITY_TABLES]]);
     expect(PROJECT_MAPPING_SECURITY_TABLES).toEqual(["project_mapping_clock", "project_mapping_journal"]);
-    expect(STEP_TRIGGERS.map(step => [step.version, step.triggers])).toEqual([[51, projectMappingTriggers]]);
+    expect(STEP_TRIGGERS.slice(0, 1).map(step => [step.version, step.triggers])).toEqual([[51, projectMappingTriggers]]);
     expect(securityTriggersAt(50)).toEqual([...securityTriggers, ...upgradeMarkerTriggers]);
     expect(securityTriggersAt(51)).toEqual([...securityTriggers, ...upgradeMarkerTriggers, ...projectMappingFenceTriggers]);
     expect(schemaTriggersAt(50).map(trigger => trigger.name)).toEqual([...securityTriggers, ...upgradeMarkerTriggers].map(trigger => trigger.name));
