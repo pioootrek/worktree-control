@@ -1353,7 +1353,10 @@ attaches. Its operations pass the provisional gate.
 `auth fence resume` at target 52 also deletes every grant in its one
 transaction, so no grant written after an upgrade survives a quarantine; the
 next upgrade grants `admin` again when its rule holds. Below 52 the quarantine
-runs exactly the statements it ran before.
+issues the statements it issued before, in the same order and with the same
+bindings. Its test-run recovery now reads its input in a read-only preparation
+before it writes (see "Authority acts" below), and the recovery's writes are
+unchanged.
 
 ### Explicit offline upgrade (integration branch only)
 
@@ -1929,9 +1932,11 @@ as `upgrade_decisions_invalid`. Its acts, in this order:
    attempts to `cancel_requested`, and marks queued and running test runs
    (and runs whose summary is not terminal) interrupted through
    `markInterruptedTestRuns`, whose trimming of old history also deletes the
-   requester rows of the runs it trims. Attribution and history stay. This
-   invalidates the work logically; it does not prove that a remote process
-   stopped. The upgrade runs with the controller stopped.
+   requester rows of the runs it trims. The act refuses to complete when its
+   own recovery reports a hazard or deletes a different number of runs than it
+   prepared. Attribution and history stay. This invalidates the work
+   logically; it does not prove that a remote process stopped. The upgrade
+   runs with the controller stopped.
 4. `grant_admin` writes one `admin` grant on the installation for the owner,
    only when exactly one principal of kind `owner` exists and it is active.
    Otherwise there is no such act, no account holds `admin` after the upgrade,
@@ -1948,11 +1953,47 @@ requests and attempts, and test runs. The quarantine runs them in its own
 order, around the statements only it runs: clearing provider passwords and
 tokens, sessions, verifications, passkeys and two-factor material, advancing
 account policies, consuming factor contexts and failing charged receipts,
-setting the mode and removing the installation token. A test runs the
-quarantine as it was before the extraction and the extracted one on twin
-databases and compares every table by storage class and bytes; another shows
-that the upgrade's reset acts and the quarantine leave identical rows in every
-shared table and differ exactly in those quarantine-only effects.
+setting the mode and removing the installation token. The statements write
+the run's time as a literal, as the quarantine always has; the shared guard
+accepts exactly the spellings `toISOString` produces, including the signed
+six-digit years of an extreme clock, so no character other than digits, `+`,
+`-`, `:`, `.`, `T` and `Z` reaches the SQL, and the quarantine refuses no time
+its base accepted. Tests run the quarantine as it was before the extraction
+and the extracted one on twin databases at targets 49, 50 and 51 (and at 49
+with an extended-year clock). They compare every table by storage class and
+bytes, and the full ordered trace of SQL text and bindings of every `exec` and
+prepared statement, on a fixture in which every statement changes a row.
+Another test shows that the upgrade's reset acts and the quarantine leave
+identical rows in every shared table and differ exactly in those
+quarantine-only effects.
+
+#### The test-run recovery: preparation, then writes
+
+`markInterruptedTestRuns` (in `test-run-queries.ts`), the recovery of ordinary
+startup, the quarantine and `release_running_work`, is a read-only preparation
+followed by its writes. The preparation does every read, parse and computation
+of the recovery in its order: the runs it interrupts and their new values, the
+summaries it saves, the summary prunes by age and by the per-project and
+global caps with their accounting, and the history trims after each save and
+at the end. Each read is answered from the state the earlier writes would
+leave, over the unchanged database, and each write is recorded with its
+parameters. The write phase then runs exactly the recorded statements. The
+summary `save` and `prune` rules are one implementation, run against the
+database or against the preparation. For every input the recovery handled
+before, the rows, values and statements are those of the recovery before the
+split; a differential test compares both, with a fixed clock, on a populated
+fixture.
+
+Where the recovery threw, the preparation throws the same error before
+anything is written and names the row: a run's stored source or telemetry of
+another shape (JSON `null`, `{}`, a number, an array, reason codes that are
+not a list), JSON that does not parse, a summary over its record budget, a
+stored summary of another registration, and a receipt payload that is not
+JSON when a trim reads the receipts (SQLite reads them only when a trim has a
+candidate). It also lists hazards without throwing: summary accounting a write
+would take outside its `CHECK` range (the write phase then fails exactly as
+the recovery did), and a receipt no trim of this recovery reads but a later
+one would.
 
 The reset acts have fixed payloads, and `grant_admin` names the account. So the
 plan hash binds what happens without listing every row. The row effects are
@@ -1967,7 +2008,11 @@ read.
 
 The pass reads only tables that exist at schema 49, plus `account_grants` from
 52 on, which is absent at the source and read as empty, so it gives the same
-result at the source and inside the transaction. Its review, in counts, IDs,
+result at the source and inside the transaction. It prepares the test-run
+recovery that `release_running_work` runs, read-only, at inspect and at both
+validations, and stops when the recovery cannot be carried out on this
+database; the storage classes it checks first include every summary and
+accounting column the preparation orders, compares or counts on. Its review, in counts, IDs,
 kinds and statuses only (no token hash, secret or stored JSON):
 
 - for each of the six tables: rows, rows already revoked, rows this plan
@@ -1979,8 +2024,8 @@ kinds and statuses only (no token hash, secret or stored JSON):
 - reservations to release; remote requests and attempts by phase, and how many
   are cancelled;
 - test runs queued, running and with an unfinished summary, how many are
-  interrupted, and how many old runs the history trimming then deletes: every
-  run beyond its registration's newest 50 by queue time and ID;
+  interrupted, and how many old runs the history trimming then deletes, both
+  from the recovery's preparation;
 - every principal of kind `owner`, with its ID and status, and the admin
   decision: `grant` with the account, or `none` with the reason `no_owner`,
   `owner_not_active` or `several_owners`.
@@ -1991,7 +2036,7 @@ interrupted, and what is kept.
 
 | Stop | Meaning |
 | --- | --- |
-| `upgrade_authority_malformed` | A value the pass reads has another storage class; a principal or credential has an unknown kind or status; a revision or a live attempt's version cannot advance; a run to be interrupted holds stored JSON the recovery cannot read; or the single active owner's ID cannot be a grant's account. |
+| `upgrade_authority_malformed` | A value the pass reads has another storage class; a principal or credential has an unknown kind or status; a revision or a live attempt's version cannot advance; a run to be interrupted holds stored JSON that does not parse; the recovery's preparation throws (naming the run or receipt by ID and the kind of failure, never a stored value) or lists a hazard; or the single active owner's ID cannot be a grant's account. |
 | `upgrade_authority_unexpected` | Grants of the new model are stored while the upgrade is needed. A quarantine deletes every one, so the protocol does not produce this. |
 | `upgrade_plan_bounds` | More than 64 principals of kind `owner`, the fence's own bound (through the protocol the fence refuses first). |
 
