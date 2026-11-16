@@ -73,17 +73,36 @@ async function refusal(cli, args, extra) {
   assert.equal(result.code, 1, `Expected a refusal: ${args[0]} ${args[1] ?? ""}`);
   return JSON.parse(result.stderr.trim().split("\n").at(-1));
 }
-/** The database and its WAL (a missing and an empty WAL are the same state), the witness, and the backups beside them. */
+/** The database and its WAL (a missing and an empty WAL are the same state), the witness and the upgrade plan file, each by its bytes. */
 async function sourceFiles(directory = directoryArgs[1]) {
   const read = async path => { try { return await readFile(path); } catch (error) { if (error.code === "ENOENT") return null; throw error; } };
   const wal = await read(join(directory, "state.sqlite3-wal")), witness = await read(join(directory, "state.sqlite3.security", "witness.json"));
+  const plan = await read(join(directory, "state.sqlite3.upgrade", "plan.json"));
   return { database: digest(await readFile(join(directory, "state.sqlite3"))), wal: wal && wal.length ? digest(wal) : "empty",
-    witness: witness ? digest(witness) : "missing", plan: (await read(join(directory, "state.sqlite3.upgrade", "plan.json"))) ? "present" : "missing" };
+    witness: witness ? digest(witness) : "missing", plan: plan ? digest(plan) : "missing" };
 }
 const UPGRADE_REQUIRED = { code: "upgrade_required", error: "upgrade_required: This database requires an explicit offline upgrade before ordinary access. Next step: upgrade inspect.",
   nextStep: "upgrade inspect", state: "upgrade_needed" };
-/** Whether anything accepts a connection on the loopback port. */
-const accepting = port => new Promise(accept => { const socket = createConnection({ port, host: "127.0.0.1" }); socket.once("connect", () => { socket.destroy(); accept(true); }); socket.once("error", () => accept(false)); });
+/** Whether anything accepts a connection on the loopback port: true, or false only for a refused connection; any other error fails the step. */
+const accepting = port => new Promise((accept, reject) => { const socket = createConnection({ port, host: "127.0.0.1" });
+  socket.once("connect", () => { socket.destroy(); accept(true); }); socket.once("error", error => error.code === "ECONNREFUSED" ? accept(false) : reject(error)); });
+/**
+ * The product's authentication refusal of a bearer credential: status 401 with the server's own JSON
+ * body (over MCP, the JSON-RPC error of an invalid bearer token). A request that does not reach the
+ * product throws, and any other status or body fails the step.
+ */
+async function credentialRejected(url, token) {
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } }), text = await response.text();
+  assert.equal(response.status, 401, `A revoked or pre-upgrade credential must be rejected by authentication (${url}).`);
+  const body = JSON.parse(text);
+  if (url === mcpURL) assert.deepEqual(body.error, { code: -32000, message: "A valid MCP bearer token is required." });
+  else assert.equal(typeof body.error, "string", "The refusal is the controller's own JSON error body.");
+}
+/** The knowledge endpoint's refusal of an agent credential that no longer authenticates. */
+async function knowledgeCredentialRejected(token, projectId) {
+  const rejected = await cookieJar().call("/api/knowledge", { operation: "tasks", input: { projectId } }, { Authorization: `Bearer ${token}` });
+  assert.equal(rejected.status, 401); assert.equal(rejected.body.code, "invalid_credential");
+}
 async function freePort() { return new Promise((accept, reject) => { const server = createServer(); server.once("error", reject); server.listen(0, "127.0.0.1", () => { const port = server.address().port; server.close(error => error ? reject(error) : accept(port)); }); }); }
 async function wait(read, milliseconds = 20_000) {
   const end = Date.now() + milliseconds;
@@ -254,8 +273,7 @@ try {
     await step("pre-fence-ordinary-refusal-preserves-database", async () => {
       const files = await sourceFiles();
       for (const args of [["auth", "status"], ["start", "--service-mode", "--no-open", "--host", "127.0.0.1", "--port", String(await freePort()), "--mcp-port", String(await freePort())]]) {
-        const result = await command(currentCli, args);
-        assert.equal(result.code, 1, `${args[0]} must refuse a database without a fence`); assert.match(result.stderr, /security_fence_establishment_required/);
+        assert.equal((await refusal(currentCli, args)).code, "security_fence_establishment_required", `${args[0]} must refuse a database without a fence`);
       }
       assert.deepEqual(await sourceFiles(), files, "Refused openings leave the 0.1.1 database and its WAL as they were.");
     });
@@ -336,12 +354,7 @@ try {
     assert(!(await installationClient.callTool({ name: "list_projects", arguments: {} })).isError, "Installation token must keep working over MCP.");
     // Rejected over HTTP and MCP: a credential revoked before the upgrade, and after an upgrade every pre-upgrade one.
     const rejected = fresh ? [revokedBefore] : [revokedBefore, oldOwner, oldAgentCredential, revokedAfter];
-    for (const { token } of rejected) {
-      for (const url of [endpoint + "/api/dashboard", mcpURL]) {
-        const denied = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-        await denied.arrayBuffer(); assert.equal(denied.status, 401, "A revoked or pre-upgrade credential must be rejected.");
-      }
-    }
+    for (const { token } of rejected) for (const url of [endpoint + "/api/dashboard", mcpURL]) await credentialRejected(url, token);
     if (fresh) {
       const agent = await connect(oldAgentCredential.token);
       assert(!(await agent.callTool({ name: "knowledge_task", arguments: { projectId: knowledge.id, taskId: task.value.id } })).isError, "Without an upgrade the agent token keeps its Knowledge grant.");
@@ -354,18 +367,23 @@ try {
       assert.equal(recovered.principalId, oldOwner.principalId); assert.notEqual(recovered.token, oldOwner.token);
       currentOwnerEnv = { WORKTREE_CONTROL_OWNER_TOKEN: recovered.token };
       const issued = await json(currentCli, ["identity", "issue-agent-token", "--principal-id", oldAgent.id, "--label", "after upgrade"], currentOwnerEnv);
-      /** Whether the new credential reads the old project's task over MCP; a refused connection or call is a denial. */
+      /**
+       * The new credential's read of the old project's task over MCP: "read", or the code of the product's
+       * tool-level refusal. The credential authenticates either way; a failed connection, a protocol error
+       * or a rejected call is not a denial and fails the step.
+       */
       const read = async () => {
         await start();
         try {
           const client = await connect(issued.token);
-          return await client.callTool({ name: "knowledge_task", arguments: { projectId: knowledge.id, taskId: task.value.id } }).then(result => !result.isError, () => false);
-        } catch { return false; } finally { await stop(); }
+          const result = await client.callTool({ name: "knowledge_task", arguments: { projectId: knowledge.id, taskId: task.value.id } });
+          return result.isError ? JSON.parse(result.content[0].text).code : "read";
+        } finally { await stop(); }
       };
       // The token reset and the grant reset are separate: a new credential alone confers nothing.
-      assert.equal(await read(), false, "A new credential without a new grant must not read the old project.");
+      assert.equal(await read(), "knowledge_forbidden", "A new credential without a new grant must be refused by Knowledge authorization.");
       await json(currentCli, ["identity", "grant-knowledge", "--principal-id", oldAgent.id, "--project-id", knowledge.id, "--permissions", "knowledge:read,knowledge:write"], currentOwnerEnv);
-      assert.equal(await read(), true, "The explicitly granted new credential reads the old project.");
+      assert.equal(await read(), "read", "The explicitly granted new credential reads the old project.");
       currentAgentCredential = issued;
     });
   }
@@ -499,7 +517,7 @@ try {
     const backup = join(root, "rollback.sqlite3"); const db = new native.Database(join(data, "state.sqlite3"), { readonly: true }); try { await db.backup(backup); } finally { db.close(); }
     await json(currentCli, ["auth", "provider", "recover", "--principal-id", oldOwner.principalId, "--input-stdin"], {}, { newPassword: replacement });
     await cp(backup, join(data, "state.sqlite3")); await rm(join(data, "state.sqlite3-wal"), { force: true }); await rm(join(data, "state.sqlite3-shm"), { force: true });
-    assert.notEqual((await command(currentCli, ["auth", "status"])).code, 0);
+    assert.equal((await refusal(currentCli, ["auth", "status"])).code, "security_fence_recovery_required", "A rolled-back database goes to recovery.");
     const inspected = await json(currentCli, ["auth", "fence", "inspect"]);
     await json(currentCli, ["auth", "fence", "resume", "--expect", inspected.preflight, "--mode", "better-auth"]);
     // The resumed database needs the upgrade again before any credential recovery.
@@ -516,9 +534,7 @@ try {
     const login = await recovered.call("/api/auth/sign-in/email", { email: "owner@fixture.invalid", password: replacement }); assert.equal(login.status, 200);
     assert.equal((await recovered.call("/api/auth/get-session")).body.principal.id, oldOwner.principalId);
     const empty = await recovered.call("/api/runtime/read", { operation: "list-projects" }); assert.equal(empty.status, 200); assert.deepEqual(empty.body.projects, []);
-    for (const agent of new Set([oldAgentCredential, currentAgentCredential])) {
-      const rejected = await cookieJar().call("/api/knowledge", { operation: "tasks", input: { projectId: knowledge.id } }, { Authorization: `Bearer ${agent.token}` }); assert.equal(rejected.status, 401);
-    }
+    for (const agent of new Set([oldAgentCredential, currentAgentCredential])) await knowledgeCredentialRejected(agent.token, knowledge.id);
     await stop();
     const principals = observe(db => db.prepare("SELECT id,kind,status FROM remote_principals WHERE kind='owner'").all()); assert.deepEqual(principals, [before.principal]);
     assert.equal(observe(db => db.prepare("SELECT title FROM knowledge_tasks WHERE id=?").get(task.value.id).title), "Old history");
@@ -527,8 +543,7 @@ try {
     const restoreAndResume = async label => {
       await step(`${label}-public-backup-restore-requires-resume`, async () => {
         assert.equal((await command(currentCli, ["backup", "restore", oldBackup])).code, 0, "The candidate must restore the public 0.1.1 application backup.");
-        const status = await command(currentCli, ["auth", "status"]); assert.notEqual(status.code, 0);
-        assert.match(status.stderr, /security_fence_recovery_required/);
+        assert.equal((await refusal(currentCli, ["auth", "status"])).code, "security_fence_recovery_required", "A restored database goes to recovery.");
         const preflight = await json(currentCli, ["auth", "fence", "inspect"]);
         assert.equal(preflight.schemaVersion, PUBLIC_BASELINE.schema);
         assert.equal(preflight.code, "security_fence_recovery_required"); assert.equal(preflight.establishmentAllowed, false);
