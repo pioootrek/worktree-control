@@ -1355,6 +1355,27 @@ worktree-control auth fence inspect --data-dir /private/installation
 worktree-control auth fence resume --expect <preflight-hash> --mode token --data-dir /private/installation
 ```
 
+An unclean stop needs the same resume. In an owner, every transaction that writes a fenced
+table publishes a pending witness before SQLite changes its first such row and
+confirms it only after the commit. A controller killed, crashed or powered off
+between the two leaves the witness pending, whether SQLite then rolls the write
+back or has already committed it. Every ordinary opening refuses a pending
+witness with `security_fence_recovery_required`; nothing confirms it
+automatically. A commit whose outcome the live process cannot prove (a lost
+commit acknowledgment) fails the fence in that process: it refuses further work
+with `security_fence_pending`, and its next start is refused in the same way.
+Ordinary operation writes fenced tables often: sign-in, password change and the
+recovery of issued sessions (native sessions, evidence and issuance markers),
+factor verification (TOTP steps, budgets and receipts), each bearer-token
+authentication (`principal_credentials.last_used_at`), each test run's queueing
+and phase changes (`test_runs`), claims, renewals, releases and expiry
+(`reservations`, `human_runtime_leases`), and remote-worker contact and
+verification attempts. After such a stop the operator runs `auth fence inspect`,
+`auth fence resume` and the upgrade, and the resume costs what it costs after a
+restore: all sessions, provider passwords, TOTP and passkey bindings, machine
+credentials, the installation token and grants are removed. Owners then recover
+their passwords, and tokens and grants are issued again.
+
 Resume first publishes a pending receipt. One sole-connection transaction applies
 any pending schema steps and, in the same commit, removes
 all restored provider passwords/tokens, native sessions, TOTP/passkeys and

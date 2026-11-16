@@ -1043,7 +1043,10 @@ P3b now requires an external checkpoint and protected quarantine receipt before 
 Migration49 adds a fixed SQLite checkpoint and authority-table triggers, preserving
 migrations1..48. The sole core/provider connection publishes a private external
 pending witness from the BEFORE-trigger observer before authority rows change,
-and a confirmed witness after FULL SQLite COMMIT.
+and a confirmed witness after FULL SQLite COMMIT. A process killed between the
+two leaves the witness pending, and the next opening is fenced until
+`auth fence resume`, as after a restore; see
+[unclean stops](authentication.md#external-security-fence-and-protected-resume-p3b).
 Normal confirmed restarts preserve current rights. Supported restore and raw
 DB-only rollback fail closed before provider/listeners, including older schemas.
 The bounded witness binds the canonical database path and installation outside
