@@ -91,7 +91,7 @@ class Process {
       this.exited.then(() => { if (this.waiting.includes(waiter) && !this.messages.some(waiter.match)) {
         // Unclaimed reports (a failure's reason, an opening refusal's code), never snapshots.
         const failed = JSON.stringify(this.messages.map(({ type, mode, code, reason, where }) => ({ type, mode, code, reason, where })));
-        clearTimeout(timer); reject(new Error(`Fixture process exited before ${types.join("/")}: ${failed} ${output.join("").slice(-1500)}`)); } });
+        clearTimeout(timer); reject(new Error(`Fixture process exited before ${types.join("/")} (boot ${counts.boots}, after cases ${cases.map(entry => entry.id).join(",") || "none"}): ${failed} ${output.join("").slice(-1500)}`)); } });
     });
   }
   async command(message, reply) { this.child.send(message); return this.waitFor(reply); }
