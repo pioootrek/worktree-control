@@ -7,7 +7,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAppPaths, type AppPaths } from "../paths";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../modules/backups";
-import { SqliteStateStore } from "../infrastructure/sqlite/sqlite-state-store";
+import { createFencedAt49 } from "../infrastructure/sqlite/fixtures/released-schema";
 import { maintainSqliteSecurityFence } from "../infrastructure/sqlite/security-maintenance";
 import { securityFenceRoot } from "../infrastructure/sqlite/security-fence";
 import { enableProvisionalSchema } from "../infrastructure/sqlite/provisional-schema-gate";
@@ -57,7 +57,7 @@ async function failure(operation: () => Promise<unknown>) {
 /** A fenced schema-49 installation (trusted witness): upgrade needed. */
 function installation() {
   const paths = resolveAppPaths(join(temporary(), "data"));
-  new SqliteStateStore(paths.databasePath).close();
+  createFencedAt49(paths.databasePath);
   return paths;
 }
 /** Schema 52 with the marker pending, as an operator reaches it: `auth fence resume` at target 52. */

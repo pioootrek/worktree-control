@@ -20,6 +20,7 @@ import {
 } from "./account-grants-migration";
 import { SECURITY_COVERAGE, schemaTriggersAt, securityTriggersAt, STEP_TRIGGERS } from "./security-coverage";
 import { rewindAccountGrants, rewindProjectMapping } from "./fixtures/schema-rewind";
+import { RELEASED_SCHEMA_VERSION } from "./fixtures/released-schema";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { quarantineAuthority } from "./security-maintenance";
 import { structuralSteps } from "./upgrade-plan";
@@ -204,7 +205,7 @@ describe("provisional schema step 52: grants storage", () => {
 
   it("applies step 52 fresh and from 49, 50 and 51 with one structure, on connections without the fence function, and writes no row", () => {
     const reference = fresh52();
-    const sources = [freshAt(undefined), freshAt(50), freshAt(51)];
+    const sources = [freshAt(RELEASED_SCHEMA_VERSION), freshAt(50), freshAt(51)];
     try {
       for (const database of [reference, ...sources]) {
         if (database !== reference) migrate(database);
@@ -242,7 +243,7 @@ describe("provisional schema step 52: grants storage", () => {
 
   it("is safe in ordinary startup over a populated schema-49 store, and its writes are fenced afterwards", () => {
     const path = privateDatabase(database => {
-      freshAt(undefined, database);
+      freshAt(RELEASED_SCHEMA_VERSION, database);
       accounts(database);
     }, observed);
     const database = ordinary(path);
@@ -258,7 +259,7 @@ describe("provisional schema step 52: grants storage", () => {
   });
 
   it("rolls back step 52 with the rest of the schema transaction", () => {
-    for (const database of [freshAt(undefined), freshAt(51)]) {
+    for (const database of [freshAt(RELEASED_SCHEMA_VERSION), freshAt(51)]) {
       try {
         const before = catalogue(database), version = inspectSchema(database, TARGET).version;
         expect(() => initializeSchema(database, false, () => { throw new Error("fixture rollback52"); }, { target: TARGET })).toThrow("fixture rollback52");
@@ -553,8 +554,8 @@ describe("step 52 in the quarantine of auth fence resume", () => {
     }
   });
 
-  it("keeps the quarantine's statements at the default target, 50 and 51 free of step 52", () => {
-    for (const target of [undefined, 50, 51]) {
+  it("keeps the quarantine's statements at the released target 49, 50 and 51 free of step 52", () => {
+    for (const target of [RELEASED_SCHEMA_VERSION, 50, 51]) {
       const database = freshAt(target, observed()), statements: string[] = [];
       try {
         const prepare = database.prepare.bind(database), exec = database.exec.bind(database);

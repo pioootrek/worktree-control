@@ -16,6 +16,7 @@ import { UPGRADE_MARKER_SECURITY_TABLES, UPGRADE_MARKER_VERSION, upgradeMarkerCh
 import { PROJECT_MAPPING_SECURITY_TABLES } from "./mapping-structure-migration";
 import { SECURITY_COVERAGE, securityTriggersAt } from "./security-coverage";
 import { rewindUpgradeMarker } from "./fixtures/schema-rewind";
+import { schemaAt49 } from "./fixtures/released-schema";
 import { SqliteStateStore } from "./sqlite-state-store";
 
 const roots: string[] = [];
@@ -31,7 +32,7 @@ const atTarget = (database: Database.Database) => { inspectSchema(database, TARG
 /** A connection without `worktree_security_pending`, as in ordinary startup before the fence attaches. */
 const ordinary = (path = ":memory:") => new Database(path);
 const fresh50 = (database = ordinary()) => { initializeSchema(database, undefined, atTarget, { target: TARGET }); return database; };
-const fresh49 = (database = ordinary()) => { initializeSchema(database, undefined, inspectSchema); return database; };
+const fresh49 = (database = ordinary()) => schemaAt49(database);
 const marker = (database: Database.Database) => database.prepare("SELECT singleton,state,changed_at FROM upgrade_marker").all() as Array<{ singleton: number; state: string; changed_at: string }>;
 const catalogue = (database: Database.Database) => database.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").all();
 const shapes = (database: Database.Database) => Object.fromEntries((database.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").pluck().all() as string[])

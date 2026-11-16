@@ -1072,6 +1072,13 @@ turn it on, so a target above 49 has no effect in production, whichever alias,
 re-export or wrapper passes it. Activation raises `SUPPORTED_SCHEMA_VERSION`;
 the switch then no longer matters for that step.
 
+`schemaTarget` also refuses any value below `SECURITY_FENCE_SCHEMA_VERSION`
+(49, the schema the security fence was introduced at). That constant does not
+move: it is the lowest explicit target or ceiling and the lowest source of the
+explicit upgrade's structural steps. `SUPPORTED_SCHEMA_VERSION` is what this
+release creates by default and its default target and ceiling. Both are 49
+until the activation.
+
 The guard test `provisional-schema.test.ts` checks module imports. No non-test
 script file under `src/` may import the gate module, except
 `migration-registry.ts`, which may only import the read function by name. The
@@ -1561,6 +1568,11 @@ the state), `upgrade_owner_changed`, `upgrade_plan_missing`,
 `upgrade_decisions_invalid`, `upgrade_plan_unproposed`, `upgrade_plan_bounds`
 and the stops listed below. Messages carry no secrets, paths or file contents;
 a refusal about rows names them in its `details` (IDs only, bounded).
+
+The contract also defines `upgrade_required` (next step `upgrade inspect`,
+state "upgrade needed"). Only an ordinary-admission check raises it, and that
+check is not called yet: the activation will run it at every ordinary opening
+of the store.
 
 The witness gains format 2: format 1 plus a required `upgrade` field (receipt,
 plan hash and start time). Apply writes it, and ordinary fenced writes carry it
