@@ -90,7 +90,7 @@ class Process {
       this.waiting.push(waiter);
       this.exited.then(() => { if (this.waiting.includes(waiter) && !this.messages.some(waiter.match)) {
         // Unclaimed reports (a failure's reason, an opening refusal's code), never snapshots.
-        const failed = JSON.stringify(this.messages.map(({ type, mode, code, reason }) => ({ type, mode, code, reason })));
+        const failed = JSON.stringify(this.messages.map(({ type, mode, code, reason, where }) => ({ type, mode, code, reason, where })));
         clearTimeout(timer); reject(new Error(`Fixture process exited before ${types.join("/")}: ${failed} ${output.join("").slice(-1500)}`)); } });
     });
   }

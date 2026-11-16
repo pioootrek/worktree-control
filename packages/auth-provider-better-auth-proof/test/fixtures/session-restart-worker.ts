@@ -191,7 +191,9 @@ async function owner(): Promise<void> {
     // The ordinary admission refused before anything was written; no store, no recovery, no listener.
     const code = (error as { code?: unknown }).code;
     if (typeof code !== "string") throw error;
-    send({ type: "refused-opening", code, listening: existsSync(socketPath) });
+    // Where the refusal came from, for a failure report: the top frames of the stack, no values.
+    const where = String((error as { stack?: unknown }).stack ?? "").split("\n").slice(1, 9).map(line => line.trim()).join(" | ");
+    send({ type: "refused-opening", code, where, listening: existsSync(socketPath) });
     lock.release();
     return;
   }
