@@ -23,9 +23,10 @@ function genuine44(db: Database.Database) {
   db.exec(`INSERT INTO remote_principals VALUES('69849424-2aba-4fdd-b4fa-a394a77a193c','owner','active'),('human','human','active');
     INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
     VALUES('runtime','Runtime','/code/runtime',3601,'node','[]','/',45000,'now','now');
-    INSERT INTO knowledge_projects VALUES('runtime','Knowledge','active',1,'now','now');
-    INSERT INTO knowledge_project_grants VALUES('69849424-2aba-4fdd-b4fa-a394a77a193c','runtime','["knowledge:read"]',NULL);
-    INSERT INTO knowledge_history VALUES(1,'runtime','project','runtime','created',NULL,'69849424-2aba-4fdd-b4fa-a394a77a193c','owner_session',1,'now');`);
+    INSERT INTO knowledge_projects VALUES('knowledge','Knowledge','active',1,'now','now');
+    INSERT INTO knowledge_project_grants VALUES('69849424-2aba-4fdd-b4fa-a394a77a193c','knowledge','["knowledge:read"]',NULL);
+    INSERT INTO knowledge_history VALUES(1,'knowledge','project','knowledge','created',NULL,'69849424-2aba-4fdd-b4fa-a394a77a193c','owner_session',1,'now');`);
+  // Distinct IDs: the explicit upgrade refuses one ID naming a registration and a knowledge project (upgrade_mapping_collision).
 }
 const kept = (db: Database.Database) => Object.fromEntries(["remote_principals", "principal_credentials", "knowledge_project_grants", "knowledge_role_bindings", "knowledge_history", "runtime_credential_scopes", "runtime_delegations", "test_run_requesters", "projects"].map(t => [t, db.prepare(`SELECT * FROM ${t}`).all()]));
 describe("runtime membership migration 45", () => {

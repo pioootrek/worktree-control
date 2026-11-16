@@ -86,8 +86,10 @@ function executionPolicy(record: RestoreHandoff, policy: BackupPolicy, catalog: 
 
 /** Called under the controller lock before opening ordinary SQLite. */
 export function recoverBackupHandoff(database: string, attachments: string, policy: BackupPolicy): RestoreHandoff | null {
-  const path = handoffPath(database), record = readRecord(path, handoffSchema);
+  // Reads before creating anything: without a record, startup writes nothing before the admission.
+  const record = readRecord(join(`${database}.backup-operations`, "handoff.json"), handoffSchema);
   if (!record) return null;
+  const path = handoffPath(database);
   if (record.state === "executing") {
     const catalog = new BackupCatalog(policy.directory, privateDirectory(`${database}.backup-operations`));
     executeControllerRestoreRequest(database, attachments, record.actor, executionPolicy(record, policy, catalog));

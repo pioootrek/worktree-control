@@ -296,6 +296,126 @@ carries every credential as of the backup, including any you revoked later, so
 rotate its installation token and revoke stale agent tokens before exposing it.
 This is a separate recovery copy, not a rollback of the upgraded installation.
 
+## Unreleased integration build: the explicit upgrade to schema 52
+
+This section describes the unreleased state of the
+`integration/auth-unification` branch, not a published release. The `0.1.1`
+and `0.2.0` texts above are history: they describe what those releases do and
+stay valid for them. Schema steps 50 to 52 may still change until the release
+candidate; treat every database such a build has migrated as disposable, and
+rehearse on a copy.
+
+This build runs schema 52. It never migrates an existing database at an
+ordinary start: every ordinary opening of the store (`start`, the service,
+`service install`, `auth`, `identity`, `knowledge`, `project`, `doctor`,
+`config mcp`, `remote-verification`, `backup export-project` and
+`import-project`) admits only a database that is current, and refuses any
+other one before it writes anything:
+
+| State | Recognised by | Refusal | Next step |
+| --- | --- | --- | --- |
+| Current | trusted fence, schema 52, upgrade marker `complete` | none | start |
+| Upgrade needed | trusted fence, and schema below 52 or marker `pending` | `upgrade_required` | `upgrade inspect`, then `upgrade apply` |
+| Pre-fence (`0.1.1`) | no fence | `security_fence_establishment_required` | `auth fence inspect`, then `auth fence establish` |
+| Fenced | a pending or mismatched witness, or an unacknowledged restore | `security_fence_recovery_required` | `auth fence inspect`, then `auth fence resume` |
+
+A fence refusal always wins: a rolled-back, restored or pending database goes
+to recovery, never to the upgrade.
+
+### What the upgrade resets and keeps
+
+The upgrade is a one-way reset of the old authorization model:
+
+- **Reset.** Every old grant (Knowledge grants and roles, runtime delegations,
+  human runtime memberships, remote principal and worker grants) is revoked in
+  place. Every agent token, worker token and owner session is revoked. Active
+  claims are released, pending remote work is cancelled, and queued and
+  running tests are interrupted. Runtime credential scope rows stay as inert
+  rows; their credentials are revoked.
+- **Kept.** The installation token and the authentication mode, principals
+  and their IDs, provider accounts, passwords and factors, registered
+  projects, Knowledge and its history.
+- **Added.** One `admin` grant on the installation for the single active
+  owner, in the new grants table. Nothing reads that table yet.
+
+After the upgrade you issue credentials and grant access again.
+
+### From `0.1.1` (pre-fence)
+
+With the controller stopped and every command on the same data and state
+directories:
+
+1. While `0.1.1` is still installed, create an application backup and keep
+   it: `worktree-control backup create <new private directory>`.
+2. Install the integration build into the same prefix. Do not start it.
+3. `worktree-control auth fence inspect`: expect
+   `security_fence_establishment_required`, `establishmentAllowed: true` and
+   `nextStep: "auth fence establish"`.
+4. `worktree-control auth fence establish --expect <preflight> --backup-dir <dir>`.
+   It writes `pre-establishment-v28-<UUID>` into `<dir>` before it changes
+   anything, migrates the structure to 52 with the upgrade marker `pending`,
+   and reports `nextStep: "upgrade inspect"`. `--backup-dir` is required.
+5. `worktree-control upgrade inspect`: the plan's hash, the operator's lines
+   and the review: which registrations and remote identities map to which
+   project, and how many grants and credentials the reset revokes. To accept
+   existing links or bindings, or to isolate a registration, write a decisions
+   file with the keys `links`, `bindings` and `isolate` and run
+   `upgrade inspect --decisions <file>` again.
+6. Review it, then `worktree-control upgrade apply --expect <plan hash> --backup-dir <dir>`.
+   It writes `pre-upgrade-v52-<UUID>` and completes the marker.
+7. Issue credentials and grant again: `identity recover-owner` for a new owner
+   session, `identity issue-agent-token`, `identity grant-knowledge`, runtime
+   delegations and credentials, and `auth provider` recovery for accounts.
+8. Start the controller or the service.
+
+### From `0.2.0` (fenced schema 49)
+
+The fence is already trusted: `auth fence inspect` reports
+`security_fence_current` with `nextStep: "upgrade inspect"`, and `establish`
+or `resume` return at once without a change or a backup. Continue at step 5.
+
+### After a restore
+
+`backup restore` replaces the database; the restored one is fenced. Then:
+
+```bash
+worktree-control auth fence inspect
+worktree-control auth fence resume --expect <preflight> --mode token
+worktree-control upgrade inspect
+worktree-control upgrade apply --expect <plan hash> --backup-dir <dir>
+worktree-control auth token generate
+```
+
+Resume quarantines the restored authority and leaves the marker `pending`;
+the upgrade follows before any credential is issued. Then issue credentials
+and grants and start.
+
+### Maintenance backups
+
+`pre-establishment-v<n>-<UUID>` and `pre-upgrade-v<n>-<UUID>` are plain backup
+trees in the directory you name, beside the historical `pre-migration-v<n>-…`
+copies. Nothing rotates or removes them: remove them yourself when you no
+longer need them. In the configured backup directory the catalogue lists them
+as protected, counts them toward its byte budget and never offers them to
+retention. A backup is never a rollback: restoring one is a fenced restore
+that needs resume and the upgrade again, and an older executable does not
+open a database this build migrated.
+
+`--backup-before-migration` is still accepted, because installed service
+definitions carry it, but it takes no copy and prints one notice. `--backup-dir`
+keeps its meaning for scheduled backups.
+
+### What a refusal leaves
+
+A refused ordinary opening leaves the database file, a non-empty WAL, the
+witness, an upgrade plan and the restore evidence byte for byte as they were.
+It may create the lock files, an empty WAL and a shared-memory file, and narrow
+the file modes of the database and its sidecars to `0600`. Two things happen
+before the check, as they did before this build: an interrupted restore the
+operator requested is completed first (the check then applies to the restored
+database), and an interrupted restore request that never executed is recorded
+as interrupted.
+
 ## Earlier upgrades
 
 These notes cover older packages and the restic recovery trial.

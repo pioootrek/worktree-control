@@ -212,7 +212,9 @@ prefix. Rotate the token if it may have leaked.
 
 These notes describe the move from installations created before modes existed
 (schema 25). For `0.1.1` to `0.2.0`, follow
-[Upgrade from 0.1.1 to 0.2.0](package-trial.md#upgrade-from-011-to-020).
+[Upgrade from 0.1.1 to 0.2.0](package-trial.md#upgrade-from-011-to-020). The
+unreleased integration build's explicit upgrade to schema 52 is described in
+[The explicit upgrade (unreleased integration build)](#the-explicit-upgrade-unreleased-integration-build).
 
 Upgrading an existing installation keeps it in `legacy` mode. The pairing link,
 `mcp-token` and owner sessions keep working until you migrate. These changes
@@ -238,6 +240,74 @@ New installations differ from earlier releases:
 - `config mcp` prints a token placeholder unless `WORKTREE_CONTROL_TOKEN` is
   set.
 - Online CLI commands need `WORKTREE_CONTROL_TOKEN`.
+
+## The explicit upgrade (unreleased integration build)
+
+This section describes `integration/auth-unification`, not a release. The
+build runs schema 52 and never migrates an existing database at an ordinary
+start. An installation's database is in one of four states:
+
+| State | Recognised by | Ordinary opening | Operator runs |
+| --- | --- | --- | --- |
+| Current | trusted fence, schema 52, upgrade marker `complete` | admitted | ordinary start |
+| Upgrade needed | trusted fence, and schema below 52 or marker `pending` | `upgrade_required` | `upgrade inspect`, then `upgrade apply --expect <plan hash> --backup-dir <dir>` |
+| Pre-fence (the public `0.1.1` package) | no fence | `security_fence_establishment_required` | `auth fence inspect`, then `auth fence establish --expect <hash> --backup-dir <dir>`, which brings the structure to 52 with the marker pending; then upgrade needed |
+| Fenced | a pending or mismatched witness, or an unacknowledged restore | `security_fence_recovery_required` | `auth fence inspect`, then `auth fence resume`; then upgrade needed |
+
+A fresh installation is created at schema 52 with the marker `complete`. A
+schema-52 database without a marker row is corrupt and refused by the database
+validation, never treated as needing the upgrade.
+
+Every ordinary opening (the controller, the service and `service install`, and
+the offline `auth`, `auth provider`, `identity`, `knowledge`, `project`,
+`doctor`, `config mcp`, `remote-verification` and project export and import
+commands) runs the admission check before it writes anything. A fence refusal
+wins over `upgrade_required`. The refusal is printed as one JSON body on stderr
+with exit code 1:
+
+```json
+{"code":"upgrade_required","error":"upgrade_required: This database requires an explicit offline upgrade before ordinary access. Next step: upgrade inspect.","nextStep":"upgrade inspect","state":"upgrade_needed"}
+```
+
+The upgrade commands run offline only, with the controller stopped:
+
+```sh
+worktree-control upgrade inspect [--decisions <file>] --data-dir /private/installation
+worktree-control upgrade apply --expect <plan hash> --backup-dir /private/backups --data-dir /private/installation
+```
+
+`upgrade inspect` writes nothing except, in "upgrade needed", the plan it
+reports: its hash, the operator's lines and the review. The decisions file is
+JSON with the optional keys `links`, `bindings` and `isolate` of the project
+mapping. `upgrade apply` writes `pre-upgrade-v<source schema>-<UUID>` into
+the backup directory first, then executes exactly the inspected plan. Its
+errors are `UpgradeError` bodies (`code`, `error`, `nextStep`, `state`,
+`committed` and bounded `details` when they apply); see
+[the explicit offline upgrade](architecture.md#explicit-offline-upgrade-integration-branch-only).
+
+The upgrade resets the old authorization model and keeps everything else:
+
+- **Reset.** Every row of the six old grant tables (Knowledge grants and roles,
+  runtime delegations, human runtime memberships, remote principal and worker
+  grants) is revoked; every agent token, worker token and owner session is
+  revoked; runtime credential scopes stay as inert rows; active claims are
+  released, pending remote work is cancelled, queued and running tests are
+  interrupted.
+- **Kept.** The installation token and the mode, principals, provider
+  accounts, passwords and factors, projects, Knowledge and history.
+- **Added.** One `admin` grant on the installation for the single active owner
+  in the new grants table, which nothing reads yet.
+
+Afterwards issue credentials and grant access again: `identity recover-owner`
+for a new owner session, then agent and runtime credentials, Knowledge grants
+and runtime delegations, and `auth provider recover` for accounts. A new
+credential confers nothing without a new grant. After a restore the order is
+resume, inspect, apply, then credentials.
+
+`pre-establishment-…` and `pre-upgrade-…` backups are plain trees that the
+operator removes; the catalogue protects them and never rotates them. A backup
+is never a rollback: restoring one is a fenced restore that needs resume and the
+upgrade again.
 
 ## Owner and agent identities
 
@@ -1257,12 +1327,21 @@ For custom paths, pass the same `--data-dir` and `--state-dir` on every command.
 
 ```sh
 worktree-control auth fence inspect --data-dir /private/installation
-worktree-control auth fence establish --expect <preflight-hash> --data-dir /private/installation
+worktree-control auth fence establish --expect <preflight-hash> --backup-dir /private/backups --data-dir /private/installation
 ```
 
 Establishment is permitted only for a recognized existing pre-fence store without
 external witness or restore evidence. Inspect and preserve a verified application
-backup before this explicit adoption. A fresh database uses its verified creation
+backup before this explicit adoption. On the integration branch `--backup-dir`
+is required (one non-blank directory, made absolute; refused for `inspect` and
+`resume`): establishment first writes `pre-establishment-v<source schema>-<UUID>`
+there and accepts it only as this run's copy of this source, then migrates the
+structure to schema 52 with the upgrade marker `pending`. A fence already trusted
+returns at once with `changed: false`, takes no backup and writes nothing to the
+directory. Every fence result carries `nextStep`: `auth fence establish` or
+`auth fence resume` while the fence is not trusted, and `upgrade inspect` once
+it is, after a successful establish or resume and for the no-op alike. A trusted
+fence is not yet an ordinary start: the upgrade runs first. A fresh database uses its verified creation
 marker; a missing witness on an established database is never first boot.
 
 For restore, stale/missing/corrupt witness or uncertain publication, inspect again,
@@ -1320,10 +1399,10 @@ port and never reauthorizes old pending work.
 Neutral fixed errors distinguish `security_fence_establishment_required`,
 `security_fence_recovery_required`, `security_fence_pending` and
 `security_fence_preflight_changed`. A running owner returns `security_fence_owner_running`. Status and errors expose no credential material.
-On the integration branch, establishment with a pre-establishment backup adds
-`security_fence_backup_failed` for a failed backup (nothing was changed;
-inspect, then establish again). No released command takes that backup, so no
-command returns this code yet.
+On the integration branch, `auth fence establish --backup-dir` refuses a backup
+that fails, does not validate or is not this run's copy with
+`security_fence_backup_failed`: nothing was changed and no witness was written;
+inspect, then establish again.
 Tests cover raw/supported rollback, native provider recovery, corrupt/missing
 witnesses, filesystem synchronization faults, SQL rollback, idle rechecks and
 real child-process crashes. See the historical implementation reference for
@@ -1346,6 +1425,16 @@ Release-candidate evidence, Linux x64 only:
   refused, and explicitly reissued credentials and grants work. The `fresh`
   baseline runs the same account flow on a new installation. Both passed on the
   candidate. See [release packaging](release-packaging.md).
+  On the integration branch the same harness follows the reset: the
+  `public-0.1.1` baseline is refused at an ordinary start as needing
+  establishment, `auth fence establish --backup-dir` brings it to schema 52 with
+  the marker pending, ordinary openings are refused with `upgrade_required`,
+  `upgrade inspect` and `upgrade apply` complete it, every pre-upgrade owner and
+  agent credential is rejected, a new credential without a new grant is denied,
+  and the existing acceptance continues with an explicitly recovered owner and
+  new, explicitly granted credentials. Every resume (raw rollback and both
+  restore destinations) is followed by inspect and apply before credentials.
+  The `fresh` lane checks schema 52 with a complete marker and no upgrade.
 - **Production composition and browser.** The production-composition suite
   passed on the candidate. The account browser tests (fixture UI and a real
   controller and provider behind the HTTPS proxy fixture) passed during the

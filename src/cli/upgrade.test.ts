@@ -185,13 +185,15 @@ describe("upgrade CLI runner: through the composition", () => {
     expect(JSON.stringify(body)).not.toMatch(/sentinel|\/tmp|cli-upgrade-/);
   }, 30_000);
 
-  it("refuses at the supported target before any lock, as the unregistered command would today", async () => {
-    const { root, paths } = absent(), lines: string[] = [];
+  it("runs at the supported target by default; without a database it refuses with the generic body and creates none", async () => {
+    const { paths } = absent(), lines: string[] = [];
     let body: unknown;
     try { await runUpgradeCommand(["upgrade", "inspect"], paths, line => lines.push(line), { applicationVersion: "0.0.0-fixture" }); } catch (error) { body = upgradeErrorBody(error); }
-    expect(body).toEqual({ code: "upgrade_unsupported", error: "Unsupported schema target.", nextStep: "none" });
+    expect(body).toEqual(UPGRADE_FAILED);
+    expect(lines).toEqual([]);
     expect(inspectUpgrade).toHaveBeenCalledWith(paths, undefined, undefined);
-    expect(readdirSync(root)).toEqual([]);
+    // Taking ownership creates the private directories and releases the lock; no database is created.
+    expect(existsSync(paths.databasePath)).toBe(false);
     expect(existsSync(paths.controllerLockPath)).toBe(false);
   });
 });

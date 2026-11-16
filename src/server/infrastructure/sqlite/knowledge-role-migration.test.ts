@@ -72,7 +72,8 @@ describe("Knowledge role migration and persistence", () => {
     await resumeFixtureSecurity(path);
     const restored = new SqliteStateStore(path);
     try {
-      expect(restored.getKnowledgeRoleBinding(target.principalId, target.projectId)).toMatchObject({ role: "reader", revision: 3, revokedAt: expect.any(String) });
+      // The upgrade's authority reset keeps the revocation time and advances every binding's revision (3 -> 4).
+      expect(restored.getKnowledgeRoleBinding(target.principalId, target.projectId)).toMatchObject({ role: "reader", revision: 4, revokedAt: expect.any(String) });
       const identity = new IdentityService(restored);
       expect(()=>identity.authenticateBearer(f.token)).toThrow();
       const actor = identity.authenticateBearer(identity.recoverOwnerSession().token);
@@ -80,7 +81,7 @@ describe("Knowledge role migration and persistence", () => {
       expect(() => identity.authorizeKnowledge(actor, f.project.id, "knowledge:read")).toThrow();
       // Owner authority can recover an accidentally revoked Knowledge role with a new revision.
       identity.setKnowledgeGrant({ ...target, permissions:["knowledge:read","knowledge:write","knowledge:approve"] },actor);
-      identity.setKnowledgeRole({ ...target, role: "manager", expectedRevision: 3 }, actor);
+      identity.setKnowledgeRole({ ...target, role: "manager", expectedRevision: 4 }, actor);
       identity.authorizeKnowledge(actor, f.project.id, "knowledge:approve");
     } finally { restored.close(); }
     const db = unmanagedFixtureDatabase(path, { readonly: true });

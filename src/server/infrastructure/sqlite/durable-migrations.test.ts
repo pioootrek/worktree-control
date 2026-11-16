@@ -207,7 +207,8 @@ describe("durable SQLite initialization and migration", () => {
   });
 
   it("refuses mismatched effective PRAGMA settings and closes the connection", () => {
-    const f=fixture(), owned=new OwnedSqliteDatabase(f.path,true);
+    // An admitted ordinary owner, so that the store reaches its durability check.
+    const f=fixture(), owned=new OwnedSqliteDatabase(f.path,true,undefined,{ordinary:true});
     const pragma=Database.prototype.pragma;
     vi.spyOn(Database.prototype,"pragma").mockImplementation(function(this: Database.Database, source, options) {
       if(source==="synchronous" && options?.simple) return 1;

@@ -752,7 +752,8 @@ describe("establishment with a pre-establishment backup (default target)",()=>{
    * `applied_at` of each step the run applied (above the source version), which
    * must be an instant of that run, and the checkpoint's random installation
    * and epoch, named by first appearance so that the witness's copies of them
-   * get the same names. Every other value of every table, the `applied_at` of
+   * get the same names, and the time step 50 records its pending upgrade
+   * marker, an instant of that run. Every other value of every table, the `applied_at` of
    * the historical steps and every other historical timestamp included,
    * compares exactly.
    */
@@ -760,6 +761,7 @@ describe("establishment with a pre-establishment backup (default target)",()=>{
     schema_migrations:{applied_at:(value,row,{source,window})=>(row.version as number)<=source?value
       :typeof value==="string"&&ISO.test(value)&&value>=window.from&&value<=window.to?"<applied by this run>":value},
     security_checkpoint:{installation:(value,_row,{name})=>name("installation",value),epoch:(value,_row,{name})=>name("epoch",value)},
+    upgrade_marker:{changed_at:(value,_row,{window})=>typeof value==="string"&&ISO.test(value)&&value>=window.from&&value<=window.to?"<changed by this run>":value},
   };
   /** The established database (see GENERATED) and witness of a run from `source` within `window`. */
   const established=(paths:ReturnType<typeof resolveAppPaths>,source:number,window:Window)=>{

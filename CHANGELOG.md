@@ -7,6 +7,27 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
 
 ### Changed
 
+- **Explicit offline upgrade to schema 52 (integration branch, not
+  released).** This build runs schema 52 and no longer migrates an existing
+  database at start. Every ordinary opening of the store (the controller, the
+  service and `service install`, and the offline `auth`, `identity`,
+  `knowledge`, `project`, `doctor`, `config mcp`, `remote-verification` and
+  project export and import commands) refuses a database that is not current
+  with `upgrade_required` (JSON body on stderr, exit code 1) before it writes
+  anything; fence refusals take precedence. New commands: `upgrade inspect
+  [--decisions <file>]` and `upgrade apply --expect <plan hash> --backup-dir
+  <dir>`. `auth fence establish` now requires `--backup-dir` and writes a
+  `pre-establishment-v<n>-<UUID>` backup first; establish and resume point to
+  `upgrade inspect`. The upgrade revokes every old grant, agent token, worker
+  token and owner session, releases claims and interrupts pending work; it
+  keeps the installation token, the mode, accounts, passwords, factors,
+  projects and history. Issue credentials and grant access again afterwards.
+  `--backup-before-migration` is deprecated: still accepted, takes no copy and
+  prints a notice. The backup catalogue accepts and protects
+  `pre-upgrade-v<n>-<UUID>` and `pre-establishment-v<n>-<UUID>`; operators
+  remove them. See
+  [the unreleased upgrade procedure](docs/package-trial.md#unreleased-integration-build-the-explicit-upgrade-to-schema-52).
+
 - **Runtime links are owner or installation only.** `knowledge_link_runtime`
   (linking, re-pointing or unlinking the runtime project of a Knowledge
   project) now refuses agents, workers and ordinary accounts with

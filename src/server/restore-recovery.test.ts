@@ -205,7 +205,8 @@ describe("strict restore validation before replacement", { timeout: 20_000 }, ()
     expect(readFileSync(f.database)).toEqual(f.before); expect(existsSync(parent)).toBe(mode === "interrupted"); expect(existsSync(restoreRoot(f.database))).toBe(false);
     vi.restoreAllMocks(); restoreControllerBackup(f.backup, f.database, target);
     expect(readFileSync(join(target, sha.slice(0, 2), sha))).toEqual(bytes);
-    await resumeFixtureSecurity(f.database, "token", { attachmentDirectory: f.attachments }); const restored = new SqliteStateStore(f.database);
+    // The restored attachments live at the retried target, which the pre-upgrade backup copies.
+    await resumeFixtureSecurity(f.database, "token", { attachmentDirectory: target }); const restored = new SqliteStateStore(f.database);
     try { expect(restored.listProjects().map(project => project.name)).toEqual(["New runtime"]); } finally { restored.close(); }
   });
   it("refuses actual different-device attachments before replacing data", async () => {
