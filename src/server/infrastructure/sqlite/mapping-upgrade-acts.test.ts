@@ -407,7 +407,8 @@ describe("project mapping: stop conditions write no plan and change nothing", ()
     try {
       initializeSchema(database, undefined, current => { inspectSchema(current, TARGET); }, { target: TARGET });
       database.exec("DROP TABLE project_mapping_journal");
-      database.exec("CREATE TABLE project_mapping_journal(sequence INTEGER PRIMARY KEY AUTOINCREMENT, subject_kind, subject_id, subject_incarnation, project_id, basis, plan_hash, run_receipt, recorded_at)");
+      // Column types without the CHECKs: integers bound from JavaScript are stored as integers, as in the real table.
+      database.exec("CREATE TABLE project_mapping_journal(sequence INTEGER PRIMARY KEY AUTOINCREMENT, subject_kind TEXT, subject_id TEXT, subject_incarnation INTEGER, project_id TEXT, basis TEXT, plan_hash TEXT, run_receipt TEXT, recorded_at TEXT)");
       database.exec("UPDATE project_mapping_clock SET value=3");
       const insert = database.prepare("INSERT INTO project_mapping_journal(subject_kind,subject_id,subject_incarnation,project_id,basis,recorded_at) VALUES(?,?,?,?,?,?)");
       const propose = () => proposeProjectMapping(database, { schemaVersion: TARGET, source: TARGET, target: TARGET }, normaliseMappingDecisions({}), null, true);
@@ -1163,7 +1164,7 @@ describe("project mapping: the operator's lines state only what is true", () => 
     expect(entry.link).toMatchObject({ projectId: created, accepted: false });
     const lines = inspection.acts!.filter(line => line.includes(`Existing link to project ${created}`));
     expect(lines).toEqual([`  Existing link to project ${created} since ${PAST}: not accepted as the basis; the registration joins that project anyway, by another basis: the project the journal nominates.`]);
-    expect(inspection.acts!.join("\n")).not.toContain("does not join that project");
+    expect(inspection.acts!.filter(line => line.includes(created)).join("\n")).not.toContain("does not join");
     // The linked registration's own link still is not followed and says so.
     expect(inspection.acts!.join("\n")).toContain("not accepted; the registration does not join that project in this plan");
   });
