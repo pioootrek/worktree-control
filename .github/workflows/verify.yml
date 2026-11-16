@@ -16,7 +16,7 @@ concurrency:
 jobs:
   check-build:
     runs-on: ubuntu-24.04
-    # The whole job takes 20 to 27 minutes on a normal hosted runner and close to 30 on a slow one; the limit leaves room for that spread.
+    # With the integration branch's tests the job has run close to 30 minutes on a slow hosted runner. The limit only stops a hung job.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
