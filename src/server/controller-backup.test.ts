@@ -10,7 +10,9 @@ import Database from "better-sqlite3";
 import { initializeSchema } from "./infrastructure/sqlite/migrations";
 import { inspectSchema } from "./infrastructure/sqlite/schema-inspection";
 import { configureDurability } from "./infrastructure/sqlite/database-validation";
-import { parseManifest, validateBackup } from "./infrastructure/sqlite/backup-validation";
+import { parseManifest, validateBackup, validateSnapshot } from "./infrastructure/sqlite/backup-validation";
+import { applyRegistryMigration } from "./infrastructure/sqlite/migration-registry";
+import { unmanagedFixtureDatabase } from "./unmanaged-sqlite-fixture";
 
 const cleanups: Array<() => void> = []; afterEach(() => cleanups.splice(0).reverse().forEach(fn => fn()));
 function root() { const value=mkdtempSync(join(tmpdir(),"controller-backup-")); cleanups.push(()=>rmSync(value,{recursive:true,force:true})); return value; }
@@ -95,5 +97,48 @@ describe("controller backup", () => {
     // A store of this release backs up at 52 whether or not the ceiling is named.
     const supported=new SqliteStateStore(join(directory,"supported.sqlite3")); cleanups.push(()=>supported.close());
     expect(await createControllerBackup(supported,join(directory,"supported"),{...options,schemaCeiling:52})).toMatchObject({database:{schemaVersion:52}});
+  }, 30_000);
+
+  /** A database at `version`: the public 0.1.1 baseline (28), the released 49, or 50 to 52 migrated from 49 with the marker pending. */
+  function versioned(path: string, version: number): void {
+    const database = unmanagedFixtureDatabase(path);
+    try {
+      if (version === 28) {
+        database.exec(readFileSync(new URL("./infrastructure/sqlite/fixtures/schema-v26.sql", import.meta.url), "utf8"));
+        database.exec(`CREATE INDEX IF NOT EXISTS knowledge_import_sources_target ON knowledge_import_sources(project_id,target_kind,target_id);
+          INSERT INTO schema_migrations(version,applied_at) VALUES(27,'2026-11-01T00:00:00.000Z')`);
+        applyRegistryMigration(database);
+      } else {
+        initializeSchema(database, true, current => { inspectSchema(current, 49); }, { target: 49 });
+        if (version > 49) initializeSchema(database, false, current => { inspectSchema(current, version); }, { target: version });
+      }
+    } finally { database.close(); }
+    chmodSync(path, 0o600);
+  }
+  it.each([28, 49, 50, 51, 52])("verifies and restores a schema-%i snapshot at the default ceiling, without requiring a witness or a complete marker", async version => {
+    const directory = root(), source = join(directory, "source.sqlite3"), backup = join(directory, "backup"), target = join(directory, "restored", "state.sqlite3");
+    versioned(source, version);
+    const reader = new Database(source, { readonly: true, fileMustExist: true }); cleanups.push(() => reader.close());
+    const manifest = await createControllerBackup({ backup: async destination => { await reader.backup(destination); } }, backup, { applicationVersion: "test", attachmentDirectory: join(directory, "attachments") });
+    expect(manifest.database.schemaVersion).toBe(version);
+    expect(() => validateBackup(backup, parseManifest(manifest), true)).not.toThrow();
+    if (version >= 50) {
+      const copy = new Database(join(backup, "state.sqlite3"), { readonly: true, fileMustExist: true });
+      try { expect(copy.prepare("SELECT state FROM upgrade_marker").pluck().get()).toBe("pending"); } finally { copy.close(); }
+    }
+    restoreControllerBackup(backup, target);
+    const restored = new Database(target, { readonly: true, fileMustExist: true });
+    try { expect(inspectSchema(restored).version).toBe(version); } finally { restored.close(); }
+  }, 30_000);
+  it("refuses a schema-53 manifest and snapshot at the default ceiling", async () => {
+    const directory = root(), source = join(directory, "source.sqlite3"), backup = join(directory, "backup");
+    versioned(source, 52);
+    const reader = new Database(source, { readonly: true, fileMustExist: true }); cleanups.push(() => reader.close());
+    const manifest = await createControllerBackup({ backup: async destination => { await reader.backup(destination); } }, backup, { applicationVersion: "test", attachmentDirectory: join(directory, "attachments") });
+    expect(() => parseManifest({ ...manifest, database: { ...manifest.database, schemaVersion: 53 } })).toThrow(/Unsupported or invalid backup manifest/);
+    const snapshot = unmanagedFixtureDatabase(join(backup, "state.sqlite3"));
+    try { snapshot.prepare("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(53,'2026-11-16T00:00:00.000Z','future','future')").run(); } finally { snapshot.close(); }
+    expect(() => validateSnapshot(join(backup, "state.sqlite3"), { ...manifest, database: { ...manifest.database } })).toThrow(/Unsupported or unrecognized database schema/);
+    expect(() => restoreControllerBackup(backup, join(directory, "restored", "state.sqlite3"))).toThrow();
   }, 30_000);
 });

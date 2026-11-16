@@ -82,7 +82,7 @@ describe("configuration revision migration 37", () => {
     await resumeFixtureSecurity(path);
     const restored = new SqliteStateStore(path);
     try {
-      expect(restored.schemaVersion()).toBe(49);
+      expect(restored.schemaVersion()).toBe(52);
       expect(restored.getProjectConfigurationRevision(f.project.id)).toBe(2);
     } finally { restored.close(); }
   });

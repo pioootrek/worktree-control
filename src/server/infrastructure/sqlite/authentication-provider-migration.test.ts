@@ -60,7 +60,7 @@ describe("authentication provider storage migration 38", () => {
       for (const table of PROVIDER_TABLES) expect(db.prepare(`SELECT count(*) n FROM "${table}"`).get()).toEqual({ n: 0 });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=38").get())
         .toEqual({ name: authenticationProviderMigration.name, checksum: authenticationProviderChecksum });
-      expect(inspectSchema(db)).toEqual({ version: 49, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 52, fresh: false });
     });
   });
 

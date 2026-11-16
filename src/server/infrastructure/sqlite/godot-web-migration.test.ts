@@ -60,7 +60,7 @@ describe("Godot Web migration 43", () => {
       expect(() => initializeSchema(db, false, () => { throw new Error("late failure"); })).toThrow("late failure");
       expect(inspectSchema(db).version).toBe(42);
       expect(rows(db, "projects")).toEqual(before);
-      initializeSchema(db, false, inspectSchema);
+      initializeSchema(db, false, inspectSchema, { target: 49 });
       expect(inspectSchema(db)).toEqual({ version: 49, fresh: false });
       expect(rows(db, "projects")).toEqual((before as object[]).map((row) => ({ ...row, godot_web_json: null })));
       expect(rows(db, "audit_events")).toEqual(audit);

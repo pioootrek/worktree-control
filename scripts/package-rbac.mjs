@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
-import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createConnection, createServer } from "node:net";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -22,7 +22,7 @@ const legacyInput = process.argv[2] && !process.argv[2].startsWith("--") ? proce
 const input = legacyInput ? JSON.parse(await readFile(legacyInput, "utf8")) : {};
 const baseline = legacyInput ? "historical-installed" : argument("--baseline") ?? `public-${PUBLIC_BASELINE.version}`;
 assert(["historical-installed", `public-${PUBLIC_BASELINE.version}`, "fresh"].includes(baseline), "Unsupported baseline.");
-const CURRENT_SCHEMA = 49;
+const CURRENT_SCHEMA = 52;
 const reportPath = resolve(argument("--report") ?? join(repository, "dist/rbac-artifacts", `acceptance-${baseline}.json`));
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 let oldRoot, oldCli;
@@ -42,7 +42,13 @@ const data = join(root, "data"), state = join(root, "state"), origin = "https://
 let directoryArgs = ["--data-dir", data, "--state-dir", state];
 const env = { PATH: process.env.PATH, LANG: "C.UTF-8", NODE_ENV: "production" };
 const bounded = (file, args, options = {}) => exec(file, args, { cwd: root, env, timeout: 120_000, maxBuffer: 2 * 1024 * 1024, ...options });
-const step = async (name, action) => { failureStep = name; process.stderr.write(`rbac acceptance: ${name}\n`); const value = await action(); steps.push({ name, ok: true }); return value; };
+// Each step records its duration: the hosted runner is about twice as slow as a workstation and
+// the job has a 25-minute limit, so the report shows where the time goes.
+const step = async (name, action) => {
+  failureStep = name; process.stderr.write(`rbac acceptance: ${name}\n`);
+  const started = performance.now(), value = await action(), ms = Math.round(performance.now() - started);
+  steps.push({ name, ok: true, ms }); process.stderr.write(`rbac acceptance: ${name} done in ${ms} ms\n`); return value;
+};
 async function command(cli, args, extra = {}, body) {
   const child = spawn(process.execPath, [cli, ...args, ...directoryArgs], { cwd: root, env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] }); children.add(child);
   let stdout = "", stderr = "", forced = false;
@@ -61,6 +67,23 @@ async function json(cli, args, extra, body) {
   assert.equal(result.code, 0, `Finite CLI failed (${code ?? "unclassified"}): ${args[0]} ${args[1] ?? ""}`);
   const value = JSON.parse(result.stdout); if (value.token) secretValues.add(value.token); return value;
 }
+/** A refused CLI call: exit code 1 and the JSON error body on the last line of stderr. */
+async function refusal(cli, args, extra) {
+  const result = await command(cli, args, extra);
+  assert.equal(result.code, 1, `Expected a refusal: ${args[0]} ${args[1] ?? ""}`);
+  return JSON.parse(result.stderr.trim().split("\n").at(-1));
+}
+/** The database and its WAL (a missing and an empty WAL are the same state), the witness, and the backups beside them. */
+async function sourceFiles(directory = directoryArgs[1]) {
+  const read = async path => { try { return await readFile(path); } catch (error) { if (error.code === "ENOENT") return null; throw error; } };
+  const wal = await read(join(directory, "state.sqlite3-wal")), witness = await read(join(directory, "state.sqlite3.security", "witness.json"));
+  return { database: digest(await readFile(join(directory, "state.sqlite3"))), wal: wal && wal.length ? digest(wal) : "empty",
+    witness: witness ? digest(witness) : "missing", plan: (await read(join(directory, "state.sqlite3.upgrade", "plan.json"))) ? "present" : "missing" };
+}
+const UPGRADE_REQUIRED = { code: "upgrade_required", error: "upgrade_required: This database requires an explicit offline upgrade before ordinary access. Next step: upgrade inspect.",
+  nextStep: "upgrade inspect", state: "upgrade_needed" };
+/** Whether anything accepts a connection on the loopback port. */
+const accepting = port => new Promise(accept => { const socket = createConnection({ port, host: "127.0.0.1" }); socket.once("connect", () => { socket.destroy(); accept(true); }); socket.once("error", () => accept(false)); });
 async function freePort() { return new Promise((accept, reject) => { const server = createServer(); server.once("error", reject); server.listen(0, "127.0.0.1", () => { const port = server.address().port; server.close(error => error ? reject(error) : accept(port)); }); }); }
 async function wait(read, milliseconds = 20_000) {
   const end = Date.now() + milliseconds;
@@ -210,48 +233,142 @@ try {
     });
   }
   if (fresh) assert.equal(before.schema, CURRENT_SCHEMA); else assert(before.schema < CURRENT_SCHEMA);
+  const marker = () => observe(db => db.prepare("SELECT state, plan_hash FROM upgrade_marker").get());
+  const maintenanceBackups = join(root, "maintenance-backups");
+  let planHash = null, resetEvidence = null;
+  // Credentials used from here on. The fresh lane keeps the seeded ones (no upgrade happened). After an
+  // upgrade only an explicitly recovered owner session and a newly issued agent credential authorize;
+  // the pre-upgrade ones keep their own names and are only ever expected to be rejected.
+  let currentOwnerEnv = ownerEnv, currentAgentCredential = oldAgentCredential;
   if (fresh) {
-    await step("fresh-install-fence-current", async () => { const status = await json(currentCli, ["auth", "fence", "inspect"]); assert.equal(status.code, "security_fence_current"); assert.equal(status.establishmentAllowed, false); });
-  } else {
-    await step("pre-fence-upgrade-refusal", async () => assert.notEqual((await command(currentCli, ["auth", "status"])).code, 0));
-    const preflight = await json(currentCli, ["auth", "fence", "inspect"]); assert.equal(preflight.establishmentAllowed, true);
-    await step("refused-start-preserves-pre-upgrade-database", async () => {
-      const bytes = digest(await readFile(join(data, "state.sqlite3")));
-      const result = await command(currentCli, ["start", "--service-mode", "--no-open", "--host", "127.0.0.1", "--port", String(await freePort()), "--mcp-port", String(await freePort())]);
-      assert.notEqual(result.code, 0);
-      assert.equal(digest(await readFile(join(data, "state.sqlite3"))), bytes);
-      const unchanged = await json(currentCli, ["auth", "fence", "inspect"]);
-      assert.equal(unchanged.schemaVersion, before.schema); assert.equal(unchanged.preflight, preflight.preflight);
+    await step("fresh-install-fence-current", async () => { const status = await json(currentCli, ["auth", "fence", "inspect"]); assert.equal(status.code, "security_fence_current"); assert.equal(status.establishmentAllowed, false); assert.equal(status.nextStep, "upgrade inspect"); });
+    await step("fresh-install-schema-52-marker-complete-and-upgrade-current", async () => {
+      assert.deepEqual(marker(), { state: "complete", plan_hash: null }, "A fresh installation starts with a complete marker and no plan hash.");
+      const files = await sourceFiles();
+      const inspection = await json(currentCli, ["upgrade", "inspect"]);
+      assert.equal(inspection.state, "current"); assert.equal(inspection.nextStep, "none"); assert.equal(inspection.schemaVersion, CURRENT_SCHEMA);
+      assert.equal(inspection.planHash, undefined); assert.equal(inspection.appliedPlan, null);
+      assert.deepEqual(await sourceFiles(), files, "Inspecting a current database writes nothing, and no plan.");
     });
-    await step("protected-fence-establish", () => json(currentCli, ["auth", "fence", "establish", "--expect", preflight.preflight]));
+  } else {
+    await step("pre-fence-ordinary-refusal-preserves-database", async () => {
+      const files = await sourceFiles();
+      for (const args of [["auth", "status"], ["start", "--service-mode", "--no-open", "--host", "127.0.0.1", "--port", String(await freePort()), "--mcp-port", String(await freePort())]]) {
+        const result = await command(currentCli, args);
+        assert.equal(result.code, 1, `${args[0]} must refuse a database without a fence`); assert.match(result.stderr, /security_fence_establishment_required/);
+      }
+      assert.deepEqual(await sourceFiles(), files, "Refused openings leave the 0.1.1 database and its WAL as they were.");
+    });
+    const preflight = await json(currentCli, ["auth", "fence", "inspect"]);
+    assert.equal(preflight.establishmentAllowed, true); assert.equal(preflight.schemaVersion, before.schema); assert.equal(preflight.nextStep, "auth fence establish");
+    await step("protected-fence-establish-with-backup", async () => {
+      const established = await json(currentCli, ["auth", "fence", "establish", "--expect", preflight.preflight, "--backup-dir", maintenanceBackups]);
+      assert.equal(established.trusted, true); assert.equal(established.changed, true); assert.equal(established.schemaVersion, CURRENT_SCHEMA);
+      assert.equal(established.nextStep, "upgrade inspect", "An established fence points to the upgrade, not to an ordinary start.");
+      assert.match(established.backup, new RegExp(`/pre-establishment-v${before.schema}-[0-9a-f-]{36}$`));
+      assert.equal(JSON.parse(await readFile(join(established.backup, "manifest.json"), "utf8")).database.schemaVersion, before.schema);
+      assert.deepEqual(marker(), { state: "pending", plan_hash: null }, "Establishment brings the structure to 52 with the marker pending.");
+    });
+    await step("upgrade-required-refusal-preserves-database", async () => {
+      const files = await sourceFiles(), copies = (await readdir(maintenanceBackups)).sort(), port = await freePort();
+      for (const args of [["start", "--service-mode", "--no-open", "--host", "127.0.0.1", "--port", String(port), "--mcp-port", String(await freePort())], ["auth", "status"], ["identity", "list-agents"]]) {
+        assert.deepEqual(await refusal(currentCli, args, ownerEnv), UPGRADE_REQUIRED, `${args[0]} must refuse with upgrade_required`);
+      }
+      assert.equal(await accepting(port), false, "A refused start opens no listener.");
+      assert.deepEqual(await sourceFiles(), files, "A refused opening writes nothing.");
+      assert.deepEqual((await readdir(maintenanceBackups)).sort(), copies, "A refused opening takes no backup.");
+    });
+    const inspection = await step("upgrade-inspect-reviews-the-reset", async () => {
+      const value = await json(currentCli, ["upgrade", "inspect"]);
+      assert.equal(value.state, "upgrade_needed"); assert.equal(value.nextStep, "upgrade apply"); assert.equal(value.marker, "pending");
+      assert.equal(value.schemaVersion, CURRENT_SCHEMA); assert.equal(value.target, CURRENT_SCHEMA); assert.match(value.planHash, /^[0-9a-f]{64}$/);
+      const authority = value.review.authority, active = kind => before.credentials.filter(row => row.kind === kind && row.status === "active").length;
+      assert.deepEqual(authority.admin, { decision: "grant", accountId: oldOwner.principalId });
+      for (const kind of ["agent_token", "owner_session"]) {
+        const entry = authority.credentials.find(item => item.kind === kind);
+        assert(active(kind) > 0); assert.equal(entry.active, active(kind)); assert.equal(entry.revokes, active(kind));
+      }
+      const grants = authority.grantTables.find(item => item.table === "knowledge_project_grants");
+      assert.equal(grants.rows, before.grants.length); assert.equal(grants.revokes, before.grants.filter(row => row.revoked_at === null || row.revoked_at === undefined).length);
+      assert(Array.isArray(value.acts) && value.acts.length > 0, "The review lists the operator's lines.");
+      return value;
+    });
+    await step("upgrade-apply-with-pre-upgrade-backup", async () => {
+      const result = await json(currentCli, ["upgrade", "apply", "--expect", inspection.planHash, "--backup-dir", maintenanceBackups]);
+      assert.equal(result.state, "current"); assert.equal(result.alreadyApplied, false); assert.equal(result.planHash, inspection.planHash);
+      assert.equal(result.schemaVersion, CURRENT_SCHEMA); assert.equal(result.planRemoved, true);
+      assert.match(result.backup, new RegExp(`/pre-upgrade-v${CURRENT_SCHEMA}-[0-9a-f-]{36}$`));
+      assert.equal(JSON.parse(await readFile(join(result.backup, "manifest.json"), "utf8")).database.schemaVersion, CURRENT_SCHEMA);
+      assert.deepEqual(marker(), { state: "complete", plan_hash: inspection.planHash });
+      planHash = inspection.planHash;
+    });
   }
-  await step("upgrade-preserves-owner-grants-and-history", async () => {
+  await step(fresh ? "fresh-install-keeps-owner-grants-and-history" : "upgrade-resets-authority-and-keeps-owner-and-history", async () => {
     const after = continuity();
     // Later migrations may add columns; compare every value that existed before.
     const columns = rows => rows.length ? Object.keys(rows[0]) : [];
     const projected = (rows, names) => rows.map(row => Object.fromEntries(names.map(name => [name, row[name]])));
     assert.equal(after.schema, CURRENT_SCHEMA); assert.deepEqual(after.principal, before.principal);
-    assert.deepEqual(projected(after.grants, columns(before.grants)), before.grants);
-    assert(JSON.stringify(projected(after.credentials, columns(before.credentials))) === JSON.stringify(before.credentials), "Every pre-upgrade credential field must be preserved.");
     assert.deepEqual(projected(after.audit.slice(0, before.audit.length), columns(before.audit)), before.audit);
     assert.equal(observe(db => db.prepare("SELECT title FROM knowledge_tasks WHERE id=?").get(task.value.id).title), "Old history");
+    if (fresh) {
+      assert.deepEqual(projected(after.grants, columns(before.grants)), before.grants);
+      assert(JSON.stringify(projected(after.credentials, columns(before.credentials))) === JSON.stringify(before.credentials), "Every credential field must be preserved.");
+      return;
+    }
+    // Every grant and credential row is kept, and none authorizes any more.
+    const key = row => `${row.principal_id}/${row.project_id}`;
+    assert.deepEqual(after.grants.map(key), before.grants.map(key)); assert(after.grants.every(row => row.revoked_at !== null), "Every old grant is revoked.");
+    assert.deepEqual(after.credentials.map(row => [row.id, row.kind]), before.credentials.map(row => [row.id, row.kind]));
+    assert(after.credentials.every(row => row.status === "revoked"), "Every pre-upgrade credential is revoked.");
+    const admin = observe(db => db.prepare("SELECT account_id, role, scope_kind, project_id FROM account_grants").all());
+    assert.deepEqual(admin, [{ account_id: oldOwner.principalId, role: "admin", scope_kind: "installation", project_id: null }]);
+    resetEvidence = { credentialsRevoked: after.credentials.length, grantsRevoked: after.grants.length, adminGrant: "owner" };
   });
   await step("community-token-mode-without-provider", async () => {
+    // The installation token and the mode are kept by the upgrade.
     assert.equal((await json(currentCli, ["auth", "status"])).mode, "token");
     await start();
     const authorized = await fetch(endpoint + "/api/dashboard", { headers: { Authorization: `Bearer ${installation.token}` } }); await authorized.arrayBuffer();
     assert.equal(authorized.status, 200, "Installation token must keep working without a provider.");
     const anonymous = await fetch(endpoint + "/api/dashboard"); await anonymous.arrayBuffer(); assert.equal(anonymous.status, 401);
-    for (const url of [endpoint + "/api/dashboard", mcpURL]) {
-      const denied = await fetch(url, { headers: { Authorization: `Bearer ${revokedBefore.token}` } });
-      await denied.arrayBuffer(); assert.equal(denied.status, 401, "A credential revoked before migration must remain revoked.");
-    }
     const installationClient = await connect(installation.token);
-    assert(!(await installationClient.callTool({ name: "list_projects", arguments: {} })).isError);
-    const agent = await connect(oldAgentCredential.token);
-    assert(!(await agent.callTool({ name: "knowledge_task", arguments: { projectId: knowledge.id, taskId: task.value.id } })).isError, "Pre-upgrade agent token keeps its Knowledge grant.");
+    assert(!(await installationClient.callTool({ name: "list_projects", arguments: {} })).isError, "Installation token must keep working over MCP.");
+    // Rejected over HTTP and MCP: a credential revoked before the upgrade, and after an upgrade every pre-upgrade one.
+    const rejected = fresh ? [revokedBefore] : [revokedBefore, oldOwner, oldAgentCredential, revokedAfter];
+    for (const { token } of rejected) {
+      for (const url of [endpoint + "/api/dashboard", mcpURL]) {
+        const denied = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        await denied.arrayBuffer(); assert.equal(denied.status, 401, "A revoked or pre-upgrade credential must be rejected.");
+      }
+    }
+    if (fresh) {
+      const agent = await connect(oldAgentCredential.token);
+      assert(!(await agent.callTool({ name: "knowledge_task", arguments: { projectId: knowledge.id, taskId: task.value.id } })).isError, "Without an upgrade the agent token keeps its Knowledge grant.");
+    }
     await stop();
   });
+  if (!fresh) {
+    await step("explicit-owner-recovery-and-new-agent-denied-without-grant", async () => {
+      const recovered = await json(currentCli, ["identity", "recover-owner"]);
+      assert.equal(recovered.principalId, oldOwner.principalId); assert.notEqual(recovered.token, oldOwner.token);
+      currentOwnerEnv = { WORKTREE_CONTROL_OWNER_TOKEN: recovered.token };
+      const issued = await json(currentCli, ["identity", "issue-agent-token", "--principal-id", oldAgent.id, "--label", "after upgrade"], currentOwnerEnv);
+      /** Whether the new credential reads the old project's task over MCP; a refused connection or call is a denial. */
+      const read = async () => {
+        await start();
+        try {
+          const client = await connect(issued.token);
+          return await client.callTool({ name: "knowledge_task", arguments: { projectId: knowledge.id, taskId: task.value.id } }).then(result => !result.isError, () => false);
+        } catch { return false; } finally { await stop(); }
+      };
+      // The token reset and the grant reset are separate: a new credential alone confers nothing.
+      assert.equal(await read(), false, "A new credential without a new grant must not read the old project.");
+      await json(currentCli, ["identity", "grant-knowledge", "--principal-id", oldAgent.id, "--project-id", knowledge.id, "--permissions", "knowledge:read,knowledge:write"], currentOwnerEnv);
+      assert.equal(await read(), true, "The explicitly granted new credential reads the old project.");
+      currentAgentCredential = issued;
+    });
+  }
   await step("community-open-mode-without-provider", async () => {
     await json(currentCli, ["auth", "mode", "set", "open"]); await start();
     const anonymous = await fetch(endpoint + "/api/dashboard"); await anonymous.arrayBuffer(); assert.equal(anonymous.status, 200);
@@ -261,21 +378,22 @@ try {
     await json(currentCli, ["auth", "provider", "configure", "--input-stdin"], {}, { module: entry, origin, signingSecret: { kind: "generate" } });
     await json(currentCli, ["auth", "provider", "enroll", "--principal-id", oldOwner.principalId, "--input-stdin"], {}, { email: "owner@fixture.invalid", name: "Existing owner", password });
   });
-  await json(currentCli, ["identity", "revoke-token", "--credential-id", revokedAfter.credential.id], ownerEnv);
+  if (fresh) await json(currentCli, ["identity", "revoke-token", "--credential-id", revokedAfter.credential.id], currentOwnerEnv);
+  else assert.equal(observe(db => db.prepare("SELECT status FROM principal_credentials WHERE id=?").get(revokedAfter.credential.id).status), "revoked", "The upgrade already revoked it.");
   const repo = join(root, "project"); await mkdir(repo);
   await writeFile(join(repo, "package.json"), JSON.stringify({ scripts: { test: "node test.mjs" } }));
   await writeFile(join(repo, "test.mjs"), "console.log('finite test failure evidence');process.exitCode=2;\n");
   const gitEnv = { ...env, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@invalid.test", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@invalid.test" };
   for (const args of [["init", "-b", "main"], ["add", "."], ["commit", "-m", "finite fixture"]]) await bounded("git", args, { cwd: repo, env: gitEnv });
   await start();
-  const postUpgradeTask = await json(currentCli, ["knowledge", "create_task", "--json", JSON.stringify({ projectId: knowledge.id, title: "After upgrade", description: "Not in the old backup", idempotencyKey: "post-upgrade" })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: oldAgentCredential.token });
+  const postUpgradeTask = await json(currentCli, ["knowledge", "create_task", "--json", JSON.stringify({ projectId: knowledge.id, title: "After upgrade", description: "Not in the old backup", idempotencyKey: "post-upgrade" })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: currentAgentCredential.token });
   const added = await fetch(endpoint + "/api/projects", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${installation.token}` },
     body: JSON.stringify({ name: "Finite verification", repositoryPath: repo, port: await freePort(), launchPreset: "none" }) });
   assert.equal(added.status, 201); const project = (await added.json()).project;
   await stop();
   const actions = ["projects:read", "tests:run", "profiles:select", "config:write", "logs:read", "storage:read", "capacity:read"];
-  await json(currentCli, ["identity", "set-runtime-delegation", "--principal-id", oldAgent.id, "--project-id", project.id, "--actions", actions.join(","), "--expected-revision", "0"], ownerEnv);
-  const credential = await json(currentCli, ["identity", "issue-runtime-credential", "--principal-id", oldAgent.id, "--label", "explicit diagnostics", "--projects-json", JSON.stringify([{ projectId: project.id, actions }])], ownerEnv);
+  await json(currentCli, ["identity", "set-runtime-delegation", "--principal-id", oldAgent.id, "--project-id", project.id, "--actions", actions.join(","), "--expected-revision", "0"], currentOwnerEnv);
+  const credential = await json(currentCli, ["identity", "issue-runtime-credential", "--principal-id", oldAgent.id, "--label", "explicit diagnostics", "--projects-json", JSON.stringify([{ projectId: project.id, actions }])], currentOwnerEnv);
   await json(currentCli, ["auth", "provider", "runtime-access", "set", "--input-stdin"], {}, { principalId: oldOwner.principalId,
     scope: { kind: "runtime-project", id: project.id }, role: "operator", permissions: ["projects:read", "tests:run", "profiles:select", "config:write"], expectedRevision: 0 });
   await step("protected-rbac-selection-and-real-restart", async () => {
@@ -293,8 +411,9 @@ try {
     assert.equal((await browser.call("/api/auth/get-session", undefined, { Authorization: `Bearer ${installation.token}`, "X-Worktree-Switcher-Token": installation.token })).status, 401);
   });
   const client = await connect(credential.token);
-  await step("old-credential-ceiling-does-not-gain-new-delegation", async () => {
-    const old = await connect(oldAgentCredential.token);
+  // The knowledge-only agent credential in use (the seeded one in the fresh lane, the new one after an upgrade).
+  await step("knowledge-credential-ceiling-does-not-gain-new-delegation", async () => {
+    const old = await connect(currentAgentCredential.token);
     const projects = await old.callTool({ name: "list_projects", arguments: {} }); assert(!projects.isError); assert.deepEqual(JSON.parse(projects.content[0].text), []);
     const names = (await old.listTools()).tools.map(tool => tool.name);
     for (const name of ["get_runtime_logs", "get_project_storage", "get_server_capacity", "get_test_queue"]) assert(!names.includes(name));
@@ -337,7 +456,7 @@ try {
   });
   await step("online-cli-individual-knowledge-and-protected-revoke", async () => {
     await json(currentCli, ["knowledge", "tasks", "--json", JSON.stringify({ projectId: knowledge.id })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: credential.token });
-    await json(currentCli, ["identity", "revoke-token", "--credential-id", credential.credential.id], ownerEnv);
+    await json(currentCli, ["identity", "revoke-token", "--credential-id", credential.credential.id], currentOwnerEnv);
     await assert.rejects(client.callTool({ name: "get_test_queue", arguments: {} }));
     const response = await fetch(mcpURL, { method: "POST", headers: { Authorization: `Bearer ${installation.token}`, "Content-Type": "application/json" }, body: "{}" }); assert.equal(response.status, 401);
   });
@@ -383,6 +502,10 @@ try {
     assert.notEqual((await command(currentCli, ["auth", "status"])).code, 0);
     const inspected = await json(currentCli, ["auth", "fence", "inspect"]);
     await json(currentCli, ["auth", "fence", "resume", "--expect", inspected.preflight, "--mode", "better-auth"]);
+    // The resumed database needs the upgrade again before any credential recovery.
+    assert.deepEqual(await refusal(currentCli, ["auth", "status"]), UPGRADE_REQUIRED);
+    const upgrade = await json(currentCli, ["upgrade", "inspect"]); assert.equal(upgrade.state, "upgrade_needed"); assert.equal(upgrade.marker, "pending");
+    await json(currentCli, ["upgrade", "apply", "--expect", upgrade.planHash, "--backup-dir", maintenanceBackups]);
     observe(db => {
       assert.equal(db.prepare("SELECT count(*) n FROM principal_credentials WHERE status='active'").get().n, 0);
       for (const table of ["knowledge_project_grants", "runtime_delegations", "runtime_human_memberships"]) assert.equal(db.prepare(`SELECT count(*) n FROM ${table} WHERE revoked_at IS NULL`).get().n, 0);
@@ -393,7 +516,9 @@ try {
     const login = await recovered.call("/api/auth/sign-in/email", { email: "owner@fixture.invalid", password: replacement }); assert.equal(login.status, 200);
     assert.equal((await recovered.call("/api/auth/get-session")).body.principal.id, oldOwner.principalId);
     const empty = await recovered.call("/api/runtime/read", { operation: "list-projects" }); assert.equal(empty.status, 200); assert.deepEqual(empty.body.projects, []);
-    const rejected = await cookieJar().call("/api/knowledge", { operation: "tasks", input: { projectId: knowledge.id } }, { Authorization: `Bearer ${oldAgentCredential.token}` }); assert.equal(rejected.status, 401);
+    for (const agent of new Set([oldAgentCredential, currentAgentCredential])) {
+      const rejected = await cookieJar().call("/api/knowledge", { operation: "tasks", input: { projectId: knowledge.id } }, { Authorization: `Bearer ${agent.token}` }); assert.equal(rejected.status, 401);
+    }
     await stop();
     const principals = observe(db => db.prepare("SELECT id,kind,status FROM remote_principals WHERE kind='owner'").all()); assert.deepEqual(principals, [before.principal]);
     assert.equal(observe(db => db.prepare("SELECT title FROM knowledge_tasks WHERE id=?").get(task.value.id).title), "Old history");
@@ -407,9 +532,20 @@ try {
         const preflight = await json(currentCli, ["auth", "fence", "inspect"]);
         assert.equal(preflight.schemaVersion, PUBLIC_BASELINE.schema);
         assert.equal(preflight.code, "security_fence_recovery_required"); assert.equal(preflight.establishmentAllowed, false);
-        assert.notEqual((await command(currentCli, ["auth", "fence", "establish", "--expect", preflight.preflight])).code, 0);
+        // Refused because the restore is fenced, not for a missing argument: --backup-dir is given, and no copy is taken.
+        const refused = join(root, `${label}-refused-establishment`);
+        const establish = await command(currentCli, ["auth", "fence", "establish", "--expect", preflight.preflight, "--backup-dir", refused]);
+        assert.equal(establish.code, 1); assert.equal(JSON.parse(establish.stderr.trim().split("\n").at(-1)).code, "security_fence_recovery_required");
+        assert.deepEqual(await readdir(refused).catch(error => { if (error.code === "ENOENT") return []; throw error; }), []);
         const unchanged = await json(currentCli, ["auth", "fence", "inspect"]); assert.equal(unchanged.preflight, preflight.preflight);
-        await json(currentCli, ["auth", "fence", "resume", "--expect", unchanged.preflight, "--mode", "token"]);
+        const resumed = await json(currentCli, ["auth", "fence", "resume", "--expect", unchanged.preflight, "--mode", "token"]);
+        assert.equal(resumed.nextStep, "upgrade inspect");
+        // After a restore: resume, inspect and apply, then credentials.
+        assert.deepEqual(await refusal(currentCli, ["auth", "status"]), UPGRADE_REQUIRED);
+        const upgrade = await json(currentCli, ["upgrade", "inspect"]); assert.equal(upgrade.state, "upgrade_needed"); assert.equal(upgrade.marker, "pending");
+        assert.equal(upgrade.schemaVersion, CURRENT_SCHEMA);
+        const applied = await json(currentCli, ["upgrade", "apply", "--expect", upgrade.planHash, "--backup-dir", join(root, `${label}-maintenance-backups`)]);
+        assert.equal(applied.state, "current"); assert.deepEqual(marker(), { state: "complete", plan_hash: upgrade.planHash });
       });
       await step(`${label}-restored-data-preserved-and-authority-quarantined`, async () => {
         const after = continuity(); assert.equal(after.schema, CURRENT_SCHEMA); assert.deepEqual(after.principal, before.principal);
@@ -424,7 +560,8 @@ try {
         await json(currentCli, ["identity", "grant-knowledge", "--principal-id", oldAgent.id, "--project-id", knowledge.id, "--permissions", "knowledge:read,knowledge:write"], renewedEnv);
         const renewedAgent = await json(currentCli, ["identity", "issue-agent-token", "--principal-id", oldAgent.id, "--label", "after protected restore"], renewedEnv);
         await start();
-        for (const token of [installation.token, oldOwner.token, oldAgentCredential.token, revokedBefore.token, revokedAfter.token, credential.token]) {
+        for (const token of new Set([installation.token, oldOwner.token, oldAgentCredential.token, revokedBefore.token, revokedAfter.token, credential.token,
+          currentOwnerEnv.WORKTREE_CONTROL_OWNER_TOKEN, currentAgentCredential.token])) {
           for (const url of [endpoint + "/api/dashboard", mcpURL]) {
             const denied = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
             await denied.arrayBuffer(); assert.equal(denied.status, 401, "Restoring old data must never revive any prior authority.");
@@ -444,7 +581,12 @@ try {
     await mkdir(directoryArgs[1], { mode: 0o700 }); await mkdir(directoryArgs[3], { mode: 0o700 });
     try { await restoreAndResume("empty-installation"); } finally { directoryArgs = originalArgs; }
   }
-  const snapshot = { baseline, oldSchema: before.schema, currentSchema: CURRENT_SCHEMA, communityWithoutProvider: ["token", "open"], ownerContinuity: true, grantsBeforeCutoverPreserved: true, oldCredentialsNotWidened: true, restorationQuarantinesAuthority: true, publicBackupRestore: oldBackup ? ["existing-installation", "empty-installation"] : [] };
+  // Reset evidence replaces the former "grants preserved" claim: an upgrade revokes every old grant and credential.
+  const authority = fresh ? { upgrade: "none: fresh installation at schema 52 with a complete marker", seededGrantsAndTokensKeepWorking: true }
+    : { upgrade: { planHash, ...resetEvidence }, preUpgradeCredentialsRejected: true, newCredentialDeniedWithoutGrant: true, explicitGrantRestoresAccess: true, installationTokenKept: true };
+  const snapshot = { baseline, oldSchema: before.schema, currentSchema: CURRENT_SCHEMA, communityWithoutProvider: ["token", "open"], ownerContinuity: true, authority,
+    oldCredentialsNotWidened: true, restorationQuarantinesAuthority: true, publicBackupRestore: oldBackup ? ["existing-installation", "empty-installation"] : [],
+    durationMs: steps.reduce((sum, entry) => sum + (entry.ms ?? 0), 0) };
   report = { result: "passed", steps, source: (await bounded("git", ["rev-parse", "HEAD"], { cwd: repository })).stdout.trim(),
     community: { path: tarball, sha256: communitySha256 }, provider: artifact,
     baseline: { kind: baseline, artifact: baselineArtifact, cliSha256: oldCliSha256 }, evidence: snapshot };

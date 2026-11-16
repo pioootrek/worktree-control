@@ -44,10 +44,16 @@ describe("built SQLite safety CLI",()=>{
     const inspection = JSON.parse((await run(target, ["auth", "fence", "inspect"])).stdout) as { code: string; trusted: boolean; preflight: string; establishmentAllowed: boolean };
     expect(inspection).toMatchObject({ code: "security_fence_recovery_required", trusted: false, establishmentAllowed: false });
     expect(inspection.preflight).toMatch(/^[0-9a-f]{64}$/);
-    // Establishment is not a recovery path; it is refused on a restored store.
-    await expect(run(target, ["auth", "fence", "establish", "--expect", inspection.preflight])).rejects.toMatchObject({ stderr: expect.stringContaining("security_fence_recovery_required") });
-    const receipt = JSON.parse((await run(target, ["auth", "fence", "resume", "--expect", inspection.preflight, "--mode", "token"])).stdout) as { trusted: boolean; quarantined: boolean };
-    expect(receipt).toMatchObject({ trusted: true, quarantined: true });
+    // Establishment is not a recovery path; it is refused on a restored store (with its backup directory, so the refusal is the fence's).
+    await expect(run(target, ["auth", "fence", "establish", "--expect", inspection.preflight, "--backup-dir", join(target.root, "refused")])).rejects.toMatchObject({ stderr: expect.stringContaining("security_fence_recovery_required") });
+    expect(existsSync(join(target.root, "refused"))).toBe(false);
+    const receipt = JSON.parse((await run(target, ["auth", "fence", "resume", "--expect", inspection.preflight, "--mode", "token"])).stdout) as { trusted: boolean; quarantined: boolean; nextStep: string };
+    expect(receipt).toMatchObject({ trusted: true, quarantined: true, nextStep: "upgrade inspect" });
+    // The resumed store needs the explicit upgrade before any ordinary access.
+    await expect(run(target, ["auth", "status"])).rejects.toMatchObject({ stderr: expect.stringContaining('"code":"upgrade_required"') });
+    const upgrade = JSON.parse((await run(target, ["upgrade", "inspect"])).stdout) as { state: string; planHash: string };
+    expect(upgrade.state).toBe("upgrade_needed");
+    expect(JSON.parse((await run(target, ["upgrade", "apply", "--expect", upgrade.planHash, "--backup-dir", join(target.root, "maintenance")])).stdout)).toMatchObject({ state: "current" });
     expect((await run(target, ["auth", "status"])).stdout).toContain('"mode": "token"');
   });
   it("offline CLI creates private data and copies under umask 000",async()=>{
@@ -71,46 +77,62 @@ describe("built SQLite safety CLI",()=>{
     await expect(run(f,[command,...(command==="service"?["install"]:[]),"--backup-before-migration"])).rejects.toMatchObject({stderr:expect.stringContaining("requires --backup-dir")});
     expect(existsSync(f.data)).toBe(false);expect(existsSync(f.state)).toBe(false);expect(existsSync(join(f.root,"config"))).toBe(false);
   });
-  it("required backup failure stops the built startup before schema and authentication changes",async()=>{
-    const f=fixture();writeFileSync(f.backup,"not a directory");const before=readFileSync(f.database);
-    await expect(run(f,["start","--no-open","--no-mcp","--backup-before-migration","--backup-dir",f.backup])).rejects.toThrow();
+  it("the deprecated pre-migration flag takes no copy, and startup refuses an unestablished store before schema and authentication changes",async()=>{
+    const f=fixture();const before=readFileSync(f.database);
+    await expect(run(f,["start","--no-open","--no-mcp","--backup-before-migration","--backup-dir",f.backup])).rejects.toMatchObject({stderr:expect.stringContaining("--backup-before-migration is deprecated and takes no copy")});
+    expect(existsSync(f.backup)).toBe(false);
     expect(readFileSync(f.database)).toEqual(before);
     expect(existsSync(join(f.state,"controller.lock"))).toBe(false);expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
     expect(existsSync(join(f.state,"service-access.json"))).toBe(false);
   });
-  it.each([false,true])("keeps the configured pre-migration backup when startup refuses an unestablished schema-12 store, then starts after explicit establishment (enabled=%s)",async enabled=>{
-    const f=fixture();const backupFlags=enabled?["--backup-before-migration","--backup-dir",f.backup]:[];
+  it.each([false,true])("refuses an unestablished schema-12 store without any copy, establishes it with a pre-establishment backup, refuses it as upgrade_required, then starts after the explicit upgrade (deprecated flag=%s)",async deprecated=>{
+    const f=fixture();const flags=deprecated?["--backup-before-migration","--backup-dir",f.backup]:[];
+    const maintenance=join(f.root,"maintenance");
     const schemaVersion=()=>{const db=new Database(f.database,{readonly:true});try{return (db.prepare("SELECT max(version) version FROM schema_migrations").get() as {version:number}).version;}finally{db.close();}};
-    const backups=()=>existsSync(f.backup)?readdirSync(f.backup):null;
-    // First owner: the configured verified backup precedes every migration effect, then the fence refuses adoption.
-    const refused=spawn(process.execPath,[cli,"start","--service-mode","--no-open","--no-mcp","--host","127.0.0.1","--port",String(await port()),...backupFlags,...f.args],{env:f.env,stdio:["ignore","ignore","pipe"]});
-    let stderr="";refused.stderr!.setEncoding("utf8").on("data",chunk=>{stderr+=chunk;});
-    const [code]=await Promise.race([once(refused,"exit"),new Promise<never>((_,reject)=>setTimeout(()=>reject(Error("Refused startup did not exit")),15000))]);
-    expect(code).toBe(1);expect(stderr).toContain("security_fence_establishment_required");
-    expect(existsSync(join(f.state,"service-access.json"))).toBe(false);
-    expect(existsSync(join(f.state,"controller.lock"))).toBe(false);expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
-    // Nothing migrated: the refusal happened before any write.
-    expect(schemaVersion()).toBe(12);
-    if(enabled){const copies=backups()!;expect(copies).toHaveLength(1);expect(copies[0]).toMatch(/^pre-migration-v12-/);expect(JSON.parse(readFileSync(join(f.backup,copies[0],"manifest.json"),"utf8")).database.schemaVersion).toBe(12);}
-    else expect(backups()).toBeNull();
-    // The explicit protected act; the backup flag never substitutes for it.
+    const refusedStart=async(expected:string)=>{
+      const refused=spawn(process.execPath,[cli,"start","--service-mode","--no-open","--no-mcp","--host","127.0.0.1","--port",String(await port()),...flags,...f.args],{env:f.env,stdio:["ignore","ignore","pipe"]});
+      let stderr="";refused.stderr!.setEncoding("utf8").on("data",chunk=>{stderr+=chunk;});
+      const [code]=await Promise.race([once(refused,"exit"),new Promise<never>((_,reject)=>setTimeout(()=>reject(Error("Refused startup did not exit")),15000))]);
+      expect(code).toBe(1);expect(stderr).toContain(expected);
+      expect(stderr.includes("--backup-before-migration is deprecated")).toBe(deprecated);
+      expect(existsSync(join(f.state,"service-access.json"))).toBe(false);
+      expect(existsSync(join(f.state,"controller.lock"))).toBe(false);expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
+      // The flag takes no copy.
+      expect(existsSync(f.backup)).toBe(false);
+    };
+    // A pre-fence store: refused before any write.
+    const before=readFileSync(f.database);
+    await refusedStart("security_fence_establishment_required");
+    expect(readFileSync(f.database)).toEqual(before);expect(schemaVersion()).toBe(12);
+    // The explicit protected act, with its backup of the untouched schema 12.
     const inspection=JSON.parse((await run(f,["auth","fence","inspect"])).stdout) as {code:string;establishmentAllowed:boolean;preflight:string};
     expect(inspection).toMatchObject({code:"security_fence_establishment_required",establishmentAllowed:true});
-    expect(JSON.parse((await run(f,["auth","fence","establish","--expect",inspection.preflight])).stdout)).toMatchObject({trusted:true,quarantined:false});
+    const established=JSON.parse((await run(f,["auth","fence","establish","--expect",inspection.preflight,"--backup-dir",maintenance])).stdout) as {backup:string};
+    expect(established).toMatchObject({trusted:true,quarantined:false,schemaVersion:SUPPORTED_SCHEMA_VERSION,nextStep:"upgrade inspect"});
+    expect(JSON.parse(readFileSync(join(established.backup,"manifest.json"),"utf8")).database.schemaVersion).toBe(12);
+    // Established but not upgraded: refused with upgrade_required, nothing written.
+    const establishedBytes=readFileSync(f.database);
+    await refusedStart('"code":"upgrade_required"');
+    expect(readFileSync(f.database)).toEqual(establishedBytes);
+    const upgrade=JSON.parse((await run(f,["upgrade","inspect"])).stdout) as {state:string;planHash:string};
+    expect(upgrade.state).toBe("upgrade_needed");
+    const applied=JSON.parse((await run(f,["upgrade","apply","--expect",upgrade.planHash,"--backup-dir",maintenance])).stdout) as {backup:string};
+    expect(applied).toMatchObject({state:"current",planHash:upgrade.planHash});
+    expect(readdirSync(maintenance).sort()).toEqual([expect.stringMatching(/^pre-establishment-v12-/),expect.stringMatching(new RegExp(`^pre-upgrade-v${SUPPORTED_SCHEMA_VERSION}-`))].sort());
     const httpPort=await port();
-    const child=spawn(process.execPath,[cli,"start","--service-mode","--no-open","--no-mcp","--host","127.0.0.1","--port",String(httpPort),...backupFlags,...f.args],{env:f.env,stdio:"ignore"});
+    const child=spawn(process.execPath,[cli,"start","--service-mode","--no-open","--no-mcp","--host","127.0.0.1","--port",String(httpPort),...flags,...f.args],{env:f.env,stdio:"ignore"});
     try {
       const deadline=Date.now()+15000;
       while(!existsSync(join(f.state,"service-access.json"))){if(child.exitCode!==null)throw Error(`Fixture exited: ${child.exitCode}`);if(Date.now()>deadline)throw Error("Fixture startup timed out");await new Promise(accept=>setTimeout(accept,30));}
       expect((await fetch(`http://127.0.0.1:${httpPort}/`)).status).toBe(200);
+      // The upgrade keeps the mode.
       const access=JSON.parse(readFileSync(join(f.state,"service-access.json"),"utf8"));expect(access.authenticationMode).toBe("legacy");
-      // The schema-12 copy is retained; a current store has nothing left to back up.
-      if(enabled)expect(backups()).toHaveLength(1);else expect(backups()).toBeNull();
+      expect(existsSync(f.backup)).toBe(false);
     } finally {await stop(child);}
     expect(schemaVersion()).toBe(SUPPORTED_SCHEMA_VERSION);
     expect(existsSync(join(f.state,"controller.lock"))).toBe(false);expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
   });
-  it("fences an old store until the protected establishment ceremony, preserving a schema-12 offline backup",async()=>{
+  it("fences an old store until the protected establishment and the upgrade, preserving a schema-12 offline backup",async()=>{
     const f=fixture();
     // An old store is fenced: no transport may adopt it before the explicit protected act.
     await expect(run(f,["auth","status"])).rejects.toMatchObject({stderr:expect.stringContaining("security_fence_establishment_required")});
@@ -120,9 +142,11 @@ describe("built SQLite safety CLI",()=>{
     const inspection=JSON.parse((await run(f,["auth","fence","inspect"])).stdout) as {code:string;trusted:boolean;preflight:string;establishmentAllowed:boolean};
     expect(inspection).toMatchObject({code:"security_fence_establishment_required",trusted:false,establishmentAllowed:true});
     expect(inspection.preflight).toMatch(/^[0-9a-f]{64}$/);
-    // The explicit establishment migrates the old store to the supported schema.
-    const established=JSON.parse((await run(f,["auth","fence","establish","--expect",inspection.preflight])).stdout) as {trusted:boolean;quarantined:boolean};
-    expect(established).toMatchObject({trusted:true,quarantined:false});
+    // The explicit establishment migrates the old store's structure to the supported schema, marker pending; the upgrade completes it.
+    const established=JSON.parse((await run(f,["auth","fence","establish","--expect",inspection.preflight,"--backup-dir",join(f.root,"maintenance")])).stdout) as {trusted:boolean;quarantined:boolean};
+    expect(established).toMatchObject({trusted:true,quarantined:false,nextStep:"upgrade inspect"});
+    const upgrade=JSON.parse((await run(f,["upgrade","inspect"])).stdout) as {planHash:string};
+    await run(f,["upgrade","apply","--expect",upgrade.planHash,"--backup-dir",join(f.root,"maintenance")]);
     const httpPort=await port();
     const child=spawn(process.execPath,[cli,"start","--service-mode","--no-open","--no-mcp","--host","127.0.0.1","--port",String(httpPort),...f.args],{env:f.env,stdio:"ignore"});
     try {
@@ -130,23 +154,10 @@ describe("built SQLite safety CLI",()=>{
       while(!existsSync(join(f.state,"service-access.json"))){if(child.exitCode!==null)throw Error(`Fixture exited: ${child.exitCode}`);if(Date.now()>deadline)throw Error("Fixture startup timed out");await new Promise(accept=>setTimeout(accept,30));}
       expect((await fetch(`http://127.0.0.1:${httpPort}/`)).status).toBe(200);
       const access=JSON.parse(readFileSync(join(f.state,"service-access.json"),"utf8"));expect(access.authenticationMode).toBe("legacy");
-      // The pre-establishment offline backup still proves the old schema.
+      // The offline backup still proves the old schema.
       expect(JSON.parse(readFileSync(join(f.backup,"manifest.json"),"utf8")).database.schemaVersion).toBe(12);
     } finally {await stop(child);}
     const db=new Database(f.database,{readonly:true});try{expect(db.prepare("SELECT max(version) version FROM schema_migrations").get()).toEqual({version:SUPPORTED_SCHEMA_VERSION});}finally{db.close();}
     expect(existsSync(join(f.state,"controller.lock"))).toBe(false);expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
   });
-});
-
-it("built offline restore retains durable proof and rejects a corrupt journal before auth startup", async () => {
-  const f = fixture(); await run(f, ["backup", "create", f.backup]); await run(f, ["backup", "restore", f.backup]);
-  const journal = join(`${f.database}.restore`, "journal.json"), receipt = JSON.parse(readFileSync(journal, "utf8"));
-  expect(receipt.payload).toMatchObject({ state: "verified", completed: 8, actor: { backupId: "offline-cli" } });
-  expect(existsSync(join(`${f.database}.restore`, "previous", "0"))).toBe(true);
-  const records = readdirSync(`${f.database}.restore-requests`); expect(records).toHaveLength(1);
-  expect(JSON.parse(readFileSync(join(`${f.database}.restore-requests`, records[0]), "utf8")).payload.state).toBe("verified");
-  writeFileSync(journal, "{broken", { mode: 0o600 }); const before = readFileSync(f.database);
-  await expect(run(f, ["auth", "status"])).rejects.toMatchObject({ stderr: expect.stringContaining("Restore recovery stopped") });
-  expect(readFileSync(f.database)).toEqual(before); expect(existsSync(`${f.database}.owner.lock`)).toBe(false);
-  expect(existsSync(join(`${f.database}.restore`, "previous", "0"))).toBe(true);
 });

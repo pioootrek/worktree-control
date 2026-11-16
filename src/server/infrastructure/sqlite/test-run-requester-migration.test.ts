@@ -49,7 +49,7 @@ describe("test requester migration 44", () => {
       const registry = db.prepare("SELECT * FROM schema_migrations").all();
       expect(() => initializeSchema(db, false, () => { throw new Error("rollback"); })).toThrow("rollback");
       expect(inspectSchema(db).version).toBe(43);
-      initializeSchema(db, false, inspectSchema);
+      initializeSchema(db, false, inspectSchema, { target: 49 });
       expect(inspectSchema(db).version).toBe(49);
       expect(db.prepare("SELECT * FROM test_runs").all()).toEqual(run.map(row => ({ ...(row as object), provider_bound: 0 })));
       expect(db.prepare("SELECT * FROM runtime_credential_scopes").all()).toEqual(scopes);

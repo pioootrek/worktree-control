@@ -12,7 +12,8 @@ import { createControllerBackup, restoreControllerBackup } from "../../controlle
 import { maintainSecurityFence } from "../../bootstrap/security-maintenance";
 import { AuthenticationService } from "../../modules/authentication";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
-import { openStoreAt49 } from "./fixtures/released-schema";
+import { openStoreAt49, RELEASED_SCHEMA_VERSION } from "./fixtures/released-schema";
+import { SqliteStateStore } from "./sqlite-state-store";
 import { OwnedSqliteDatabase, ReopenedDatabaseChangedError } from "./owned-database";
 import { getOwnedRestoreStatus, restoreRoot } from "./restore-recovery";
 import { SecurityFence, SecurityFenceError, securityFenceBinding, securityFenceRoot, securityRecoveryBoundary } from "./security-fence";
@@ -132,6 +133,13 @@ const backups = (paths: AppPaths, calls: string[] = []): UpgradeBackup => async 
   return stepBackup(source, destination, context.schemaVersion);
 };
 const apply = (paths: AppPaths, expect: string, backup: UpgradeBackup = backups(paths)) => applySqliteUpgrade(paths, { expect }, backup, TARGET);
+/**
+ * What an ordinary opening (the store, as the controller start opens it, at the
+ * supported 52) answers at a point of the upgrade at the test target 50: a
+ * fence refusal while the witness is pending, otherwise `upgrade_required`
+ * (a database at 50 is never current at 52).
+ */
+const ordinary = (paths: AppPaths) => { try { new SqliteStateStore(paths.databasePath).close(); return "opened"; } catch (error) { return (error as { code?: string }).code ?? (error as Error).message; } };
 async function failure(operation: () => Promise<unknown> | unknown) {
   try { await operation(); } catch (error) {
     const { name, code, nextStep, committed, state } = error as { name: string; code: string; nextStep: string; committed: boolean; state?: string };
@@ -191,7 +199,8 @@ async function restored() {
     new AuthenticationService(store).generateToken("local-cli");
   } finally { store.close(); }
   restoreControllerBackup(backup, paths.databasePath);
-  return { paths, acknowledge: () => maintainSecurityFence(paths, { action: "resume", expect: maintainSecurityFence(paths, { action: "inspect" }).preflight, mode: "token" }) };
+  // Acknowledged at the released 49, the schema of the restored copy: the upgrade's own tests start there.
+  return { paths, acknowledge: () => maintainSecurityFence(paths, { action: "resume", expect: maintainSecurityFence(paths, { action: "inspect" }, RELEASED_SCHEMA_VERSION).preflight, mode: "token" }, RELEASED_SCHEMA_VERSION) };
 }
 
 describe("explicit offline upgrade: state recognition", () => {
@@ -858,6 +867,8 @@ describe("explicit offline upgrade: interrupted apply", () => {
     expect(SecurityFence.beginUpgrade).not.toHaveBeenCalled();
     vi.restoreAllMocks();
     expect(files(paths)).toEqual(before);
+    expect(ordinary(paths)).toBe("upgrade_required");
+    expect(files(paths)).toEqual(before);
     const result = await apply(paths, noted);
     assertUpgraded(paths, result, recovery(paths));
     expect(final(paths)).toEqual(await twin("none"));
@@ -874,9 +885,13 @@ describe("explicit offline upgrade: interrupted apply", () => {
     const fenced = files(paths);
     expect(await failure(() => apply(paths, noted))).toMatchObject({ code: "upgrade_wrong_state", nextStep: "auth fence resume", state: "fenced" });
     expect(files(paths)).toEqual(fenced);
+    // The pending witness sends an ordinary opening to recovery, not to the upgrade.
+    expect(ordinary(paths)).toBe("security_fence_recovery_required");
+    expect(files(paths)).toEqual(fenced);
     expect(inspect(paths)).toMatchObject({ state: "fenced" });
     expect(resume(paths)).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 50 });
     expect(read(paths, marker)).toEqual([{ state: "pending", plan_hash: null }]);
+    expect(ordinary(paths)).toBe("upgrade_required");
     assertUpgraded(paths, await apply(paths, inspect(paths).planHash!), recovery(paths));
     expect(final(paths)).toEqual(await twin("before"));
   });
@@ -895,8 +910,11 @@ describe("explicit offline upgrade: interrupted apply", () => {
     const fenced = files(paths);
     expect(await failure(() => apply(paths, noted))).toMatchObject({ code: "upgrade_wrong_state", nextStep: "auth fence resume", state: "fenced" });
     expect(files(paths)).toEqual(fenced);
+    expect(ordinary(paths)).toBe("security_fence_recovery_required");
+    expect(files(paths)).toEqual(fenced);
     expect(resume(paths)).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 50 });
     expect(read(paths, marker)).toEqual([{ state: "pending", plan_hash: null }]);
+    expect(ordinary(paths)).toBe("upgrade_required");
     const status = inspect(paths);
     expect(status).toMatchObject({ state: "upgrade_needed", plan: { source: 50, steps: [] } });
     assertUpgraded(paths, await apply(paths, status.planHash!), recovery(paths));
@@ -918,7 +936,9 @@ describe("explicit offline upgrade: interrupted apply", () => {
     if (!committed) expect(read(paths, all)).toEqual(before);
     expect(witness(paths)).toMatchObject({ format: 2, state: "pending", upgrade: { plan: noted } });
     expect(files(paths).plan).toBe(plan);
+    expect(ordinary(paths)).toBe("security_fence_recovery_required");
     expect(resume(paths)).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 50 });
+    expect(ordinary(paths)).toBe("upgrade_required");
     assertUpgraded(paths, await apply(paths, inspect(paths).planHash!), recovery(paths));
   });
 
@@ -930,6 +950,8 @@ describe("explicit offline upgrade: interrupted apply", () => {
     expect(files(paths)).toEqual(before);
     expect(witness(paths)).toMatchObject({ format: 1, state: "confirmed" });
     expect(fs.readdirSync(securityFenceRoot(canonical(paths)))).toEqual(["witness.json"]);
+    expect(ordinary(paths)).toBe("upgrade_required");
+    expect(files(paths)).toEqual(before);
     expect(inspect(paths)).toMatchObject({ state: "upgrade_needed", planHash: noted });
     const result = await apply(paths, noted);
     assertUpgraded(paths, result, recovery(paths));
@@ -945,7 +967,9 @@ describe("explicit offline upgrade: interrupted apply", () => {
     expect(witness(paths)).toMatchObject({ format: 2, state: "pending", upgrade: { plan: noted } });
     expect(files(paths).plan).toBe(plan);
     expect(inspect(paths)).toMatchObject({ state: "fenced", nextStep: "auth fence resume" });
+    expect(ordinary(paths)).toBe("security_fence_recovery_required");
     expect(resume(paths)).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 50 });
+    expect(ordinary(paths)).toBe("upgrade_required");
     assertUpgraded(paths, await apply(paths, inspect(paths).planHash!), recovery(paths));
     expect(final(paths)).toEqual(await twin("before"));
   });

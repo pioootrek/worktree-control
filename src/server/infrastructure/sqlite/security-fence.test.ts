@@ -29,6 +29,8 @@ import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { UPGRADE_MARKER_VERSION } from "./upgrade-marker-migration";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
 import { openStoreAt49, RELEASED_SCHEMA_VERSION } from "./fixtures/released-schema";
+import { upgradeFixture } from "./fixtures/protected-security";
+import { schemaTriggersAt } from "./security-coverage";
 
 vi.mock("node:fs", async original=>({...await original<typeof import("node:fs")>()}));
 vi.mock("./database-validation", async original=>({...await original<typeof import("./database-validation")>()}));
@@ -45,6 +47,15 @@ function fixture(open:(path:string)=>SqliteStateStore=path=>new SqliteStateStore
 const witness=(path:string)=>join(securityFenceRoot(path),"witness.json");
 const inspect=(paths:ReturnType<typeof resolveAppPaths>)=>maintainSecurityFence(paths,{action:"inspect"});
 const resume=(paths:ReturnType<typeof resolveAppPaths>)=>maintainSecurityFence(paths,{action:"resume",expect:inspect(paths).preflight,mode:"token"});
+/**
+ * A resume at the supported schema leaves the upgrade marker pending, so the store refuses the
+ * database as `upgrade_required` until the explicit upgrade: this runs it, then opens the store.
+ */
+async function upgraded(paths:ReturnType<typeof resolveAppPaths>):Promise<SqliteStateStore> {
+  expect(()=>new SqliteStateStore(paths.databasePath)).toThrowError(expect.objectContaining({code:"upgrade_required"}));
+  await upgradeFixture(paths.databasePath);
+  return new SqliteStateStore(paths.databasePath);
+}
 const sql=async(store:SqliteStateStore,source:string)=>{const s=store.authenticationProviderStorage(); await s.borrow(async()=>{const c=s.createProviderConnection();try{c.prepare(source).run([]);}finally{c.close();}});};
 const DEADLINE="2026-12-01T00:00:00.000Z";
 /** Recent enough that summary age retention keeps the summaries recovery writes. */
@@ -146,7 +157,7 @@ function injectResumeFault(stage:string,paths:ReturnType<typeof resolveAppPaths>
   if(stage==="quarantine"){const prepare=Database.prototype.prepare;vi.spyOn(Database.prototype,"prepare").mockImplementation(function(this:Database.Database,source:string){
     if(source.startsWith("INSERT INTO controller_audit_events") && source.includes("'authentication.security_quarantined'"))throw fault();return prepare.call(this,source);} as typeof prepare);}
   if(stage==="validation"){const validate=validation.validateDatabase;vi.spyOn(validation,"validateDatabase").mockImplementation((database,version)=>{
-    validate(database,version);if(version===49 && database.inTransaction)throw fault();});}
+    validate(database,version);if(version===(target??SUPPORTED_SCHEMA_VERSION) && database.inTransaction)throw fault();});}
   if(stage==="post-commit"){const pragma=Database.prototype.pragma;vi.spyOn(Database.prototype,"pragma").mockImplementation(function(this:Database.Database,source,options){
     const result=pragma.call(this,source,options);
     // initializeSchema's finally fails AFTER the one transaction committed the quarantine.
@@ -173,7 +184,7 @@ const upgradeMarker=(db:Database.Database)=>has(db,"upgrade_marker")?db.prepare(
 const effects=(db:Database.Database)=>({...quarantine(db),version:"ignored"});
 
 describe("external security checkpoint",()=>{
-  it.each(["migration-rollback", "migration-return", "durability", "validation", "receipt"] as const)("reports durable establishment changes at %s and keeps recovery fenced",stage=>{
+  it.each(["migration-rollback", "migration-return", "durability", "validation", "receipt"] as const)("reports durable establishment changes at %s and keeps recovery fenced",async stage=>{
     const root=mkdtempSync(join(tmpdir(),"security-establish-fault-"));roots.push(root);
     const paths=resolveAppPaths(join(root,"data"));mkdirSync(paths.dataDirectory,{mode:0o700});
     const db=unmanagedFixtureDatabase(paths.databasePath);
@@ -191,19 +202,19 @@ describe("external security checkpoint",()=>{
     const validate=validation.validateDatabase;
     vi.spyOn(validation,"validateDatabase").mockImplementation((database,version)=>{
       validate(database,version);
-      if(version===49 && ((stage==="migration-rollback" && database.inTransaction) || (stage==="validation" && !database.inTransaction))){injected=true;throw new Error("fixture validation fault");}
+      if(version===SUPPORTED_SCHEMA_VERSION && ((stage==="migration-rollback" && database.inTransaction) || (stage==="validation" && !database.inTransaction))){injected=true;throw new Error("fixture validation fault");}
     });
     const durability=validation.assertDurability;
     vi.spyOn(validation,"assertDurability").mockImplementation(database=>{
       durability(database);
-      if(stage==="durability" && (database.prepare("SELECT max(version) version FROM schema_migrations").get() as {version:number}).version===49){injected=true;throw new Error("fixture durability fault");}
+      if(stage==="durability" && (database.prepare("SELECT max(version) version FROM schema_migrations").get() as {version:number}).version===SUPPORTED_SCHEMA_VERSION){injected=true;throw new Error("fixture durability fault");}
     });
     const pragma=Database.prototype.pragma;
     vi.spyOn(Database.prototype,"pragma").mockImplementation(function(this:Database.Database,source,options){
       const result=pragma.call(this,source,options);
       // initializeSchema's finally can fail AFTER the outer transaction committed.
       if(stage==="migration-return" && source==="foreign_keys = ON" && !this.inTransaction
-        && (this.prepare("SELECT max(version) version FROM schema_migrations").get() as {version:number}).version===49){injected=true;throw new Error("fixture post-commit pragma fault");}
+        && (this.prepare("SELECT max(version) version FROM schema_migrations").get() as {version:number}).version===SUPPORTED_SCHEMA_VERSION){injected=true;throw new Error("fixture post-commit pragma fault");}
       return result;
     });
     if(stage==="receipt")vi.spyOn(SecurityFence,"maintenanceReceipt").mockImplementation(()=>{injected=true;throw new Error("fixture receipt fault");});
@@ -211,7 +222,7 @@ describe("external security checkpoint",()=>{
     expect(injected).toBe(true);vi.restoreAllMocks();
     const after=unmanagedFixtureDatabase(paths.databasePath,{readonly:true});
     try{
-      expect(inspectSchema(after).version).toBe(stage==="migration-rollback"?28:49);
+      expect(inspectSchema(after).version).toBe(stage==="migration-rollback"?28:SUPPORTED_SCHEMA_VERSION);
       expect(after.prepare("SELECT * FROM schema_migrations WHERE version<=28").all()).toEqual(before);
       expect(after.prepare("SELECT status FROM principal_credentials WHERE id='historical-credential'").get()).toEqual({status:"active"});
     }finally{after.close();}
@@ -220,7 +231,7 @@ describe("external security checkpoint",()=>{
     expect(()=>new SqliteStateStore(paths.databasePath)).toThrow(/security_fence_recovery_required/);
     expect(()=>maintainSecurityFence(paths,{action:"establish",expect:inspect(paths).preflight})).toThrow(/security_fence_recovery_required/);
     expect(resume(paths)).toMatchObject({trusted:true,quarantined:true});
-    const recovered=new SqliteStateStore(paths.databasePath);
+    const recovered=await upgraded(paths);
     try{
       expect(recovered.getPrincipal("historical-owner")).toEqual({id:"historical-owner",kind:"owner",status:"active"});
       const raw=unmanagedFixtureDatabase(paths.databasePath,{readonly:true});
@@ -228,7 +239,7 @@ describe("external security checkpoint",()=>{
     }finally{recovered.close();}
   });
 
-  it("makes bounded recovery progress through more than one batch of abandoned publications",()=>{
+  it("makes bounded recovery progress through more than one batch of abandoned publications",async()=>{
     const f=fixture();f.store.close();
     const abandoned=Array.from({length:40},()=>join(securityFenceRoot(f.paths.databasePath),`.journal-${randomUUID()}`));
     for(const path of abandoned)writeFileSync(path,"",{mode:0o600});
@@ -237,7 +248,7 @@ describe("external security checkpoint",()=>{
     expect(abandoned.filter(path=>fs.existsSync(path)).length).toBeLessThan(40);
     expect(resume(f.paths).trusted).toBe(true);
     expect(abandoned.some(path=>fs.existsSync(path))).toBe(false);
-    const reopened=new SqliteStateStore(f.paths.databasePath);
+    const reopened=await upgraded(f.paths);
     try{expect(new AuthenticationService(reopened).verifyInstallationToken(f.token)).toBe(false);}finally{reopened.close();}
   });
   it("refuses an aliased publication remnant without removing its target",()=>{
@@ -281,11 +292,11 @@ describe("external security checkpoint",()=>{
     const after=unmanagedFixtureDatabase(f.paths.databasePath,{readonly:true});try{expect(after.prepare("SELECT * FROM principal_credentials").all()).toEqual(before);}finally{after.close();}
     expect(()=>new SqliteStateStore(f.paths.databasePath)).toThrow(/security_fence/);expect(resume(f.paths).trusted).toBe(true);
   });
-  it("resumes a schema40 database with every step and the whole quarantine in one transaction",()=>{
+  it("resumes a schema40 database with every step and the whole quarantine in one transaction",async()=>{
     const paths=genuine40(),twin=genuine40();
     expect(resume(twin)).toMatchObject({trusted:true,quarantined:true});
     const expected=read(twin,quarantine);
-    expect(expected).toMatchObject({version:49,credentials:[{id:"owner-credential",status:"revoked",revoked:1}],principals:expect.arrayContaining([{id:"owner",kind:"owner",status:"active"}]),
+    expect(expected).toMatchObject({version:SUPPORTED_SCHEMA_VERSION,credentials:[{id:"owner-credential",status:"revoked",revoked:1}],principals:expect.arrayContaining([{id:"owner",kind:"owner",status:"active"}]),
       accounts:[{password:null,accessToken:null,refreshToken:null,idToken:null}],users:[{id:"subject",twoFactorEnabled:0}],removed:[0,0,0,0,0,0,0,0],
       policies:[{subject:"subject",totp_selected:0,passkey_selected:0}],leases:[{id:"lease",released:1}],authentication:{mode:"token",token:null},
       runs:RECOVERED_RUNS,summaries:RECOVERED_SUMMARIES,requesters:[],humanRequesters:[]});
@@ -305,10 +316,10 @@ describe("external security checkpoint",()=>{
     expect(()=>new SqliteStateStore(paths.databasePath)).toThrow(/security_fence_recovery_required/);
     expect(resume(paths)).toMatchObject({trusted:true,quarantined:true});
     expect(read(paths,quarantine)).toEqual(expected);expect(read(paths,counters)).toEqual(expectedCounters);
-    new SqliteStateStore(paths.databasePath).close();
+    (await upgraded(paths)).close();
   });
   it.each([["quarantine",false,false],["quarantine",false,true],["validation",false,false],["validation",false,true],["post-commit",true,false],["post-commit",true,true],["handoff",true,false],["confirmed-receipt",true,false]] as const)
-  ("reports a resume fault at %s on a current-schema database as committed=%s (malformed older event: %s) and recovers to the same quarantine",(stage,committed,malformed)=>{
+  ("reports a resume fault at %s on a current-schema database as committed=%s (malformed older event: %s) and recovers to the same quarantine",async(stage,committed,malformed)=>{
     const paths=current49(malformed),twin=current49(malformed);resume(twin);
     const expected=read(twin,quarantine),initial=read(paths,counters),before=read(paths,quarantine);
     expect(expected).toMatchObject({removed:[0,0,0,0,0,0,0,0],runs:RECOVERED_RUNS,summaries:RECOVERED_SUMMARIES,
@@ -336,7 +347,7 @@ describe("external security checkpoint",()=>{
     expect(read(paths,quarantine)).toEqual(expected);
     const runs=committed?2:1;
     expect(read(paths,counters)).toEqual({generation:initial.generation+runs,policy:initial.policy+runs,events:initial.events+runs});
-    const reopened=new SqliteStateStore(paths.databasePath);try{expect(reopened.getAuthenticationPolicy().mode).toBe("token");}finally{reopened.close();}
+    const reopened=await upgraded(paths);try{expect(reopened.getAuthenticationPolicy().mode).toBe("token");}finally{reopened.close();}
   });
   it("quarantines in the schema transaction exactly as the same statements do under foreign-key enforcement",()=>{
     const paths=current49(),single=`${paths.databasePath}.single`,enforced=`${paths.databasePath}.enforced`;
@@ -458,7 +469,7 @@ describe("external security checkpoint",()=>{
     expect(s.available()).toBe(true);f.store.close();copyFileSync(snapshot,f.paths.databasePath);
     expect(()=>new SqliteStateStore(f.paths.databasePath)).toThrow(/security_fence_recovery_required/);
     expect(resume(f.paths)).toMatchObject({trusted:true,quarantined:true});
-    const restored=new SqliteStateStore(f.paths.databasePath);
+    const restored=await upgraded(f.paths);
     try {
       expect(new AuthenticationService(restored).verifyInstallationToken(f.token)).toBe(false);
       expect(()=>new IdentityService(restored).authenticateBearer(owner.token)).toThrow();
@@ -502,7 +513,7 @@ describe("external security checkpoint",()=>{
     const status=inspect(paths);expect(status.establishmentAllowed).toBe(true);
     expect(()=>maintainSecurityFence(paths,{action:"establish",expect:"0".repeat(64)})).toThrow(/preflight_changed/);
     expect(maintainSecurityFence(paths,{action:"establish",expect:status.preflight})).toMatchObject({trusted:true,quarantined:false});
-    const upgraded=unmanagedFixtureDatabase(paths.databasePath,{readonly:true});try{expect(inspectSchema(upgraded).version).toBe(49);expect(upgraded.prepare("SELECT * FROM schema_migrations WHERE version<=40").all()).toEqual(before);}finally{upgraded.close();}
+    const upgraded=unmanagedFixtureDatabase(paths.databasePath,{readonly:true});try{expect(inspectSchema(upgraded).version).toBe(SUPPORTED_SCHEMA_VERSION);expect(upgraded.prepare("SELECT * FROM schema_migrations WHERE version<=40").all()).toEqual(before);}finally{upgraded.close();}
     // A schema40 raw copy cannot bypass the established external marker.
     writeFileSync(paths.databasePath,bytes);expect(()=>new SqliteStateStore(paths.databasePath)).toThrow(/security_fence_recovery_required/);
   });
@@ -513,12 +524,12 @@ describe("external security checkpoint",()=>{
       restoreControllerBackup(backup,f.paths.databasePath);
       expect(()=>new SqliteStateStore(f.paths.databasePath)).toThrow(/security_fence/);
       expect(resume(f.paths).trusted).toBe(true);
-      const reopened=new SqliteStateStore(f.paths.databasePath);try{expect(reopened.databaseProvenance).toBe("restored");await expect(reopened.recoverIssuedSessions({sessionRows:64,sessionReconcileBatch:8})).resolves.toBeUndefined();expect(new AuthenticationService(reopened).verifyInstallationToken(f.token)).toBe(false);}finally{reopened.close();}
+      const reopened=await upgraded(f.paths);try{expect(reopened.databaseProvenance).toBe("restored");await expect(reopened.recoverIssuedSessions({sessionRows:64,sessionReconcileBatch:8})).resolves.toBeUndefined();expect(new AuthenticationService(reopened).verifyInstallationToken(f.token)).toBe(false);}finally{reopened.close();}
     }
   });
   it("has exact bounded trigger coverage validated as schema, including malformed/premature markers",()=>{
     const f=fixture();f.store.close();const db=unmanagedFixtureDatabase(f.paths.databasePath);
-    expect(db.prepare("SELECT count(*) n FROM sqlite_master WHERE type='trigger'").get()).toEqual({n:securityTriggers.length});
+    expect(db.prepare("SELECT count(*) n FROM sqlite_master WHERE type='trigger'").get()).toEqual({n:schemaTriggersAt(SUPPORTED_SCHEMA_VERSION).length});
     db.exec(`DROP TRIGGER ${securityTriggers[0].name}`);db.close();expect(()=>new SqliteStateStore(f.paths.databasePath)).toThrow(/schema/);
   });
   it.each(["transaction","committed","confirmed","resume-pending","resume-transaction","resume-committed","resume-confirmed"])("survives a real SIGKILL at %s with correct trust outcome",async edge=>{
@@ -528,7 +539,7 @@ describe("external security checkpoint",()=>{
     let output="";child.stdout.on("data",b=>{output+=b;});let err="";child.stderr.on("data",b=>{err+=b;});
     const result=await new Promise<{code:number|null;signal:NodeJS.Signals|null}>((resolve,reject)=>{child.on("error",reject);child.on("exit",(code,signal)=>resolve({code,signal}));});
     expect(err).toBe("");expect(output).toContain("crash-boundary");expect(result.signal).toBe("SIGKILL");
-    if(edge==="resume-confirmed") {const current=new SqliteStateStore(f.paths.databasePath);try{expect(new AuthenticationService(current).verifyInstallationToken(f.token)).toBe(false);}finally{current.close();}expect(resume(f.paths)).toMatchObject({trusted:true,changed:false});}
+    if(edge==="resume-confirmed") {expect(resume(f.paths)).toMatchObject({trusted:true,changed:false});const current=await upgraded(f.paths);try{expect(new AuthenticationService(current).verifyInstallationToken(f.token)).toBe(false);}finally{current.close();}expect(resume(f.paths)).toMatchObject({trusted:true,changed:false});}
     else if(edge==="confirmed") {const current=new SqliteStateStore(f.paths.databasePath);try{expect(current.getPrincipal("child-revoked")).toEqual({id:"child-revoked",kind:"agent",status:"revoked"});expect(new AuthenticationService(current).verifyInstallationToken(f.token)).toBe(true);}finally{current.close();}}
     else {expect(()=>new SqliteStateStore(f.paths.databasePath)).toThrow(/security_fence/);expect(resume(f.paths).trusted).toBe(true);}
   },30_000);
@@ -582,8 +593,8 @@ describe("the upgrade marker under the security fence (target 50)",()=>{
     read(paths,db=>{expect(db.prepare("SELECT max(version) FROM schema_migrations").pluck().get()).toBe(49);expect(upgradeMarker(db)).toBe("absent");});
     expect(resume50(paths)).toMatchObject({trusted:true,quarantined:true});
     read(paths,db=>{expect(upgradeMarker(db)).toEqual(["pending"]);expect(effects(db)).toEqual(expected);});
-    // The default ceiling refuses the result, as any newer schema.
-    expect(()=>new SqliteStateStore(paths.databasePath)).toThrow(/^Unsupported or unrecognized database schema/);
+    // The ordinary store at the supported 52 sends it to the upgrade.
+    expect(()=>new SqliteStateStore(paths.databasePath)).toThrowError(expect.objectContaining({code:"upgrade_required"}));
   });
 
   it.each([["from schema 49",false],["already at step 50",true]] as const)("reports a post-commit resume failure %s as committed with the marker pending",(_name,migrated)=>{
@@ -782,7 +793,7 @@ describe("establishment with a pre-establishment backup (default target)",()=>{
     const start=new Date().toISOString();
     for(const value of [...past.migrations.map(row=>row.applied_at),...Object.values(past.columns).flat()])expect(value<start&&ISO.test(value),value).toBe(true);
     const {value:result,window}=await timed(()=>establish(paths,controllerBackup(paths)));
-    expect(result).toMatchObject({trusted:true,changed:true,quarantined:false,schemaVersion:49,backup:expect.any(String)});
+    expect(result).toMatchObject({trusted:true,changed:true,quarantined:false,schemaVersion:SUPPORTED_SCHEMA_VERSION,backup:expect.any(String)});
     // The backup holds the pre-establishment schema and content, and validates against its own manifest.
     const manifest=parseManifest(readBoundedJson(join(result.backup!,"manifest.json"),BACKUP_LIMITS.manifestBytes,true));
     expect(manifest.database.schemaVersion).toBe(version);
