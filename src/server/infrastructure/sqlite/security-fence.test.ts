@@ -25,7 +25,8 @@ import { takeBoundBackup, type MaintenanceBackup } from "./backup-binding";
 import { OwnedSqliteDatabase } from "./owned-database";
 import { BACKUP_LIMITS, hashFile, parseManifest, readBoundedJson, validateBackup } from "./backup-validation";
 import { initializeSchema } from "./migrations";
-import { PROVISIONAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
+import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
+import { UPGRADE_MARKER_VERSION } from "./upgrade-marker-migration";
 import { enableProvisionalSchema, provisionalSchemaEnabled } from "./provisional-schema-gate";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
 
@@ -156,7 +157,8 @@ function injectResumeFault(stage:string,paths:ReturnType<typeof resolveAppPaths>
 }
 /** The handoff of bootstrap maintenance, for direct calls with a schema target. */
 const HANDOFF={preflight:(database:string)=>{preflightSecurityRecoveryHandoff(database);},acknowledge:acknowledgeRecoveredBackupHandoff};
-const TARGET=PROVISIONAL_SCHEMA_VERSION;
+// Step 50 exactly: these tests assert the marker step's own states. Step 51 has its own tests.
+const TARGET=UPGRADE_MARKER_VERSION;
 const inspect50=(paths:ReturnType<typeof resolveAppPaths>)=>maintainSqliteSecurityFence(paths,{action:"inspect"},HANDOFF,TARGET);
 const resume50=(paths:ReturnType<typeof resolveAppPaths>)=>maintainSqliteSecurityFence(paths,{action:"resume",expect:inspect50(paths).preflight,mode:"token"},HANDOFF,TARGET);
 const upgradeMarker=(db:Database.Database)=>has(db,"upgrade_marker")?db.prepare("SELECT state FROM upgrade_marker").pluck().all():"absent";

@@ -20,10 +20,10 @@ import { establishSqliteSecurityFence, maintainSqliteSecurityFence } from "./sec
 import { configureDurability, validateDatabase } from "./database-validation";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
-import { PROVISIONAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
+import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { enableProvisionalSchema } from "./provisional-schema-gate";
 import { hashFile, parseManifest, readBoundedJson, validateBackup, BACKUP_LIMITS } from "./backup-validation";
-import { upgradeMarkerChecksum, upgradeMarkerMigration } from "./upgrade-marker-migration";
+import { UPGRADE_MARKER_VERSION, upgradeMarkerChecksum, upgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup, type UpgradeBackupSource } from "./upgrade-maintenance";
 import { takeBoundBackup } from "./backup-binding";
 import {
@@ -34,7 +34,9 @@ import {
 
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>() }));
 
-const TARGET = PROVISIONAL_SCHEMA_VERSION;
+// Step 50 exactly: plans, steps and marker states asserted here are the marker step's.
+// The upgrade to step 51 is covered in mapping-structure-migration.test.ts.
+const TARGET = UPGRADE_MARKER_VERSION;
 const roots: string[] = [];
 let restoreGate: () => void;
 beforeEach(() => { restoreGate = enableProvisionalSchema(); });
@@ -325,7 +327,9 @@ describe("explicit offline upgrade: plan and act mechanism", () => {
     expect(() => upgradePlanHash({ ...plan(), acts: new Array(1) as UpgradePlan["acts"] })).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
     expect(structuralSteps(50, 50)).toEqual([]);
     expect(() => structuralSteps(48, 50)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
-    expect(() => structuralSteps(49, 51)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
+    // Step 51 is a known structural step since C2a; a step above the highest known one is not.
+    expect(structuralSteps(49, 51).map(step => step.version)).toEqual([50, 51]);
+    expect(() => structuralSteps(49, 52)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
   });
   it("lets a registered kind propose, execute and describe acts in order, every act covered by the hash", () => {
     const executed: string[] = [];

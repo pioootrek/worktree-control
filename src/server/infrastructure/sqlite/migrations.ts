@@ -1,5 +1,6 @@
 import { applySecurityFenceMigration } from "./security-fence-migration";
 import { applyUpgradeMarkerMigration } from "./upgrade-marker-migration";
+import { applyProjectMappingMigration } from "./mapping-structure-migration";
 import { applyHumanConfigurationMigration } from "./human-configuration-migration";
 import { applyHumanTestRunMigration } from "./human-test-run-migration";
 import { applyHumanRuntimeMigration } from "./human-runtime-migration";
@@ -418,6 +419,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       applyHumanConfigurationMigration(database);
       applySecurityFenceMigration(database);
       if (target >= 50) applyUpgradeMarkerMigration(database, empty);
+      if (target >= 51) applyProjectMappingMigration(database);
       if (options.acts) {
         // Acts begin from a consistent database, so a violation found by the
         // check in validateDatabase below is the acts' own. Nothing repairs it.

@@ -7,6 +7,7 @@ import { parseStrictProviderJson } from "../../modules/authentication";
 import { durableJson, privateDirectory, readPrivateBoundedFile, syncDirectory, validateSensitivePath } from "../../private-storage";
 import { schemaTarget, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { UPGRADE_MARKER_VERSION, upgradeMarkerChecksum, upgradeMarkerMigration } from "./upgrade-marker-migration";
+import { PROJECT_MAPPING_VERSION, projectMappingChecksum, projectMappingMigration } from "./mapping-structure-migration";
 
 /**
  * The plan of the explicit offline upgrade (integration branch, provisional).
@@ -96,6 +97,7 @@ export interface UpgradeStep { version: number; name: string; checksum: string }
 /** Steps the upgrade may run, above the released schema 49 the fence requires. */
 const STRUCTURAL_STEPS: ReadonlyMap<number, Omit<UpgradeStep, "version">> = new Map([
   [UPGRADE_MARKER_VERSION, { name: upgradeMarkerMigration.name, checksum: upgradeMarkerChecksum }],
+  [PROJECT_MAPPING_VERSION, { name: projectMappingMigration.name, checksum: projectMappingChecksum }],
 ]);
 /** The steps from `source` (exclusive) to `target`, as this code would run them. */
 export function structuralSteps(source: number, target: number): UpgradeStep[] {

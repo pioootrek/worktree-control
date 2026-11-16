@@ -1,6 +1,7 @@
 import { rmSync } from "node:fs";
 import { securityTriggers } from "../security-fence-migration";
 import { upgradeMarkerTriggers } from "../upgrade-marker-migration";
+import { MAPPED_TABLES, projectMappingFenceTriggers, projectMappingTriggers } from "../mapping-structure-migration";
 import type Database from "better-sqlite3";
 import { rebuildTable } from "../verification-project-migration";
 
@@ -19,8 +20,25 @@ export const WITHOUT_AUTHENTICATION_PROVIDER_STORAGE = `DROP TABLE authenticatio
   DROP TABLE "authentication_ba_verification"; DROP TABLE "authentication_ba_user";
   DELETE FROM schema_migrations WHERE version >= 38;`;
 
-/** Removes provisional step 50 from a synthetic fixture; a no-op below it. */
+/**
+ * Removes provisional step 51 from a synthetic fixture; a no-op below it. The
+ * triggers go first (the added columns cannot be dropped while a trigger names
+ * them); dropping a column fires no trigger and restores the table's earlier
+ * CREATE text exactly.
+ */
+export function rewindProjectMapping(database: Database.Database): void {
+  if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=51").get()) return;
+  for (const trigger of [...projectMappingTriggers, ...projectMappingFenceTriggers]) database.exec(`DROP TRIGGER IF EXISTS ${trigger.name}`);
+  database.exec("DROP TABLE project_mapping_journal; DROP TABLE project_mapping_clock");
+  for (const table of MAPPED_TABLES) {
+    for (const column of ["mapping_version", "incarnation", "parent_project_id"]) database.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+  }
+  database.exec("DELETE FROM schema_migrations WHERE version=51");
+}
+
+/** Removes provisional step 50 (and 51 above it) from a synthetic fixture; a no-op below it. */
 export function rewindUpgradeMarker(database: Database.Database): void {
+  rewindProjectMapping(database);
   if (!database.prepare("SELECT 1 FROM schema_migrations WHERE version=50").get()) return;
   for (const trigger of upgradeMarkerTriggers) database.exec(`DROP TRIGGER IF EXISTS ${trigger.name}`);
   database.exec("DROP TABLE upgrade_marker; DELETE FROM schema_migrations WHERE version=50");

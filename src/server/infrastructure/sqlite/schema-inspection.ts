@@ -1,6 +1,7 @@
 import { securityFenceMigration, securityFenceChecksum } from "./security-fence-migration";
 import { upgradeMarkerMigration, upgradeMarkerChecksum } from "./upgrade-marker-migration";
-import { SECURITY_COVERAGE } from "./security-coverage";
+import { schemaTriggersAt } from "./security-coverage";
+import { PROJECT_MAPPING_COLUMN_SUFFIX, PROJECT_MAPPING_VERSION, projectMappingChecksum, projectMappingMigration } from "./mapping-structure-migration";
 import { humanConfigurationMigration, humanConfigurationChecksum } from "./human-configuration-migration";
 import { humanTestRunMigration, humanTestRunChecksum } from "./human-test-run-migration";
 import { humanRuntimeMigration, humanRuntimeChecksum } from "./human-runtime-migration";
@@ -27,13 +28,14 @@ import { initializeSchema } from "./migrations";
 import { registryChecksum, registryMigration, schemaTarget } from "./migration-registry";
 export { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 export interface SchemaInspection { version: number; fresh: boolean }
-type Column = { name: string; type: string; notnull: number; pk: number };
+type Column = { name: string; type: string; notnull: number; dflt_value: string | null; pk: number };
 type ForeignKey = { table: string; from: string; to: string; on_delete: string; on_update: string };
 
 // Historical installations may already have tables from the bootstrap DDL. Require
 // them only after their introducing migration, but validate any that are present.
 // A table introduced above the inspection ceiling is unknown at that ceiling.
 const tableVersions: Record<string, number> = {
+  project_mapping_clock: 51, project_mapping_journal: 51,
   upgrade_marker: 50,
   security_checkpoint: 49,
   human_test_run_requesters: 47, human_test_run_intents: 47,
@@ -63,6 +65,8 @@ const tableVersions: Record<string, number> = {
   knowledge_import_batches: 22, knowledge_import_staging: 22, knowledge_import_sources: 22,
 };
 const columnVersions: Record<string, number> = {
+  "projects.parent_project_id": 51, "projects.incarnation": 51, "projects.mapping_version": 51,
+  "remote_project_identities.parent_project_id": 51, "remote_project_identities.incarnation": 51, "remote_project_identities.mapping_version": 51,
   "human_runtime_intents.configuration_context_json": 48,
   "human_runtime_intents.configuration_bound": 48,
   "schema_migrations.name": 28, "schema_migrations.checksum": 28,
@@ -87,7 +91,7 @@ const columnVersions: Record<string, number> = {
   "authentication_ba_user.twoFactorEnabled": 40,
 };
 const historicalLeaseCheck = "(kind='human'andexpires_atisnull)or(kind='agent'andexpires_atisnotnull)";
-interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: string[]; uniqueKeys: string[]; indexes: string[] }
+interface TableShape { columns: Column[]; foreignKeys: ForeignKey[]; checks: string[]; uniqueKeys: string[]; indexes: string[]; exactIndexes: string[] }
 // Tables from migration 38 on are never in bootstrap DDL; their explicit indexes are part of the contract.
 const STRICT_TABLES_FROM = 38;
 // Tables and fence triggers from migration 50 on must also match their reference
@@ -96,12 +100,31 @@ const STRICT_TABLES_FROM = 38;
 // objects, so no normalisation is needed; normalizedSql would also fold the case
 // and whitespace inside string literals such as CHECK(state IN ('pending',...)).
 const EXACT_FROM = 50;
+/**
+ * Columns that a step from EXACT_FROM on adds to an older table. The table's
+ * text as a whole was shaped by earlier, released steps and stays under the
+ * released comparison, but these columns are recognised exactly, without
+ * changing how older columns are recognised:
+ * - a column whose `columnVersions` entry is EXACT_FROM or later must not exist
+ *   before that version (the released rule applies only to tables from
+ *   STRICT_TABLES_FROM on) and must carry the reference's default as well as
+ *   its type, nullability and key (the released comparison skips defaults);
+ * - from the version on, the table's CREATE text must end with exactly the
+ *   text the step appended (its definitions, with their CHECKs and foreign key).
+ */
+const exactColumnSuffixes: Record<string, { version: number; suffix: string }> = {
+  projects: { version: PROJECT_MAPPING_VERSION, suffix: PROJECT_MAPPING_COLUMN_SUFFIX },
+  remote_project_identities: { version: PROJECT_MAPPING_VERSION, suffix: PROJECT_MAPPING_COLUMN_SUFFIX },
+};
 // Released recognition below EXACT_FROM: whitespace removed and lowercased, literals included.
 const normalizedSql = (sql: string) => sql.replace(/\s+/g, "").toLowerCase();
 const knownTables = (ceiling: number) => Object.fromEntries(Object.entries(tableVersions).filter(([, introduced]) => introduced <= ceiling));
 function explicitIndexes(database: Database.Database, table: string): string[] {
   return (database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL").all(table) as Array<{ sql: string }>)
     .map(({ sql }) => normalizedSql(sql)).sort();
+}
+function exactIndexes(database: Database.Database, table: string): string[] {
+  return (database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL ORDER BY name").all(table) as Array<{ sql: string }>).map(({ sql }) => sql);
 }
 function checks(sql: string): string[] {
   const result: string[] = [];
@@ -141,6 +164,7 @@ function knownStructure(ceiling: number): Map<string, TableShape & { sql: string
       checks: checks((database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql),
       uniqueKeys: uniqueKeys(database, table),
       indexes: explicitIndexes(database, table),
+      exactIndexes: exactIndexes(database, table),
       sql: (database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql,
     }]));
     references.set(ceiling, reference);
@@ -188,6 +212,7 @@ export function inspectSchema(database: Database.Database, ceiling?: number): Sc
       : x.version === 42 ? x.name !== humanPrincipalMigration.name || x.checksum !== humanPrincipalChecksum
       : x.version === 43 ? x.name !== godotWebMigration.name || x.checksum !== godotWebChecksum
       : x.version === 44 ? x.name !== testRunRequesterMigration.name || x.checksum !== testRunRequesterChecksum
+      : x.version === 51 ? x.name !== projectMappingMigration.name || x.checksum !== projectMappingChecksum
       : x.version === 50 ? x.name !== upgradeMarkerMigration.name || x.checksum !== upgradeMarkerChecksum
       : x.version === 49 ? x.name !== securityFenceMigration.name || x.checksum !== securityFenceChecksum
       : x.version === 48 ? x.name !== humanConfigurationMigration.name || x.checksum !== humanConfigurationChecksum
@@ -203,13 +228,18 @@ export function inspectSchema(database: Database.Database, ceiling?: number): Sc
     if (!tables.has(table)) { if (version >= introduced) refuse(); continue; }
     if (introduced >= STRICT_TABLES_FROM && version < introduced) refuse(`${table} precedes its migration`);
     const expected = knownStructure(maximum).get(table)!;
-    if (introduced >= EXACT_FROM && (database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql !== expected.sql) refuse(`shape of ${table}`);
+    const tableSql = (database.prepare("SELECT sql FROM sqlite_master WHERE name=?").get(table) as {sql:string}).sql;
+    if (introduced >= EXACT_FROM && tableSql !== expected.sql) refuse(`shape of ${table}`);
+    const exactColumns = exactColumnSuffixes[table];
+    if (exactColumns && version >= exactColumns.version && !tableSql.endsWith(exactColumns.suffix)) refuse(`columns of ${table}`);
     const columns = database.prepare(`PRAGMA table_info("${table}")`).all() as Column[];
     for (const column of columns) {
       if (table === "reservations" && column.name === "provider_bound" && version < 46) refuse("human lease marker precedes migration 46");
       if (table === "test_runs" && column.name === "provider_bound" && version < 47) refuse("human test marker precedes migration 47");
       const known = expected.columns.find(x => x.name === column.name);
       if (!known || known.type !== column.type || known.pk !== column.pk || known.notnull !== column.notnull) refuse();
+      const since = columnVersions[`${table}.${column.name}`];
+      if (since !== undefined && since >= EXACT_FROM && (version < since || known.dflt_value !== column.dflt_value)) refuse(`${table}.${column.name} precedes its migration or differs`);
       // A strict column may not appear before the migration that introduces it.
       if (introduced >= STRICT_TABLES_FROM && version < (columnVersions[`${table}.${column.name}`] ?? introduced)) refuse(`${table}.${column.name} precedes its migration`);
     }
@@ -262,6 +292,8 @@ export function inspectSchema(database: Database.Database, ceiling?: number): Sc
       if (!actualChecks.includes(check) && !actualChecks.includes(expected.checks.find(x => x.startsWith(field ?? check)) ?? check)) refuse(`constraint in ${table}: ${field ?? "lease"}`);
     }
     if (introduced >= STRICT_TABLES_FROM && JSON.stringify(explicitIndexes(database, table)) !== JSON.stringify(expected.indexes)) refuse(`indexes of ${table}`);
+    // Indexes of a table from EXACT_FROM on match their reference text exactly too.
+    if (introduced >= EXACT_FROM && JSON.stringify(exactIndexes(database, table)) !== JSON.stringify(expected.exactIndexes)) refuse(`indexes of ${table}`);
     const keys = uniqueKeys(database, table);
     if (expected.uniqueKeys.some(key => !keys.includes(key))) refuse();
     const foreignKeys = database.prepare(`PRAGMA foreign_key_list("${table}")`).all() as ForeignKey[];
@@ -275,10 +307,11 @@ export function inspectSchema(database: Database.Database, ceiling?: number): Sc
   const ownershipIndex = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='one_active_reservation_per_project'").get() as {sql:string}|undefined;
   if (!ownershipIndex || !/createuniqueindex(?:ifnotexists)?one_active_reservation_per_projectonreservations\(project_id\)wherereleased_atisnull/i.test(ownershipIndex.sql.replace(/\s+/g,""))) refuse();
   const actualTriggers = database.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all() as Array<{name:string;sql:string}>;
-  // The expected set is a function of the version: schema-49 coverage, then each later step's.
+  // The expected set is a function of the version: schema-49 coverage, then each later step's
+  // fence coverage and its other triggers (see security-coverage.ts); nothing else is accepted.
   // Schema-49 triggers keep the released normalised comparison; later steps' compare exactly.
-  const expectedTriggers = new Map(SECURITY_COVERAGE.filter(step => step.version <= version).flatMap(step => step.triggers
-    .map(trigger => [trigger.name, { sql: step.version >= EXACT_FROM ? trigger.sql : normalizedSql(trigger.sql), exact: step.version >= EXACT_FROM }] as const)));
+  const expectedTriggers = new Map(schemaTriggersAt(version)
+    .map(trigger => [trigger.name, { sql: trigger.step >= EXACT_FROM ? trigger.sql : normalizedSql(trigger.sql), exact: trigger.step >= EXACT_FROM }] as const));
   if (actualTriggers.length !== expectedTriggers.size || actualTriggers.some(actual => {
     const expected = expectedTriggers.get(actual.name);
     return !expected || expected.sql !== (expected.exact ? actual.sql : normalizedSql(actual.sql));

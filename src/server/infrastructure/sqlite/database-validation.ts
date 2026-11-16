@@ -4,6 +4,7 @@ import { humanRuntimePermissionsSchema, runtimeMembershipSetSchema } from "@/sha
 import type Database from "better-sqlite3";
 import { TestRunQueries } from "./test-run-queries";
 import { AuthenticationQueries } from "./authentication-queries";
+import { projectMappingViolation } from "./mapping-structure-migration";
 
 export function validateDatabase(database: Database.Database, version: number): void {
   const integrity = database.pragma("integrity_check(1)") as Array<{ integrity_check: string }>;
@@ -16,13 +17,21 @@ export function validateDatabase(database: Database.Database, version: number): 
   }
   // Provisional step 50: exactly one marker row, a known state and a canonical timestamp.
   // `pending` records no plan; `complete` records the applied plan's hash, or none
-  // on a fresh installation (which never needed one).
+  // on a fresh installation (which never needed one). The timestamp must be a real
+  // instant: SQLite's parser accepts hour 24 and `%H` prints it back, so the value is
+  // compared with the formatting of its own Julian day, which normalises it.
   if (version >= 50) {
-    const rows = database.prepare(`SELECT singleton,state,plan_hash,changed_at IS strftime('%Y-%m-%dT%H:%M:%fZ',changed_at) AS canonical
+    const rows = database.prepare(`SELECT singleton,state,plan_hash,changed_at IS strftime('%Y-%m-%dT%H:%M:%fZ',julianday(changed_at)) AS canonical
       FROM upgrade_marker LIMIT 2`).all() as Array<{singleton:unknown;state:unknown;plan_hash:unknown;canonical:number}>;
     const plan = rows[0]?.plan_hash;
     if (rows.length !== 1 || rows[0].singleton !== 1 || (rows[0].state !== "pending" && rows[0].state !== "complete") || rows[0].canonical !== 1
       || (rows[0].state === "pending" ? plan !== null : plan !== null && !(typeof plan === "string" && /^[0-9a-f]{64}$/.test(plan)))) fail("upgrade marker");
+  }
+  // Provisional step 51: the mapping clock, the stamps and parents of registrations
+  // and remote identities, and the decision journal (see mapping-structure-migration.ts).
+  if (version >= 51) {
+    const rule = projectMappingViolation(database);
+    if (rule) fail(rule);
   }
   if (version >= 4 && database.prepare(`SELECT 1 FROM reservations WHERE released_at IS NULL AND NOT (
     (kind='human' AND expires_at IS NULL AND maximum_expires_at IS NULL AND token_hash IS NULL)

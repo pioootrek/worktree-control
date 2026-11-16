@@ -5,14 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PROVISIONAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
+import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { enableProvisionalSchema } from "./provisional-schema-gate";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { validateDatabase } from "./database-validation";
 import { hashFile, parseManifest, validateBackup, validateSnapshot } from "./backup-validation";
 import { SECURITY_TABLES, securityFenceChecksum, securityFenceMigration, securityTriggers } from "./security-fence-migration";
-import { UPGRADE_MARKER_SECURITY_TABLES, upgradeMarkerChecksum, upgradeMarkerMigration, upgradeMarkerTriggers } from "./upgrade-marker-migration";
+import { UPGRADE_MARKER_SECURITY_TABLES, UPGRADE_MARKER_VERSION, upgradeMarkerChecksum, upgradeMarkerMigration, upgradeMarkerTriggers } from "./upgrade-marker-migration";
+import { PROJECT_MAPPING_SECURITY_TABLES } from "./mapping-structure-migration";
 import { SECURITY_COVERAGE, securityTriggersAt } from "./security-coverage";
 import { rewindUpgradeMarker } from "./fixtures/schema-rewind";
 import { SqliteStateStore } from "./sqlite-state-store";
@@ -24,7 +25,8 @@ beforeEach(() => { restoreGate = enableProvisionalSchema(); });
 afterEach(() => { restoreGate(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const temporary = () => { const root = mkdtempSync(join(tmpdir(), "upgrade-marker-")); roots.push(root); return root; };
 
-const TARGET = PROVISIONAL_SCHEMA_VERSION;
+// Step 50 exactly; step 51 has its own tests.
+const TARGET = UPGRADE_MARKER_VERSION;
 const atTarget = (database: Database.Database) => { inspectSchema(database, TARGET); };
 /** A connection without `worktree_security_pending`, as in ordinary startup before the fence attaches. */
 const ordinary = (path = ":memory:") => new Database(path);
@@ -92,7 +94,7 @@ function backupTree(build: (database: Database.Database) => void, schemaVersion:
 describe("provisional schema step 50: upgrade marker", () => {
   it("keeps schema-49 coverage frozen and covers the marker with the same trigger body", () => {
     expect(SECURITY_TABLES).not.toContain("upgrade_marker");
-    expect(SECURITY_COVERAGE.map(step => [step.version, step.tables])).toEqual([[49, SECURITY_TABLES], [50, UPGRADE_MARKER_SECURITY_TABLES]]);
+    expect(SECURITY_COVERAGE.map(step => [step.version, step.tables])).toEqual([[49, SECURITY_TABLES], [50, UPGRADE_MARKER_SECURITY_TABLES], [51, PROJECT_MAPPING_SECURITY_TABLES]]);
     expect(securityTriggersAt(48)).toEqual([]);
     expect(securityTriggersAt(49)).toEqual(securityTriggers);
     expect(securityTriggersAt(50)).toEqual([...securityTriggers, ...upgradeMarkerTriggers]);
@@ -319,6 +321,11 @@ describe("provisional schema step 50: upgrade marker", () => {
     ["an impossible date", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-02-30T00:00:00.000Z'")],
     ["a non-date", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='yesterday'")],
     ["a numeric timestamp", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at=2461000")],
+    // SQLite's parser accepts hour 24 and prints it back; the Julian-day rule refuses it.
+    ["hour 24", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-11-15T24:30:00.000Z'")],
+    ["hour 24 at midnight", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-11-15T24:00:00.000Z'")],
+    ["minute 60", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-11-15T23:60:00.000Z'")],
+    ["second 60", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-11-15T23:59:60.000Z'")],
   ])("refuses a marker with %s in validation at 50 only", (_name, mutate) => {
     // The no-op observer lets the fixture write through the marker's triggers.
     const database = unmanagedFixtureDatabase(":memory:");
@@ -376,6 +383,6 @@ describe("provisional schema step 50: upgrade marker", () => {
     // A schema-49 backup is accepted at both ceilings.
     expect(() => validateBackup(current.root, parseManifest(current.manifest))).not.toThrow();
     expect(() => validateBackup(current.root, parseManifest(current.manifest, TARGET), false, TARGET)).not.toThrow();
-    expect(() => parseManifest(current.manifest, 51)).toThrow("Unsupported schema target.");
+    expect(() => parseManifest(current.manifest, 52)).toThrow("Unsupported schema target.");
   });
 });

@@ -15,6 +15,8 @@ import { OwnedSqliteDatabase } from "./owned-database";
 import { establishSqliteSecurityFence, maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
 import { hashFile, parseManifest, validateBackup, validateSnapshot } from "./backup-validation";
 import { applyUpgradeMarkerMigration } from "./upgrade-marker-migration";
+import { applyMappingQuarantine, applyProjectMappingMigration, planMappingQuarantine, projectMappingViolation } from "./mapping-structure-migration";
+import { ProjectDirectoryQueries } from "./project-directory-queries";
 import { applySqliteUpgrade, inspectSqliteUpgrade } from "./upgrade-maintenance";
 import { assertUpgradeAvailable, readUpgradePlan, removeUpgradePlan, structuralSteps, upgradeTarget, UpgradeError, writeUpgradePlan } from "./upgrade-plan";
 import { SecurityFence } from "./security-fence";
@@ -40,7 +42,9 @@ import { SecurityFence } from "./security-fence";
  * absolute and `file:` specifiers are resolved to a file, lexically and by real
  * path, so a different file of the same name elsewhere is not a finding. A
  * second rule confines imports of the provisional step modules (STEP_MODULES)
- * to STEP_IMPORTERS.
+ * to the importer and module pairs of STEP_IMPORTS: each listed file may import
+ * only the step modules listed for it, and no non-test file may import the
+ * project directory.
  *
  * Limits, not covered here:
  * - non-literal specifiers (`import(name)`, `require(name)`, `createRequire`
@@ -63,13 +67,24 @@ const GATE_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
   [GATE_READER]: "reads the switch in schemaTarget, through a static import of provisionalSchemaEnabled only",
 });
 const READ_FUNCTION = "provisionalSchemaEnabled";
-const STEP_MODULES = Object.freeze(["src/server/infrastructure/sqlite/upgrade-marker-migration.ts", "src/server/infrastructure/sqlite/security-coverage.ts"]);
-const STEP_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
-  "src/server/infrastructure/sqlite/security-coverage.ts": "lists the fence coverage of each step, including step 50",
-  "src/server/infrastructure/sqlite/migrations.ts": "applies step 50 when initializeSchema is given the target",
-  "src/server/infrastructure/sqlite/schema-inspection.ts": "recognises step 50 and builds its reference at the ceiling",
-  "src/server/infrastructure/sqlite/fixtures/schema-rewind.ts": "rewinds a synthetic step-50 fixture",
-  "src/server/infrastructure/sqlite/upgrade-plan.ts": "names step 50 and its checksum among the structural steps an upgrade plan lists",
+const SQLITE = "src/server/infrastructure/sqlite";
+const MARKER_STEP = `${SQLITE}/upgrade-marker-migration.ts`, COVERAGE = `${SQLITE}/security-coverage.ts`;
+const MAPPING_STEP = `${SQLITE}/mapping-structure-migration.ts`, DIRECTORY = `${SQLITE}/project-directory-queries.ts`;
+const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY]);
+/**
+ * The only non-test importers of the step modules, each with the modules it may
+ * import and why. The project directory (step 51) has no importer: it is not mounted.
+ */
+const STEP_IMPORTS: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
+  [COVERAGE]: { [MARKER_STEP]: "lists step 50's fence coverage", [MAPPING_STEP]: "lists step 51's fence coverage and its other triggers" },
+  [`${SQLITE}/migrations.ts`]: { [MARKER_STEP]: "applies step 50 when initializeSchema is given the target", [MAPPING_STEP]: "applies step 51 when initializeSchema is given the target" },
+  [`${SQLITE}/schema-inspection.ts`]: { [MARKER_STEP]: "recognises step 50 by its text and checksum", [COVERAGE]: "builds the expected triggers of each version",
+    [MAPPING_STEP]: "recognises step 51's tables, columns and checksum at ceiling 51" },
+  [`${SQLITE}/fixtures/schema-rewind.ts`]: { [MARKER_STEP]: "rewinds synthetic step-50 fixtures", [MAPPING_STEP]: "rewinds synthetic step-51 fixtures" },
+  [`${SQLITE}/upgrade-plan.ts`]: { [MARKER_STEP]: "names step 50 and its checksum among the structural steps", [MAPPING_STEP]: "names step 51 and its checksum among the structural steps" },
+  [`${SQLITE}/database-validation.ts`]: { [MAPPING_STEP]: "validates the step-51 clock, stamps, parents and journal at version 51" },
+  [`${SQLITE}/security-maintenance.ts`]: { [MAPPING_STEP]: "plans and applies the step-51 mapping quarantine at target 51" },
+  [DIRECTORY]: { [MAPPING_STEP]: "passes the step-51 gate with the step's version" },
 });
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
@@ -137,15 +152,23 @@ function reaches(fromFile: string, specifier: string, target: string): boolean {
 }
 
 /** Gate imports a non-test source file may not make. */
-function gateFindings(fileName: string, text: string): string[] {
-  return moduleImports(fileName, text).filter(entry => reaches(fileName, entry.specifier, GATE))
+function gateFindings(fileName: string, text: string, imports = moduleImports(fileName, text)): string[] {
+  return imports.filter(entry => reaches(fileName, entry.specifier, GATE))
     .filter(entry => !(fileName in GATE_IMPORTERS && entry.form === "import" && entry.readOnly))
     .map(entry => `${entry.form} of ${entry.specifier} at line ${entry.line}`);
 }
-/** Imports of a provisional step module (outside STEP_IMPORTERS these are violations). */
+/** Imports of a provisional step module, each with the module it resolves to. */
+function stepImportEntries(fileName: string, text: string, imports = moduleImports(fileName, text)): Array<ModuleImport & { module: string }> {
+  return imports.flatMap(entry => STEP_MODULES.filter(step => reaches(fileName, entry.specifier, step)).map(module => ({ ...entry, module })));
+}
+/** Imports of a provisional step module. */
 function stepImports(fileName: string, text: string): string[] {
-  return moduleImports(fileName, text).filter(entry => STEP_MODULES.some(step => reaches(fileName, entry.specifier, step)))
-    .map(entry => `${entry.form} of ${entry.specifier} at line ${entry.line}`);
+  return stepImportEntries(fileName, text).map(entry => `${entry.form} of ${entry.specifier} at line ${entry.line}`);
+}
+/** Imports of a step module that STEP_IMPORTS does not permit for this importer. */
+function stepFindings(fileName: string, text: string, entries = stepImportEntries(fileName, text)): string[] {
+  return entries.filter(entry => !Object.hasOwn(STEP_IMPORTS[fileName] ?? {}, entry.module))
+    .map(entry => `${entry.form} of ${entry.specifier} (${entry.module}) at line ${entry.line}`);
 }
 
 function sources(): string[] {
@@ -189,37 +212,42 @@ const tree = (root: string): Record<string, string> => Object.fromEntries(readdi
 }));
 
 describe("provisional schema steps stay switched off", () => {
-  it("keeps schema 49 supported, step 50 provisional and the switch off by default", () => {
+  it("keeps schema 49 supported, steps 50 and 51 provisional and the switch off by default", () => {
     expect(SUPPORTED_SCHEMA_VERSION).toBe(49);
-    expect(PROVISIONAL_SCHEMA_VERSION).toBe(50);
+    expect(PROVISIONAL_SCHEMA_VERSION).toBe(51);
     expect(provisionalSchemaEnabled()).toBe(false);
     expect(schemaTarget()).toBe(49);
     expect(schemaTarget(49)).toBe(49);
     expect(() => schemaTarget(50)).toThrow(UNSUPPORTED);
-    for (const invalid of [48, 51, 49.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
+    for (const invalid of [48, 51, 52, 49.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
   });
 
-  it("refuses target or ceiling 50 at every public entry point while the switch is off, with the unsupported-target error", async () => {
+  it.each([50, 51])("refuses target or ceiling %i at every public entry point while the switch is off, with the unsupported-target error", async target => {
     expect(provisionalSchemaEnabled()).toBe(false);
     const fixture = current49(), data = realpathSync(fixture.paths.dataDirectory), files = tree(data);
     const memory = new Database(":memory:"), current = new Database(fixture.paths.databasePath, { readonly: true });
     try {
       const refusals = {
-        schemaTarget: () => schemaTarget(50),
-        initializeSchema: () => initializeSchema(memory, undefined, undefined, { target: 50 }),
+        schemaTarget: () => schemaTarget(target),
+        initializeSchema: () => initializeSchema(memory, undefined, undefined, { target }),
         applyUpgradeMarkerMigration: () => applyUpgradeMarkerMigration(memory, true),
-        inspectSchema: () => inspectSchema(current, 50),
-        OwnedSqliteDatabase: () => new OwnedSqliteDatabase(fixture.paths.databasePath, false, 50),
-        maintainSqliteSecurityFence: () => maintainSqliteSecurityFence(fixture.paths, { action: "inspect" }, HANDOFF, 50),
-        quarantineAuthority: () => quarantineAuthority(memory, "receipt", "token", 50),
-        parseManifest: () => parseManifest({ ...fixture.manifest, database: { ...fixture.manifest.database, schemaVersion: 50 } }, 50),
-        validateSnapshot: () => validateSnapshot(fixture.snapshot, parseManifest(fixture.manifest), 50),
-        validateBackup: () => validateBackup(fixture.backup, parseManifest(fixture.manifest), false, 50),
-        upgradeTarget: () => upgradeTarget(50),
-        inspectSqliteUpgrade: () => inspectSqliteUpgrade(fixture.paths, 50),
-        applySqliteUpgrade: () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, 50),
+        applyProjectMappingMigration: () => applyProjectMappingMigration(memory),
+        planMappingQuarantine: () => planMappingQuarantine(memory),
+        applyMappingQuarantine: () => applyMappingQuarantine(memory, { base: 0, final: 1, unstamped: { projects: 0, remote_project_identities: 0 } }),
+        projectMappingViolation: () => projectMappingViolation(memory),
+        ProjectDirectoryQueries: () => new ProjectDirectoryQueries(memory),
+        inspectSchema: () => inspectSchema(current, target),
+        OwnedSqliteDatabase: () => new OwnedSqliteDatabase(fixture.paths.databasePath, false, target),
+        maintainSqliteSecurityFence: () => maintainSqliteSecurityFence(fixture.paths, { action: "inspect" }, HANDOFF, target),
+        quarantineAuthority: () => quarantineAuthority(memory, "receipt", "token", target),
+        parseManifest: () => parseManifest({ ...fixture.manifest, database: { ...fixture.manifest.database, schemaVersion: target } }, target),
+        validateSnapshot: () => validateSnapshot(fixture.snapshot, parseManifest(fixture.manifest), target),
+        validateBackup: () => validateBackup(fixture.backup, parseManifest(fixture.manifest), false, target),
+        upgradeTarget: () => upgradeTarget(target),
+        inspectSqliteUpgrade: () => inspectSqliteUpgrade(fixture.paths, target),
+        applySqliteUpgrade: () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, target),
         // Synchronously, before any lock or file.
-        establishSqliteSecurityFence: () => establishSqliteSecurityFence(fixture.paths, { action: "establish", expect: "0".repeat(64) }, HANDOFF, UNUSED_BACKUP, 50),
+        establishSqliteSecurityFence: () => establishSqliteSecurityFence(fixture.paths, { action: "establish", expect: "0".repeat(64) }, HANDOFF, UNUSED_BACKUP, target),
       };
       const unsupported = message(() => schemaTarget(51));
       expect(unsupported).toBe(UNSUPPORTED);
@@ -230,7 +258,7 @@ describe("provisional schema steps stay switched off", () => {
       // The upgrade needs step 50: at the default target it is unsupported too, with
       // its own code, and neither refusal took a lock or wrote a plan directory.
       for (const refusal of [() => inspectSqliteUpgrade(fixture.paths), () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP),
-        () => inspectSqliteUpgrade(fixture.paths, 50), () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, 50)]) {
+        () => inspectSqliteUpgrade(fixture.paths, target), () => applySqliteUpgrade(fixture.paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, target)]) {
         expect(refusal).toThrowError(expect.objectContaining({ name: "UpgradeError", code: "upgrade_unsupported", message: unsupported }));
       }
       expect(new UpgradeError("upgrade_unsupported", "none").message).toBe(unsupported);
@@ -281,13 +309,21 @@ describe("provisional schema steps stay switched off", () => {
     } finally { database.close(); }
   });
 
-  it("finds no gate import outside the reader, and no step-module import outside the listed files", () => {
+  it("finds no gate import outside the reader, and no step-module import outside its listed importer and module pairs", () => {
     const files = sources();
     expect(files.length).toBeGreaterThan(100);
     expect(files).toContain(GATE);
-    const read = (file: string) => readFileSync(join(repository, file), "utf8");
-    expect(files.flatMap(file => gateFindings(file, read(file)).map(finding => `${file}: ${finding}`))).toEqual([]);
-    expect(files.filter(file => !(file in STEP_IMPORTERS)).flatMap(file => stepImports(file, read(file)).map(finding => `${file}: ${finding}`))).toEqual([]);
+    // Each file is read and parsed once; both rules use the same imports.
+    const scanned = files.map(file => {
+      const text = readFileSync(join(repository, file), "utf8"), imports = moduleImports(file, text);
+      return { file, text, imports, steps: stepImportEntries(file, text, imports) };
+    });
+    expect(scanned.flatMap(({ file, text, imports }) => gateFindings(file, text, imports).map(finding => `${file}: ${finding}`))).toEqual([]);
+    // Every file, listed importers included: each may import only its own listed modules.
+    expect(scanned.flatMap(({ file, text, steps }) => stepFindings(file, text, steps).map(finding => `${file}: ${finding}`))).toEqual([]);
+    // No non-test file imports the project directory.
+    expect(Object.values(STEP_IMPORTS).some(modules => Object.hasOwn(modules, DIRECTORY))).toBe(false);
+    expect(scanned.filter(({ steps }) => steps.some(entry => entry.module === DIRECTORY)).map(({ file }) => file)).toEqual([]);
   });
 
   it("lists only existing files that need the exception", () => {
@@ -297,9 +333,14 @@ describe("provisional schema steps stay switched off", () => {
       const text = readFileSync(join(repository, file), "utf8");
       expect(moduleImports(file, text).filter(entry => reaches(file, entry.specifier, GATE)).map(entry => [entry.form, entry.readOnly]), file).toEqual([["import", true]]);
     }
-    for (const [file, reason] of Object.entries(STEP_IMPORTERS)) {
-      expect(reason.length).toBeGreaterThan(10);
-      expect(stepImports(file, readFileSync(join(repository, file), "utf8")).length, file).toBeGreaterThan(0);
+    for (const [file, modules] of Object.entries(STEP_IMPORTS)) {
+      // Each listed pair is one the file actually needs: it imports exactly its listed modules.
+      const imported = new Set(stepImportEntries(file, readFileSync(join(repository, file), "utf8")).map(entry => entry.module));
+      expect([...imported].sort(), file).toEqual(Object.keys(modules).sort());
+      for (const [module, reason] of Object.entries(modules)) {
+        expect(STEP_MODULES, `${file} → ${module}`).toContain(module);
+        expect(reason.length, `${file} → ${module}`).toBeGreaterThan(10);
+      }
     }
   });
 
@@ -358,16 +399,41 @@ describe("provisional schema steps stay switched off", () => {
     ]);
   });
 
+  it("reports a step module an allow-listed importer is not paired with, such as the project directory", () => {
+    const strip = (findings: string[]) => findings.map(entry => entry.replace(/ at line \d+$/, ""));
+    // database-validation.ts may import the mapping step, not the directory, the marker step or the coverage.
+    expect(strip(stepFindings(`${SQLITE}/database-validation.ts`, [
+      'import { projectMappingViolation } from "./mapping-structure-migration";',
+      'import { ProjectDirectoryQueries } from "./project-directory-queries";',
+      'export { ProjectDirectoryQueries as Directory } from "@/server/infrastructure/sqlite/project-directory-queries";',
+      'type Directory = typeof import("./project-directory-queries.js");',
+      'import { upgradeMarkerMigration } from "./upgrade-marker-migration";',
+      'import { SECURITY_COVERAGE } from "./security-coverage";',
+    ].join("\n")))).toEqual([
+      `import of ./project-directory-queries (${DIRECTORY})`, `re-export of @/server/infrastructure/sqlite/project-directory-queries (${DIRECTORY})`,
+      `import() type of ./project-directory-queries.js (${DIRECTORY})`, `import of ./upgrade-marker-migration (${MARKER_STEP})`,
+      `import of ./security-coverage (${COVERAGE})`,
+    ]);
+    // Every listed importer is reported for the directory, and so is a file that is not listed.
+    const specifier = "@/server/infrastructure/sqlite/project-directory-queries";
+    for (const file of [...Object.keys(STEP_IMPORTS), `${SQLITE}/example.ts`]) {
+      expect(strip(stepFindings(file, `import { ProjectDirectoryQueries } from "${specifier}";`)), file).toEqual([`import of ${specifier} (${DIRECTORY})`]);
+    }
+    // A listed pair is not a finding.
+    expect(stepFindings(`${SQLITE}/security-maintenance.ts`, 'import { applyMappingQuarantine } from "./mapping-structure-migration";')).toEqual([]);
+  });
+
   describe("with the switch on", () => {
     let restore: () => void;
     beforeEach(() => { restore = enableProvisionalSchema(); });
     afterEach(() => { restore(); });
 
-    it("accepts target 50, still refuses anything above it, and restores the previous state", () => {
+    it("accepts targets 50 and 51, still refuses anything above them, and restores the previous state", () => {
       expect(provisionalSchemaEnabled()).toBe(true);
       expect(schemaTarget()).toBe(49);
       expect(schemaTarget(50)).toBe(50);
-      for (const invalid of [48, 51, 49.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
+      expect(schemaTarget(51)).toBe(51);
+      for (const invalid of [48, 52, 49.5, 50.5, Number.NaN]) expect(() => schemaTarget(invalid)).toThrow(UNSUPPORTED);
       // Nested use restores the outer state, not "off".
       const inner = enableProvisionalSchema();
       inner();
