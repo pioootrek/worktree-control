@@ -152,22 +152,22 @@ function reaches(fromFile: string, specifier: string, target: string): boolean {
 }
 
 /** Gate imports a non-test source file may not make. */
-function gateFindings(fileName: string, text: string): string[] {
-  return moduleImports(fileName, text).filter(entry => reaches(fileName, entry.specifier, GATE))
+function gateFindings(fileName: string, text: string, imports = moduleImports(fileName, text)): string[] {
+  return imports.filter(entry => reaches(fileName, entry.specifier, GATE))
     .filter(entry => !(fileName in GATE_IMPORTERS && entry.form === "import" && entry.readOnly))
     .map(entry => `${entry.form} of ${entry.specifier} at line ${entry.line}`);
 }
 /** Imports of a provisional step module, each with the module it resolves to. */
-function stepImportEntries(fileName: string, text: string): Array<ModuleImport & { module: string }> {
-  return moduleImports(fileName, text).flatMap(entry => STEP_MODULES.filter(step => reaches(fileName, entry.specifier, step)).map(module => ({ ...entry, module })));
+function stepImportEntries(fileName: string, text: string, imports = moduleImports(fileName, text)): Array<ModuleImport & { module: string }> {
+  return imports.flatMap(entry => STEP_MODULES.filter(step => reaches(fileName, entry.specifier, step)).map(module => ({ ...entry, module })));
 }
 /** Imports of a provisional step module. */
 function stepImports(fileName: string, text: string): string[] {
   return stepImportEntries(fileName, text).map(entry => `${entry.form} of ${entry.specifier} at line ${entry.line}`);
 }
 /** Imports of a step module that STEP_IMPORTS does not permit for this importer. */
-function stepFindings(fileName: string, text: string): string[] {
-  return stepImportEntries(fileName, text).filter(entry => !Object.hasOwn(STEP_IMPORTS[fileName] ?? {}, entry.module))
+function stepFindings(fileName: string, text: string, entries = stepImportEntries(fileName, text)): string[] {
+  return entries.filter(entry => !Object.hasOwn(STEP_IMPORTS[fileName] ?? {}, entry.module))
     .map(entry => `${entry.form} of ${entry.specifier} (${entry.module}) at line ${entry.line}`);
 }
 
@@ -313,13 +313,17 @@ describe("provisional schema steps stay switched off", () => {
     const files = sources();
     expect(files.length).toBeGreaterThan(100);
     expect(files).toContain(GATE);
-    const read = (file: string) => readFileSync(join(repository, file), "utf8");
-    expect(files.flatMap(file => gateFindings(file, read(file)).map(finding => `${file}: ${finding}`))).toEqual([]);
+    // Each file is read and parsed once; both rules use the same imports.
+    const scanned = files.map(file => {
+      const text = readFileSync(join(repository, file), "utf8"), imports = moduleImports(file, text);
+      return { file, text, imports, steps: stepImportEntries(file, text, imports) };
+    });
+    expect(scanned.flatMap(({ file, text, imports }) => gateFindings(file, text, imports).map(finding => `${file}: ${finding}`))).toEqual([]);
     // Every file, listed importers included: each may import only its own listed modules.
-    expect(files.flatMap(file => stepFindings(file, read(file)).map(finding => `${file}: ${finding}`))).toEqual([]);
+    expect(scanned.flatMap(({ file, text, steps }) => stepFindings(file, text, steps).map(finding => `${file}: ${finding}`))).toEqual([]);
     // No non-test file imports the project directory.
     expect(Object.values(STEP_IMPORTS).some(modules => Object.hasOwn(modules, DIRECTORY))).toBe(false);
-    expect(files.filter(file => stepImportEntries(file, read(file)).some(entry => entry.module === DIRECTORY))).toEqual([]);
+    expect(scanned.filter(({ steps }) => steps.some(entry => entry.module === DIRECTORY)).map(({ file }) => file)).toEqual([]);
   });
 
   it("lists only existing files that need the exception", () => {

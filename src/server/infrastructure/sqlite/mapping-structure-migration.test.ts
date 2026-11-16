@@ -734,8 +734,8 @@ describe("step 51 guards on multi-row, replacing and stamping statements", () =>
       step(() => replace("REPLACE", "q-2", "/code/p-2", 7102), [["p-3", 3, 3], ["p-1", 5, 5], ["q-2", 6, 6]]);
       // port: q-3 takes p-3's port.
       step(() => replace("INSERT OR REPLACE", "q-3", "/code/q-3", 7002), [["p-1", 5, 5], ["q-2", 6, 6], ["q-3", 7, 7]]);
-      // Two rows at once: q-2's path and p-1's port.
-      step(() => replace("INSERT OR REPLACE", "q-4", "/code/q-2", 7101), [["q-3", 7, 7], ["q-4", 8, 8]]);
+      // Two rows at once: q-2's path (taken from p-2 above) and p-1's port.
+      step(() => replace("INSERT OR REPLACE", "q-4", "/code/p-2", 7101), [["q-3", 7, 7], ["q-4", 8, 8]]);
       // The remote identity's primary key.
       expect(database.prepare("INSERT OR REPLACE INTO remote_project_identities(id,name,source_remote,status) VALUES('r-1','again','origin','active')").run().changes).toBe(1);
       expect(pairs(database, "remote_project_identities")).toEqual([["r-1", 9, 9]]);
