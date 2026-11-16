@@ -24,7 +24,7 @@ import {
   canonicalJson, FindingList, normaliseUpgradeDecisions, UPGRADE_DETAILS_LIMITS, upgradePlanHash, upgradePlanPath, validateUpgradeProposal, type UpgradeAct, type UpgradePlan,
 } from "./upgrade-plan";
 import {
-  applicationProjectName, deriveProjectName, MAPPING_ACT_DOMAIN, MAPPING_READ_LIMIT, MAPPING_STORED_COLUMNS, normaliseMappingDecisions, PROJECT_NAME_LIMIT, proposeProjectMapping,
+  applicationProjectName, deriveProjectName, MAPPING_ACT_DOMAIN, MAPPING_READ_LIMIT, MAPPING_STORED_COLUMNS, MAPPING_TEXT_COLUMNS, normaliseMappingDecisions, PROJECT_NAME_LIMIT, proposeProjectMapping,
   type MappingReview,
 } from "./mapping-upgrade-acts";
 import { parseKnowledgeProjectSnapshot } from "../../modules/knowledge/project-transfer-schema";
@@ -1534,4 +1534,186 @@ describe("project mapping: the protections, isolated", () => {
         .toMatchObject({ code: "upgrade_plan_bounds", details: { count: 1, findings: [{ table: "remote_workers", id: "remote_workers", problem: `more than ${MAPPING_READ_LIMIT} rows` }] } });
     } finally { database.close(); }
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Fix round: identifiers whose stored bytes do not read back exactly.
+
+/**
+ * Gives a row an ID that is text but not UTF-8 (`CAST(x'<hex>' AS TEXT)`),
+ * and every row that references it the same bytes, so that ownership's
+ * foreign-key validation still passes: SQLite compares the bytes.
+ */
+function storeBytes(database: Database.Database, table: string, id: string, hex: string): void {
+  database.pragma("foreign_keys = OFF");
+  const bytes = `CAST(x'${hex}' AS TEXT)`;
+  for (const name of database.prepare("SELECT name FROM sqlite_master WHERE type='table'").pluck().all() as string[]) {
+    for (const key of database.prepare(`PRAGMA foreign_key_list("${name}")`).all() as Array<{ table: string; from: string }>) {
+      if (key.table === table) database.prepare(`UPDATE "${name}" SET "${key.from}"=${bytes} WHERE "${key.from}"=?`).run(id);
+    }
+  }
+  database.prepare(`UPDATE "${table}" SET id=${bytes} WHERE id=?`).run(id);
+  expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  database.pragma("foreign_keys = ON");
+}
+/** The stored bytes and the string read back of one row's ID: different bytes, and the string, bound again, matches no row. */
+function readBack(database: Database.Database, table: string, where: string): string {
+  const row = database.prepare(`SELECT id,hex(id) AS bytes FROM "${table}" WHERE ${where}`).get() as { id: string; bytes: string };
+  expect(Buffer.from(row.id, "utf8").toString("hex").toUpperCase()).not.toBe(row.bytes);
+  expect(database.prepare(`SELECT count(*) FROM "${table}" WHERE id=?`).pluck().get(row.id)).toBe(0);
+  return row.id;
+}
+const NOT_UTF8 = (column: string) => `${column} is not valid UTF-8 text`;
+const BY_ROWID = expect.stringMatching(/^rowid \d+$/);
+
+describe("project mapping: identifiers that do not read back exactly", () => {
+  type Ids = { linked: string; plain: string; knowledge: string; lonely: string; remote: string; worker: string };
+  /**
+   * Each stored ID planned before this fix and then failed inside the
+   * transaction, after the pending witness (a registration, a remote identity, a
+   * linked Knowledge project whose link was accepted), or was matched in
+   * JavaScript to rows other than its own bytes (a worker): each now refused,
+   * with every reference to it, at inspect and at the validation before the backup.
+   */
+  /** Each case: the change, the decisions (before the change, then after it: the accepted link names the project as it reads back), the findings. */
+  const CASES: ReadonlyArray<[string, (database: Database.Database, ids: Ids) => void, (ids: Ids, changed: boolean) => unknown, (ids: Ids) => Array<{ table: string; id: unknown; problem: string }>]> = [
+    ["a registration's ID", (database, ids) => storeBytes(database, "projects", ids.plain, "7280"), () => undefined,
+      () => [{ table: "projects", id: BY_ROWID, problem: NOT_UTF8("id") }]],
+    ["a remote identity's ID", (database, ids) => storeBytes(database, "remote_project_identities", ids.remote, "6980"), () => undefined,
+      () => [{ table: "remote_project_identities", id: BY_ROWID, problem: NOT_UTF8("id") }, { table: "remote_worker_project_grants", id: BY_ROWID, problem: NOT_UTF8("project_id") }]],
+    ["a linked Knowledge project's ID, its link accepted", (database, ids) => storeBytes(database, "knowledge_projects", ids.knowledge, "6b80"),
+      (ids, changed) => ({ links: [{ registrationId: ids.linked, projectId: changed ? "k\uFFFD" : ids.knowledge }] }),
+      () => [{ table: "knowledge_projects", id: BY_ROWID, problem: NOT_UTF8("id") }, { table: "knowledge_project_runtime_links", id: BY_ROWID, problem: NOT_UTF8("knowledge_project_id") }]],
+    ["an unlinked Knowledge project's ID", (database, ids) => storeBytes(database, "knowledge_projects", ids.lonely, "6c80"), () => undefined,
+      () => [{ table: "knowledge_projects", id: BY_ROWID, problem: NOT_UTF8("id") }]],
+    ["a worker's ID", (database, ids) => storeBytes(database, "remote_workers", ids.worker, "7780"), ids => ({ bindings: [{ remoteIdentityId: ids.remote, registrationId: ids.linked }] }),
+      ids => [{ table: "remote_worker_project_grants", id: ids.remote, problem: NOT_UTF8("worker_id") }, { table: "remote_workers", id: BY_ROWID, problem: NOT_UTF8("id") }]],
+  ];
+  const writePlan = (paths: AppPaths, payload: unknown) => {
+    const hash = sha(canonicalJson(payload));
+    writeFileSync(planFile(paths), JSON.stringify({ payload, sha256: hash }), { mode: 0o600 });
+    return hash;
+  };
+
+  it.each(CASES)("refuses %s at inspect, naming the rows and no value, with nothing written", async (_name, mutate, decisions, expected) => {
+    const { paths, ids } = standard();
+    tamper(paths, database => mutate(database, ids));
+    const before = files(paths);
+    const refusal = await failure(() => inspect(paths, decisions(ids, true)));
+    expect(refusal).toMatchObject({ name: "UpgradeError", code: "upgrade_mapping_malformed", nextStep: "upgrade inspect", committed: false });
+    expect(refusal.details!.findings).toEqual(expected(ids));
+    expect(files(paths)).toEqual(before);
+    expect(before.plan).toBe("missing");
+  });
+
+  it.each(CASES)("refuses a plan written before %s stops reading back, at the validation before the backup, with nothing changed", async (_name, mutate, decisions, expected) => {
+    const { paths, ids } = standard();
+    const genuine = inspect(paths, decisions(ids, false)).plan!;
+    tamper(paths, database => mutate(database, ids));
+    // The plan as inspect wrote it, rebased on the changed database so that only the validation can refuse it.
+    const hash = writePlan(paths, { ...genuine, base: maintainSqliteSecurityFence(paths, { action: "inspect" }, HANDOFF, TARGET).preflight });
+    const before = files(paths), calls: string[] = [];
+    const refusal = await failure(() => apply(paths, hash, backups(paths, calls)));
+    expect(refusal).toMatchObject({ code: "upgrade_plan_unproposed", nextStep: "upgrade inspect", committed: false });
+    expect(refusal.details!.findings).toEqual(expected(ids));
+    expect(calls).toEqual([]);
+    expect(files(paths)).toEqual(before);
+  });
+
+  it("shows why: the string read back is other bytes, and matches no row when bound again", () => {
+    const { paths, ids } = standard();
+    tamper(paths, database => { storeBytes(database, "projects", ids.plain, "7280"); storeBytes(database, "knowledge_projects", ids.knowledge, "6b80"); });
+    read(paths, database => {
+      expect(readBack(database, "projects", "hex(id)='7280'")).toBe("r\uFFFD");
+      expect(readBack(database, "knowledge_projects", "hex(id)='6B80'")).toBe("k\uFFFD");
+    });
+  });
+
+  it("plans a registration and a project whose IDs hold U+FFFD as their own UTF-8, which read back exactly", () => {
+    const { paths, ids } = standard();
+    tamper(paths, database => { storeBytes(database, "projects", ids.plain, "72efbfbd"); storeBytes(database, "knowledge_projects", ids.knowledge, "6befbfbd"); });
+    const plan = inspect(paths, { links: [{ registrationId: ids.linked, projectId: "k\uFFFD" }] }).plan!;
+    expect(plan.acts).toEqual(expect.arrayContaining([
+      { kind: "attach_registration", payload: { registrationId: "r\uFFFD", projectId: expect.any(String), basis: "created_project" } },
+      { kind: "attach_registration", payload: { registrationId: ids.linked, projectId: "k\uFFFD", basis: "accepted_link" } },
+    ]));
+  });
+
+  /** A journal row naming its subject or project by bytes that do not read back, written after a completed upgrade and a resume. */
+  async function journaled(column: "subject_id" | "project_id") {
+    const { paths, ids } = standard();
+    await apply(paths, inspect(paths).planHash!);
+    const created = parents(paths).registrations[ids.plain]!;
+    resume(paths);
+    const journalWith = (database: Database.Database) => {
+      const row = database.prepare("SELECT subject_incarnation AS incarnation,plan_hash,run_receipt,recorded_at FROM project_mapping_journal WHERE subject_id=?").get(ids.plain) as Record<string, string | number>;
+      // Bytes that read back as the subject's or the project's own ID followed by U+FFFD: before this fix the row was
+      // compared as that string, while its stored bytes name neither the subject nor the project.
+      const invalid = (id: string) => `CAST(x'${Buffer.from(id, "utf8").toString("hex")}80' AS TEXT)`;
+      const subject = column === "subject_id" ? invalid(ids.plain) : `'${ids.plain}'`, project = column === "project_id" ? invalid(created) : `'${created}'`;
+      database.prepare(`INSERT INTO project_mapping_journal(subject_kind,subject_id,subject_incarnation,project_id,basis,plan_hash,run_receipt,recorded_at)
+        VALUES('registration',${subject},?,${project},'journal_reuse',?,?,?)`).run(row.incarnation, row.plan_hash, row.run_receipt, row.recorded_at);
+    };
+    return { paths, ids, journalWith };
+  }
+  it.each(["subject_id", "project_id"] as const)("refuses a journal row whose %s does not read back, at inspect and at the validation before the backup", async column => {
+    const { paths, ids, journalWith } = await journaled(column);
+    const genuine = inspect(paths).plan!;
+    tamper(paths, journalWith);
+    const expected = [{ table: "project_mapping_journal", id: column === "subject_id" ? BY_ROWID : ids.plain, problem: NOT_UTF8(column) }];
+    const before = files(paths);
+    const refusal = await failure(() => inspect(paths));
+    expect(refusal).toMatchObject({ code: "upgrade_mapping_malformed", nextStep: "upgrade inspect", committed: false });
+    expect(refusal.details!.findings).toEqual(expected);
+    expect(files(paths)).toEqual(before);
+    const hash = writePlan(paths, { ...genuine, base: maintainSqliteSecurityFence(paths, { action: "inspect" }, HANDOFF, TARGET).preflight });
+    const written = files(paths), calls: string[] = [];
+    const late = await failure(() => apply(paths, hash, backups(paths, calls)));
+    expect(late).toMatchObject({ code: "upgrade_plan_unproposed", nextStep: "upgrade inspect", committed: false });
+    expect(late.details!.findings).toEqual(expected);
+    expect(calls).toEqual([]);
+    expect(files(paths)).toEqual(written);
+  });
+
+  // References whose bytes match no row: ownership's foreign-key validation refuses the database first, so the pass is called directly.
+  it.each([
+    ["a link's registration", "knowledge_project_runtime_links", "runtime_project_id", (ids: Ids) => ids.knowledge, "knowledge_project_runtime_links", (ids: Ids) => ids.knowledge],
+    ["a binding's registration", "remote_worker_project_grants", "local_project_id", (ids: Ids) => ids.remote, "remote_worker_project_grants", (ids: Ids) => ids.remote],
+    ["a binding's remote identity", "remote_worker_project_grants", "project_id", (ids: Ids) => ids.remote, "remote_worker_project_grants", () => BY_ROWID],
+    ["a binding's worker", "remote_worker_project_grants", "worker_id", (ids: Ids) => ids.remote, "remote_worker_project_grants", (ids: Ids) => ids.remote],
+  ] as const)("refuses %s that does not read back in its own pass, when called directly", async (_name, table, column, key, findingTable, findingId) => {
+    const { paths, ids } = standard();
+    const keyColumn = table === "knowledge_project_runtime_links" ? "knowledge_project_id" : "project_id";
+    tamper(paths, database => {
+      database.pragma("foreign_keys = OFF");
+      database.prepare(`UPDATE ${table} SET ${column}=CAST(CAST(${column} AS BLOB) || x'80' AS TEXT) WHERE ${keyColumn}=?`).run(key(ids));
+    });
+    const before = files(paths);
+    expect(() => inspect(paths)).toThrow(/foreign key check failed/);
+    expect(files(paths)).toEqual(before);
+    const database = unmanagedFixtureDatabase(paths.databasePath, { readonly: true });
+    try {
+      const refusal = await failure(() => proposeProjectMapping(database, { schemaVersion: 49, source: 49, target: TARGET }, normaliseMappingDecisions({}), null, true));
+      expect(refusal).toMatchObject({ code: "upgrade_mapping_malformed", details: { count: 1, findings: [{ table: findingTable, id: findingId(ids), problem: NOT_UTF8(column) }] } });
+    } finally { database.close(); }
+  });
+
+  it("refuses a parent that does not read back in its own pass, before the parent itself is refused (ownership refuses a parent naming no project first)", async () => {
+    const database = memory();
+    try {
+      memoryRegistration(database, "A"); memoryProject(database, "X");
+      database.exec("UPDATE project_mapping_clock SET value=value+1");
+      database.exec("UPDATE projects SET parent_project_id=CAST(x'5880' AS TEXT),mapping_version=(SELECT value FROM project_mapping_clock) WHERE id='A'");
+      expect(await failure(() => proposeAt51(database))).toMatchObject({ code: "upgrade_mapping_malformed",
+        details: { count: 1, findings: [{ table: "projects", id: "A", problem: NOT_UTF8("parent_project_id") }] } });
+    } finally { database.close(); }
+  });
+
+  it("lists the identifiers it requires to read back exactly", () => {
+    expect(MAPPING_TEXT_COLUMNS.map(entry => [entry.table, [...entry.columns]])).toEqual([
+      ["projects", ["id", "parent_project_id"]], ["remote_project_identities", ["id", "parent_project_id"]], ["knowledge_projects", ["id"]],
+      ["knowledge_project_runtime_links", ["knowledge_project_id", "runtime_project_id"]], ["remote_worker_project_grants", ["worker_id", "project_id", "local_project_id"]],
+      ["remote_workers", ["id"]], ["project_mapping_journal", ["subject_id", "project_id"]],
+    ]);
+  });
 });

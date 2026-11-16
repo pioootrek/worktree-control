@@ -23,7 +23,7 @@ import { predictRecovery } from "./test-run-recovery-prediction";
 import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup, type UpgradeBackupSource } from "./upgrade-maintenance";
 import { canonicalJson, normaliseUpgradeDecisions, upgradePlanPath, validateUpgradeProposal, type UpgradeAct, type UpgradePlan } from "./upgrade-plan";
 import {
-  AUTHORITY_ACT_DOMAIN, AUTHORITY_KEPT, AUTHORITY_OWNER_LIMIT, AUTHORITY_STORED_COLUMNS, GRANT_ADMIN, normaliseAuthorityDecisions, proposeAuthority, RELEASE_RUNNING_WORK,
+  AUTHORITY_ACT_DOMAIN, AUTHORITY_KEPT, AUTHORITY_OWNER_LIMIT, AUTHORITY_STORED_COLUMNS, AUTHORITY_TEXT_COLUMNS, GRANT_ADMIN, normaliseAuthorityDecisions, proposeAuthority, RELEASE_RUNNING_WORK,
   RESET_PAYLOADS, REVOKE_CREDENTIALS, REVOKE_OLD_GRANTS, type AuthorityReview,
 } from "./authority-upgrade-acts";
 import { CREDENTIAL_KINDS, INSTANT_CHARACTERS, OLD_GRANT_TABLES, resetInstant, REVISED_GRANT_TABLES } from "./authority-reset";
@@ -775,6 +775,7 @@ const UNRECOVERABLE: ReadonlyArray<[string, (ids: Ids) => string, string, (ids: 
   ["a summary's run ID that is a BLOB", () => "UPDATE test_run_summaries SET run_id=CAST(run_id AS BLOB) WHERE run_id='recent-run'", "test_run_summaries", () => "<blob>"],
   ["an accounting counter above 2^53", ids => `UPDATE test_summary_coverage SET records=9007199254740993 WHERE project_id='${ids.registrationA}'`, "test_summary_coverage", ids => ids.registrationA],
   ["a real-valued accounting counter", ids => `UPDATE test_summary_coverage SET records=4.5 WHERE project_id='${ids.registrationA}'`, "test_summary_coverage", ids => ids.registrationA],
+  ["a principal ID that is text but not UTF-8", () => "INSERT INTO remote_principals(id,kind,status) VALUES(CAST(x'6180' AS TEXT),'agent','active')", "remote_principals", () => BY_ROWID],
 ];
 
 describe("authority acts: whole-plan validation", () => {
@@ -961,6 +962,77 @@ describe("authority acts: stops write no plan and change nothing", () => {
       expect(proposal.review.owners).toHaveLength(AUTHORITY_OWNER_LIMIT);
       expect(proposal.review.admin).toEqual({ decision: "none", reason: "several_owners" });
     } finally { database.close(); }
+  });
+});
+
+/** The reviewers' scenario: the only owner, active, whose ID is stored as the bytes 6f 80 (text, not UTF-8). */
+const INVALID_OWNER = "INSERT INTO remote_principals(id,kind,status) VALUES(CAST(x'6f80' AS TEXT),'owner','active')";
+describe("authority acts: identifiers that do not read back exactly", () => {
+  it("refuses an owner stored as CAST(x'6f80' AS TEXT) at inspect: no plan, nothing written, and the pass itself proposes nothing", async () => {
+    const { paths } = authorityWorld({ owner: false });
+    tamper(paths, database => database.exec(INVALID_OWNER));
+    read(paths, database => {
+      // What the plan would have granted: the string read back, whose UTF-8 is other bytes and names no principal.
+      const row = database.prepare("SELECT id,hex(id) AS bytes FROM remote_principals WHERE kind='owner'").get() as { id: string; bytes: string };
+      expect(row).toEqual({ id: "o\uFFFD", bytes: "6F80" });
+      expect(Buffer.from(row.id, "utf8").toString("hex")).toBe("6fefbfbd");
+      expect(database.prepare("SELECT count(*) FROM remote_principals WHERE id=?").pluck().get(row.id)).toBe(0);
+    });
+    const before = files(paths);
+    const refusal = await failure(() => inspect(paths));
+    expect(refusal).toMatchObject({ name: "UpgradeError", code: "upgrade_authority_malformed", nextStep: "upgrade inspect", committed: false });
+    expect(refusal.details).toEqual({ count: 1, truncated: false, findings: [{ table: "remote_principals", id: BY_ROWID, problem: "id is not valid UTF-8 text" }] });
+    expect(files(paths)).toEqual(before);
+    expect(before.plan).toBe("missing");
+    const database = unmanagedFixtureDatabase(copy(paths));
+    try {
+      const context = { schemaVersion: 49, source: 49, target: TARGET };
+      expect(() => proposeAuthority(database, context, {}, null, true)).toThrowError(expect.objectContaining({ code: "upgrade_authority_malformed" }));
+      // The same spelling stored as its own UTF-8 reads back exactly, and is the account granted.
+      database.prepare("UPDATE remote_principals SET id=? WHERE kind='owner'").run("o\uFFFD");
+      const proposal = proposeAuthority(database, context, {}, null, true);
+      expect(proposal.review.admin).toEqual({ decision: "grant", accountId: "o\uFFFD" });
+      expect(proposal.acts.at(-1)).toEqual({ kind: GRANT_ADMIN, payload: { accountId: "o\uFFFD" } });
+    } finally { database.close(); }
+  });
+
+  it("refuses a plan written before such an owner appears, at the validation before the backup, with nothing changed", async () => {
+    const { paths } = authorityWorld({ owner: false });
+    const genuine = inspect(paths).plan!;
+    expect(genuine.acts.map(act => act.kind)).not.toContain(GRANT_ADMIN);
+    tamper(paths, database => database.exec(INVALID_OWNER));
+    const payload = { ...genuine, base: maintainSqliteSecurityFence(paths, { action: "inspect" }, HANDOFF, TARGET).preflight };
+    const hash = sha(canonicalJson(payload));
+    writeFileSync(planFile(paths), JSON.stringify({ payload, sha256: hash }), { mode: 0o600 });
+    const before = files(paths), calls: string[] = [];
+    const refusal = await failure(() => apply(paths, hash, backups(paths, calls)));
+    expect(refusal).toMatchObject({ code: "upgrade_plan_unproposed", nextStep: "upgrade inspect", committed: false,
+      details: { findings: [{ table: "remote_principals", id: BY_ROWID, problem: "id is not valid UTF-8 text" }] } });
+    expect(calls).toEqual([]);
+    expect(files(paths)).toEqual(before);
+  });
+
+  it("refuses an owner with credentials and grants whose ID no longer reads back in its own pass (ownership's foreign-key validation refuses it first)", async () => {
+    const { paths, ids } = authorityWorld();
+    const database = unmanagedFixtureDatabase(copy(paths));
+    try {
+      database.pragma("foreign_keys = OFF");
+      database.prepare("UPDATE remote_principals SET id=CAST(CAST(id AS BLOB) || x'80' AS TEXT) WHERE id=?").run(ids.owner);
+      expect(database.prepare("PRAGMA foreign_key_check").all()).not.toEqual([]);
+      expect(() => proposeAuthority(database, { schemaVersion: 49, source: 49, target: TARGET }, {}, null, true)).toThrowError(expect.objectContaining({
+        code: "upgrade_authority_malformed", details: expect.objectContaining({ findings: [{ table: "remote_principals", id: BY_ROWID, problem: "id is not valid UTF-8 text" }] }) }));
+    } finally { database.close(); }
+    tamper(paths, database => {
+      database.pragma("foreign_keys = OFF");
+      database.prepare("UPDATE remote_principals SET id=CAST(CAST(id AS BLOB) || x'80' AS TEXT) WHERE id=?").run(ids.owner);
+    });
+    const before = files(paths);
+    expect(() => inspect(paths)).toThrow(/foreign key check failed/);
+    expect(files(paths)).toEqual(before);
+  });
+
+  it("lists the identifiers it requires to read back exactly", () => {
+    expect(AUTHORITY_TEXT_COLUMNS.map(entry => [entry.table, entry.key, [...entry.columns]])).toEqual([["remote_principals", "id", ["id"]]]);
   });
 });
 
