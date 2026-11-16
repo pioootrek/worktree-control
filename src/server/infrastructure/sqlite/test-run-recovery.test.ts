@@ -304,9 +304,9 @@ describe("test-run recovery: the same writes as before the split", () => {
     expect(afterWrites).toEqual(prepared.writes.map(write => [write.sql, write.parameters]));
     // The fixture reaches every part of the recovery.
     expect(prepared.runs.map(run => run.id).sort()).toEqual(["a-finalizing", "a-legacy", "a-queued", "a-running", "b-queued", "c-running"]);
-    const kinds = new Set(beforeWrites.map(([sql]) => sql.trim().split(/\s+/).slice(0, 3).join(" ")));
-    for (const kind of ["INSERT INTO test_runs", "DELETE FROM test_run_summaries", "UPDATE test_summary_coverage", "DELETE FROM test_run_requesters", "DELETE FROM human_test_run_requesters", "DELETE FROM test_runs"]) {
-      expect(kinds, kind).toContain(kind);
+    for (const kind of ["INSERT INTO test_runs", "INSERT INTO test_run_summaries", "INSERT INTO test_summary_coverage", "DELETE FROM test_run_summaries", "UPDATE test_summary_coverage",
+      "DELETE FROM test_run_requesters", "DELETE FROM human_test_run_requesters", "DELETE FROM test_runs"]) {
+      expect(beforeWrites.some(([sql]) => sql.trim().startsWith(kind)), kind).toBe(true);
     }
     // Summaries evicted by age, and (newer than the 30-day horizon) by the per-project and global caps.
     const evicted = beforeWrites.filter(([sql]) => sql.startsWith("DELETE FROM test_run_summaries")).map(([, [runId]]) => runId as string);
@@ -343,8 +343,16 @@ describe("test-run recovery: the same writes as before the split", () => {
     expect(first.prepared.runs.map(run => run.id)).toContain("a-queued");
     for (const table of Object.keys(first.before)) expect(first.after[table], table).toEqual(first.before[table]);
     expect(first.afterWrites).toEqual(first.beforeWrites);
-    // A second recovery: nothing is pending, the final trim still runs.
-    const recovered = twin(path);
+    // Its summary stays unfinished (the save finds the same JSON), so a second recovery interrupts it again, and again writes the same.
+    const replanted = twin(path);
+    const repeat = connection(replanted, true);
+    try { new TestRunQueries(repeat).markInterruptedTestRuns(); } finally { repeat.close(); }
+    const again = differential(replanted, true);
+    expect(again.prepared.runs.map(run => run.id)).toEqual(["a-queued"]);
+    for (const table of Object.keys(again.before)) expect(again.after[table], table).toEqual(again.before[table]);
+    expect(again.afterWrites).toEqual(again.beforeWrites);
+    // A second recovery of an ordinary installation: nothing is pending, the final trim still runs.
+    const recovered = twin(populated().path);
     const once = connection(recovered, true);
     try { new TestRunQueries(once).markInterruptedTestRuns(); } finally { once.close(); }
     const second = differential(recovered, true);

@@ -505,6 +505,8 @@ describe("provisional schema steps stay switched off", () => {
     const memory = new Database(":memory:");
     try {
       initializeSchema(memory);
+      // The fence triggers of the covered rows call the observer; outside an owner it is a no-op here.
+      memory.function("worktree_security_pending", () => 0);
       const at = "2025-01-01T00:00:00.000Z";
       revokeCredentials(memory, at); revokeOldGrants(memory, at); releaseReservations(memory, at); cancelRemoteWork(memory, at);
       expect(interruptTestRuns(memory)).toMatchObject({ runs: [], trimmed: [], hazardCount: 0 });
