@@ -690,7 +690,7 @@ describe("establishment with a pre-establishment backup (default target)",()=>{
       return {name,code,committed,message,backupRefusal:error instanceof SecurityFenceBackupError};}
     throw new Error("expected a refusal");
   };
-  const BACKUP_REFUSED={name:"SecurityFenceBackupError",code:"security_fence_establishment_required",committed:false,message:expect.stringMatching(/backup failed.*establish again/),backupRefusal:true};
+  const BACKUP_REFUSED={name:"SecurityFenceBackupError",code:"security_fence_backup_failed",committed:false,message:expect.stringMatching(/^security_fence_backup_failed: .*backup failed.*establish again/),backupRefusal:true};
   /** A valid backup tree of an installation, taken through ordinary ownership before establishment runs. */
   async function priorBackup(paths:ReturnType<typeof resolveAppPaths>) {
     const owner=new OwnedSqliteDatabase(paths.databasePath),destination=join(paths.dataDirectory,"..",`prior-${randomUUID()}`);

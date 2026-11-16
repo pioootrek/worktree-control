@@ -40,7 +40,8 @@ type Record = z.infer<typeof recordSchema>;
 export type SecurityUpgradeReceipt = z.infer<typeof upgradeSchema>;
 const envelope = z.object({ payload: recordSchema, sha256: hex }).strict();
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-export type SecurityFenceCode = "security_fence_owner_running" | "security_fence_establishment_required" | "security_fence_recovery_required" | "security_fence_pending" | "security_fence_preflight_changed";
+export type SecurityFenceCode = "security_fence_owner_running" | "security_fence_establishment_required" | "security_fence_recovery_required" | "security_fence_pending" | "security_fence_preflight_changed"
+  | "security_fence_backup_failed";
 export class SecurityFenceError extends AuthenticationProviderError {
   constructor(code: SecurityFenceCode, committed?: true) {
     super(code, `${code}: Use protected offline auth fence inspect, then establish or resume with its current preflight. Preserve recovery evidence.`, committed);
@@ -52,14 +53,16 @@ export class SecurityFenceError extends AuthenticationProviderError {
  * validate or is not this run's copy of the source. The database and its WAL
  * are unchanged and nothing is pending (what ownership and a read-only open may
  * create or normalise happens as in every establish, and the backup function's
- * own output may remain): the database still needs establishment, so the code is
- * the one `auth fence inspect` and startup report for it, and the closed set of
- * codes is unchanged. Only the message and the class tell the cause.
+ * own output may remain). The database still needs establishment, which
+ * `auth fence inspect` and startup report as
+ * `security_fence_establishment_required`; this refusal has its own code,
+ * `security_fence_backup_failed`, so the operator sees that the backup is the
+ * cause. Only `establishSqliteSecurityFence` throws it.
  */
 export class SecurityFenceBackupError extends SecurityFenceError {
   constructor() {
-    super("security_fence_establishment_required");
-    this.message = "security_fence_establishment_required: The pre-establishment backup failed; nothing was changed. Run protected offline auth fence inspect, then establish again with its current preflight.";
+    super("security_fence_backup_failed");
+    this.message = "security_fence_backup_failed: The pre-establishment backup failed; nothing was changed. Run protected offline auth fence inspect, then establish again with its current preflight.";
     this.name = "SecurityFenceBackupError";
   }
 }
