@@ -14,16 +14,16 @@ import { cleanupRestartFixture, trackFixtureChild } from "./auth-provider-restar
 // an identity handshake, and reopened by the normal owner path. Software TOTP and
 // passkey over a Unix socket with a trusted test peer. No browser, hardware, TLS,
 // proxy or service restart is covered, and nothing here is installed anywhere.
-// Open item: this proof predates the security fence and the explicit offline upgrade. Its crash cases
-// (R5 on) SIGKILL the owner inside a write to fenced provider-session tables; the fence publishes a pending
-// witness before such a write, so the next ordinary opening is refused with security_fence_recovery_required
-// (observed at boot 9, after plain-password-pending), and a resume would quarantine every session the cases
-// then inspect. The cases need a redesign before this script can prove session recovery again; until then
-// it stops here rather than report a failure that is not a regression. The code below is kept for that work.
-function predatesTheFence() {
-  throw new Error("auth-provider-session-restart predates the security fence and the explicit offline upgrade: its crash cases end in security_fence_recovery_required. See the comment at the top of the script; it needs a redesign.");
-}
-predatesTheFence();
+//
+// Two kinds of case. "recovered": the owner is killed outside a write to a fenced table (after the native
+// COMMIT and the fence's confirmed witness, at a held result, between recovery batches, or idle), and the
+// next ordinary opening recovers the provider sessions; these keep their original assertions. "fenced": the
+// owner is killed inside a write to a fenced table. The fence publishes a pending witness from the BEFORE
+// trigger, before SQLite changes the first authority row, and confirms it only after the COMMIT; every
+// ordinary opening refuses a pending witness, whatever SQLite kept (security-fence.ts, inspect and
+// beginWrite; unit-tested by "survives a real SIGKILL" in security-fence.test.ts). So these cases assert the
+// fence's designed outcome on an installation of their own: the opening refused with every byte unchanged,
+// `auth fence resume` and the upgrade, and no session from before the crash afterwards.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const temporary = mkdtempSync(join(tmpdir(), "session-restart-"));
 const workerSource = "packages/auth-provider-better-auth-proof/test/fixtures/session-restart-worker.ts";
@@ -38,7 +38,10 @@ const children = new Map();
 const output = [], cookiesSeen = new Set();
 const counts = { boots: 0, killed: 0, graceful: 0 };
 const cases = [];
-const record = (id, evidence) => { cases.push({ id, ...evidence }); };
+/** `outcome`: "recovered" (ordinary recovery after the kill) or "fenced" (the fence's refusal, resume and quarantine). */
+const record = (id, evidence, outcome = "recovered") => { cases.push({ id, outcome, ...evidence }); };
+/** Cases that cannot be expressed any more, by name with the reason. None at present; each one is reported. */
+const skipped = [];
 
 function run(args, label) {
   const child = spawn(process.execPath, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
@@ -284,62 +287,9 @@ async function writers(emitted) {
     expect: (next, { before }) => { samePlainState(next.recovered, before); },
   });
 
-  // R5: transactions the process died inside. SQLite's own recovery decides, no fixture rows.
-  for (const cut of [CUT.beforeEvidence, CUT.beforeMarker, CUT.beforeCommit]) {
-    const before = await worker.snapshot();
-    const { response } = await crashAt(emitted, inst, worker, cut, () => jar().login());
-    assert.equal(response.dropped, true);
-    worker = await owner(emitted, inst);
-    samePlainState(worker.opened, before);
-    record(`mint-${cut.point}`, { rowsAfterFreshOpen: worker.opened.sessions.length, markers: worker.opened.issuance.length });
-  }
-  {
-    const before = await worker.snapshot();
-    const { held, response } = await crashAt(emitted, inst, worker, CUT.insideMark, () => jar().login());
-    assert.equal(response.dropped, true);
-    const [id] = added(held.sessions, before.sessions);
-    assert.equal(held.issuance.find(row => row.id === id).state, "may_publish", "the cut really is after the UPDATE, inside its transaction");
-    worker = await owner(emitted, inst);
-    assert.equal(worker.opened.issuance.find(row => row.id === id).state, "pending", "SQLite rolled the marker back");
-    samePlainState(worker.recovered, before);
-    record("publication-before-commit", { uncommitted: "may_publish", afterCrash: "pending", cleaned: true });
-  }
-  {
-    const before = await worker.snapshot();
-    const { held } = await crashAt(emitted, inst, worker, CUT.afterCommit, () => jar().login());
-    const [id] = added(held.pending, before.pending);
-    worker = await owner(emitted, inst);
-    assert(worker.opened.pending.includes(id));
-    samePlainState(worker.recovered, before);
-    record("native-commit-before-acknowledgment", { pendingFound: true, cleaned: true });
-  }
-  // R6: the same acknowledgment lost while the process lives, then killed: a known commit, no cookie.
-  {
-    const before = await worker.snapshot();
-    await worker.arm(CUT.lostAcknowledgment);
-    const refused = await jar().login();
-    assert.equal(refused.status, 503); assert.equal(refused.body.code, "completion_unconfirmed"); noCookie(refused);
-    // Cleanup ends after the answer: the slot waits for it, the client does not.
-    const cleaned = await until(async () => { const now = await worker.snapshot(); return now.pending.length === 0 ? now : null; });
-    samePlainState(cleaned, before);
-    await worker.kill();
-    worker = await owner(emitted, inst);
-    samePlainState(worker.opened, before);
-    record("lost-acknowledgment-live", { status: refused.status, cleanedLive: true });
-  }
-  // R6: a failed COMMIT whose ROLLBACK also fails poisons the owner. Only a fresh owner can classify it.
-  {
-    const before = await worker.snapshot();
-    await worker.shutdown();
-    worker = await owner(emitted, inst, "owner", { fault: "poison" });
-    const refused = await jar().login();
-    assert.equal(refused.status, 503); noCookie(refused);
-    await worker.kill();
-    staleLocks(inst, worker.pid);
-    worker = await owner(emitted, inst);
-    samePlainState(worker.opened, before);
-    record("poisoned-owner", { status: refused.status, code: refused.body.code, freshOwnerRows: worker.opened.sessions.length });
-  }
+  // R5 and R6 (killed inside a native mint, inside the publication's transaction, after the native COMMIT
+  // before its acknowledgment, a lost acknowledgment, a poisoned owner) are all kills inside a write to a
+  // fenced table: see fencedCrashes, each on an installation of its own.
 
   // R2 + R7: password replacement. The new password and the revocation stay. Only the new session goes.
   worker = await pendingCycles(emitted, inst, worker, "password-replacement", BOUNDS.sessionRows + 2, {
@@ -439,7 +389,8 @@ async function writers(emitted) {
   assert.equal((await jar().login(password)).status, 200);
   record("expiry-private-clock", { survivedBeforeDeadline: true, prunedAtDeadline: BOUNDS.sessionRows, batch: BOUNDS.sessionReconcileBatch, roomFreed: true });
 
-  // R9: two held flights at U, killed. Q=1 recovery killed inside and between batches, then resumed.
+  // R9: two held flights at U, killed. Q=1 recovery killed between batches, then resumed. A kill inside a
+  // batch is a kill inside a fenced DELETE: see fencedCrashes.
   {
     const standing = await worker.snapshot();
     await worker.arm(CUT.heldResult);
@@ -451,14 +402,10 @@ async function writers(emitted) {
     assert.equal((await worker.snapshot()).pending.length, 2);
     await worker.kill();
     await Promise.all(logins);
-    const inside = start(emitted, inst, "owner", { cut: CUT.recoveryBatch });
-    assert.equal((await inside.waitFor("opened")).snapshot.pending.length, 2);
-    await inside.waitFor("cut");
-    assert(!existsSync(inst.socketPath), "no issuer can reach an owner still recovering");
-    await inside.kill();
     const between = start(emitted, inst, "owner", { cut: CUT.betweenBatches });
-    assert.equal((await between.waitFor("opened")).snapshot.pending.length, 2, "the killed batch rolled back");
+    assert.equal((await between.waitFor("opened")).snapshot.pending.length, 2, "both held sessions are pending at the opening");
     await between.waitFor("cut");
+    assert(!existsSync(inst.socketPath), "no issuer can reach an owner still recovering");
     await between.kill();
     worker = start(emitted, inst);
     assert.equal((await worker.waitFor("opened")).snapshot.pending.length, 1, "the committed batch stayed");
@@ -466,7 +413,7 @@ async function writers(emitted) {
     await worker.waitFor("ready");
     assert.deepEqual(worker.recovered.pending, []);
     assert.deepEqual(worker.recovered.sessions, standing.sessions);
-    record("recovery-batches", { heldPending: 2, afterKillInside: 2, afterKillBetween: 1, resumed: 0, batch: BOUNDS.sessionReconcileBatch, thirdIssuerRefused: true });
+    record("recovery-batches", { heldPending: 2, afterKillBetween: 1, resumed: 0, batch: BOUNDS.sessionReconcileBatch, thirdIssuerRefused: true });
   }
 
   // Selection replaces every prior session, so start the factor writers from real enrollment.
@@ -551,6 +498,116 @@ async function refusedOpening(emitted, inst, code) {
   assert.deepEqual(await worker.exited, { code: 0, signal: null });
   assert.deepEqual(databaseFiles(inst), before, "a refused opening writes nothing");
 }
+/** The fence's external witness record, read from its private file. Only its state is compared. */
+const witness = inst => JSON.parse(readFileSync(join(inst.root, "data/state.sqlite3.security/witness.json"), "utf8")).payload;
+
+/**
+ * One kill inside a write to a fenced table, on a fresh installation of its own: a seeded owner with one
+ * published session, then `crash`, which kills the owner while the fence's witness is pending. Asserted for
+ * every such kill, as designed: the witness stays pending; the next ordinary opening is refused with
+ * security_fence_recovery_required, before any store, recovery or listener, with every byte unchanged; the
+ * operator's resume and upgrade succeed; their quarantine leaves no session, evidence or issuance row, the
+ * session from before the crash no longer authenticates and the password from before no longer signs in.
+ * What SQLite kept of the killed transaction is not observable on this path: no ordinary opening reads it.
+ */
+async function fencedCrash(emitted, label, crash) {
+  const inst = installation(`fenced-${label}`, BOUNDS);
+  const jar = () => new Jar(inst.socketPath);
+  let worker = await owner(emitted, inst, "seed");
+  const kept = jar();
+  assert.equal((await kept.login()).status, 200);
+  await until(async () => witness(inst).state === "confirmed");
+  const before = await worker.snapshot();
+  assert.equal(before.sessions.length, 1);
+  const evidence = await crash({ inst, worker, before, jar });
+  assert.equal(witness(inst).state, "pending", "the kill left the fence's pending witness");
+  await refusedOpening(emitted, inst, "security_fence_recovery_required");
+  assert.equal(witness(inst).state, "pending", "the refused opening confirmed nothing");
+  const backups = join(inst.root, "maintenance-backups");
+  mkdirSync(backups, { mode: 0o700 });
+  const resumed = await offline(emitted, inst, "maintain", { maintenance: "resume", backup: backups });
+  assert.equal(resumed.before.code, "security_fence_recovery_required"); assert.equal(resumed.fence.trusted, true);
+  assert.equal(resumed.upgrade.state, "current"); assert.match(resumed.upgrade.backup, /\/pre-upgrade-v52-[0-9a-f-]{36}$/);
+  assert.equal(witness(inst).state, "confirmed");
+  worker = await owner(emitted, inst);
+  for (const rows of [worker.opened, worker.recovered]) {
+    assert.deepEqual(rows.sessions, [], "no session from before the crash survives the resume");
+    assert.deepEqual(rows.evidence, []); assert.deepEqual(rows.issuance, []);
+  }
+  assert.equal((await kept.retarget(inst.socketPath).session()).body.authenticated, false, "the session from before the crash does not authenticate");
+  const again = await jar().login();
+  assert.notEqual(again.status, 200, "the password from before the crash was quarantined"); noCookie(again);
+  await worker.shutdown();
+  record(label, { ...evidence, witness: "pending", refusal: "security_fence_recovery_required", rowsChanged: 0, resumedAndUpgraded: true, sessionsAfterResume: 0 }, "fenced");
+}
+
+/** R5, R6 and the kill inside a recovery batch: every kill inside a write to a fenced table. */
+async function fencedCrashes(emitted) {
+  // R5: killed inside the native mint's transaction, after its first fenced INSERT.
+  for (const cut of [CUT.beforeEvidence, CUT.beforeMarker, CUT.beforeCommit]) {
+    await fencedCrash(emitted, `mint-${cut.point}`, async ({ inst, worker, jar }) => {
+      const { response } = await crashAt(emitted, inst, worker, cut, () => jar().login());
+      assert.equal(response.dropped, true);
+      return { cut: cut.point };
+    });
+  }
+  // R5: killed after the publication's UPDATE, inside its transaction.
+  await fencedCrash(emitted, "publication-before-commit", async ({ inst, worker, before, jar }) => {
+    const { held, response } = await crashAt(emitted, inst, worker, CUT.insideMark, () => jar().login());
+    assert.equal(response.dropped, true);
+    const [id] = added(held.sessions, before.sessions);
+    assert.equal(held.issuance.find(row => row.id === id).state, "may_publish", "the cut really is after the UPDATE, inside its transaction");
+    return { cut: CUT.insideMark.point, uncommitted: "may_publish" };
+  });
+  // R5: killed after the native COMMIT returned, before the fence confirmed it. The database already holds
+  // the state after the write; the pending witness is refused all the same.
+  await fencedCrash(emitted, "native-commit-before-acknowledgment", async ({ inst, worker, before, jar }) => {
+    const { held } = await crashAt(emitted, inst, worker, CUT.afterCommit, () => jar().login());
+    const [id] = added(held.pending, before.pending);
+    assert(id, "the native COMMIT was visible before the kill");
+    return { cut: CUT.afterCommit.point, committedBeforeKill: true };
+  });
+  // R6: the COMMIT acknowledgment lost while the process lives. The fence cannot prove the outcome of a
+  // committed authority write, so it fails closed in that owner, which then refuses all admitted work.
+  await fencedCrash(emitted, "lost-acknowledgment-live", async ({ inst, worker, jar }) => {
+    await worker.arm(CUT.lostAcknowledgment);
+    const refused = await jar().login();
+    assert.equal(refused.status, 503); noCookie(refused);
+    worker.child.send({ command: "snapshot" });
+    const after = await worker.waitFor("snapshot", "command-failed");
+    assert.equal(after.type, "command-failed", "the owner refuses admitted work after the lost acknowledgment");
+    await worker.kill();
+    staleLocks(inst, worker.pid);
+    return { status: refused.status, code: refused.body.code, liveOwnerRefusesWork: true };
+  });
+  // R6: a failed COMMIT whose ROLLBACK also fails poisons the owner inside the fenced transaction.
+  await fencedCrash(emitted, "poisoned-owner", async ({ inst, worker: seeded, jar }) => {
+    await seeded.shutdown();
+    const worker = await owner(emitted, inst, "owner", { fault: "poison" });
+    const refused = await jar().login();
+    assert.equal(refused.status, 503); noCookie(refused);
+    await worker.kill();
+    staleLocks(inst, worker.pid);
+    return { status: refused.status, code: refused.body.code };
+  });
+  // R9: two held flights, killed; then the Q=1 recovery killed inside its first fenced DELETE batch.
+  await fencedCrash(emitted, "recovery-inside-batch", async ({ inst, worker, jar }) => {
+    await worker.arm(CUT.heldResult);
+    const logins = [jar(), jar()].map(client => dropped(client.login()));
+    await worker.waitFor("held");
+    assert.equal((await worker.waitFor("held")).snapshot.pending.length, 2);
+    await worker.kill();
+    await Promise.all(logins);
+    assert.equal(witness(inst).state, "confirmed", "the held flights had committed and been confirmed");
+    const inside = start(emitted, inst, "owner", { cut: CUT.recoveryBatch });
+    assert.equal((await inside.waitFor("opened")).snapshot.pending.length, 2);
+    await inside.waitFor("cut");
+    assert(!existsSync(inst.socketPath), "no issuer can reach an owner still recovering");
+    await inside.kill();
+    staleLocks(inst, inside.pid);
+    return { heldPending: 2, cut: CUT.recoveryBatch.point };
+  });
+}
 
 /**
  * R12 + R13 with a genuine schema-40 row. Since the explicit offline upgrade, an ordinary start migrates
@@ -607,17 +664,21 @@ async function restored(emitted) {
   for (const jar of [released, later]) assert.equal((await jar.session()).body.authenticated, false, "neither the restored nor the later session authenticates");
   await worker.shutdown();
   record("restored-snapshot-refused", { pending: atBackup.pending.length, publishedAfterSnapshot: true, unmarkedKept: true, refusedBoots: 2, rowsChanged: 0,
-    refusal: "security_fence_recovery_required", resumedAndUpgraded: true, sessionsAfterResume: 0 });
+    refusal: "security_fence_recovery_required", resumedAndUpgraded: true, sessionsAfterResume: 0 }, "fenced");
 }
 
 let primaryFailure;
 try {
   const emitted = await emit();
   await writers(emitted);
+  await fencedCrashes(emitted);
   await restored(emitted);
+  const by = outcome => cases.filter(entry => entry.outcome === outcome).map(entry => entry.id);
+  const summary = { casesRun: cases.length, recovered: by("recovered"), fencedOutcome: by("fenced"), skipped };
   // One line per record: a run log keeps whole lines, and evidence must not end mid-case.
-  const report = [...cases.map(entry => JSON.stringify(entry)), JSON.stringify({ result: "passed", source: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
-    dirty: execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).length > 0, ...emitted.hashes, bounds: BOUNDS, ...counts, cases: cases.length })];
+  const report = [...cases.map(entry => JSON.stringify(entry)), JSON.stringify({ summary }), JSON.stringify({ result: "passed", source: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
+    dirty: execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).length > 0, ...emitted.hashes, bounds: BOUNDS, ...counts,
+    cases: cases.length, fencedCases: summary.fencedOutcome.length, skippedCases: skipped.length })];
   const everything = `${output.join("")}${report.join("")}`;
   for (const secret of [PASSWORD, SECRET, ...cookiesSeen]) assert(!everything.includes(secret), "no credential reaches a report or a process stream");
   console.log(report.join("\n"));
