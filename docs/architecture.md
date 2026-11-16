@@ -1662,9 +1662,16 @@ new or changed one until it is classified. Production stores never receive an
 owner from outside; only test fixtures open an owner at an explicit lower
 target for the store (`openStoreAt` in `fixtures/released-schema.ts`).
 
-An existing database is never migrated at an ordinary opening. The store
-creates only a fresh database, at its target with the marker `complete`; the
-creation's initialization marker is removed only after the fence published its
+An existing database is never migrated at an ordinary opening. An admitted
+one is at its target with a complete marker, so the store's schema transaction
+applies no step to it: every recorded step returns at once, and only the
+bootstrap's idempotent statements run (`CREATE TABLE` and `CREATE INDEX` with
+`IF NOT EXISTS`, and `INSERT OR IGNORE` of migration 1). They write no row a
+fence trigger covers and need no fence function, and they restore a bootstrap
+index a current database lost, such as the partial unique index
+`test_runs_actor_idempotency`, which neither schema recognition nor
+`validateDatabase` requires. A fresh database is created at its target with the
+marker `complete`; the creation's initialization marker is removed only after the fence published its
 witness, and "empty" is still read from the actual tables inside the schema
 transaction.
 
@@ -1677,13 +1684,13 @@ The order of the controller start, before and after:
 | 3 | ordinary ownership: lock, restore recovery, mode normalisation, read-only inspection | the same |
 | 4 | `--backup-before-migration` copy of an older schema | the admission check (read-only) |
 | 5 | fence inspection | — (inside the check) |
-| 6 | writable reopen, durability pragmas, migrations | writable reopen, durability pragmas; schema creation only when fresh |
+| 6 | writable reopen, durability pragmas, migrations | writable reopen, durability pragmas, the schema transaction: creation when fresh, otherwise only the idempotent bootstrap |
 | 7 | initialization marker removed, fence attached | fence attached, then the initialization marker removed |
 | 8 | token bootstrap, session recovery, listeners | the same |
 
-The check adds one marker read to an ordinary start and removes the schema
-transaction that a current database used to run, so an ordinary start does
-less work than before.
+The check adds one marker read to an ordinary start. The schema transaction
+of a current database does what it did before: no step, the idempotent
+bootstrap and the validation.
 
 On a refusal the database file, a non-empty WAL, the witness, an upgrade plan
 and the restore evidence are byte-identical. The opening may have created the
