@@ -126,7 +126,7 @@ describe("upgrade CLI runner: decisions file", () => {
     writeFileSync(file, JSON.stringify(DECISIONS));
     const open = fs.openSync, opens: number[] = [];
     let fifoOpened = false;
-    const spy = vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, flags?: fs.OpenMode, mode?: fs.Mode | null) => {
+    const spy = vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode | null) => {
       if (path !== file) return open(path, flags, mode);
       // The lstat check has passed on the regular file; now another process swaps in a FIFO.
       opens.push(flags as number);
