@@ -88,7 +88,9 @@ class Process {
       const timer = setTimeout(() => reject(new Error(`Fixture process did not report ${types.join("/")}: ${output.join("").slice(-1500)}`)), BOOT_MS);
       const waiter = { match: message => types.includes(message.type), accept: message => { clearTimeout(timer); this.messages.splice(this.messages.indexOf(message), 1); accept(message); } };
       this.waiting.push(waiter);
-      this.exited.then(() => { if (this.waiting.includes(waiter) && !this.messages.some(waiter.match)) { clearTimeout(timer); reject(new Error(`Fixture process exited before ${types.join("/")}: ${output.join("").slice(-1500)}`)); } });
+      this.exited.then(() => { if (this.waiting.includes(waiter) && !this.messages.some(waiter.match)) {
+        const failed = this.messages.filter(message => message.type === "failed").map(message => `${message.mode} failed: ${message.reason}`).join("; ");
+        clearTimeout(timer); reject(new Error(`Fixture process exited before ${types.join("/")}: ${failed} ${output.join("").slice(-1500)}`)); } });
     });
   }
   async command(message, reply) { this.child.send(message); return this.waitFor(reply); }

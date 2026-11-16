@@ -273,8 +273,8 @@ async function owner(): Promise<void> {
 
 const modes = { challenger, "seed-v40": seedSchema40, restore, maintain, owner, seed: owner };
 Promise.resolve().then(() => modes[boot.mode]()).then(() => undefined, (error: unknown) => {
-  // The parent shows the bounded stderr tail of a failed process; the reason is the error's name, code and message only.
+  // The parent reports the reason of a failed process: the error's name, code and message only, bounded.
   const { name, code, message } = (error ?? {}) as { name?: unknown; code?: unknown; message?: unknown };
-  process.stderr.write(`session-restart worker ${boot.mode} failed: ${String(name)}${typeof code === "string" ? ` (${code})` : ""}: ${String(message)}\n`);
-  send({ type: "failed", mode: boot.mode }); process.exitCode = 1;
+  const reason = `${String(name)}${typeof code === "string" ? ` (${code})` : ""}: ${String(message)}`.slice(0, 1000);
+  send({ type: "failed", mode: boot.mode, reason }); process.exitCode = 1;
 });
