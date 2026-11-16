@@ -18,6 +18,7 @@ import { applyUpgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applyMappingQuarantine, applyProjectMappingMigration, planMappingQuarantine, projectMappingViolation } from "./mapping-structure-migration";
 import { accountGrantsViolation, applyAccountGrantsMigration, clearAccountGrants } from "./account-grants-migration";
 import { AUTHORITY_ACT_DOMAIN, normaliseAuthorityDecisions, proposeAuthority } from "./authority-upgrade-acts";
+import { cancelRemoteWork, interruptTestRuns, releaseReservations, revokeCredentials, revokeOldGrants } from "./authority-reset";
 import { ProjectDirectoryQueries } from "./project-directory-queries";
 import { applySqliteUpgrade, inspectSqliteUpgrade } from "./upgrade-maintenance";
 import {
@@ -50,7 +51,10 @@ import { SecurityFence } from "./security-fence";
  * second rule confines imports of the provisional step modules (STEP_MODULES)
  * to the importer and module pairs of STEP_IMPORTS: each listed file may import
  * only the step modules listed for it, and no non-test file may import the
- * project directory.
+ * project directory. STEP_MODULES also holds the authority reset shared by the
+ * quarantine and the upgrade (AUTHORITY_RESET): it is not provisional (the
+ * schema-49 quarantine runs it with the switch off, so it has no gate), but its
+ * revocations may be reached only through its two listed importers.
  *
  * Limits, not covered here:
  * - non-literal specifiers (`import(name)`, `require(name)`, `createRequire`
@@ -78,7 +82,8 @@ const MARKER_STEP = `${SQLITE}/upgrade-marker-migration.ts`, COVERAGE = `${SQLIT
 const MAPPING_STEP = `${SQLITE}/mapping-structure-migration.ts`, DIRECTORY = `${SQLITE}/project-directory-queries.ts`;
 const MAPPING_ACTS = `${SQLITE}/mapping-upgrade-acts.ts`;
 const GRANTS_STEP = `${SQLITE}/account-grants-migration.ts`, AUTHORITY_ACTS = `${SQLITE}/authority-upgrade-acts.ts`;
-const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY, MAPPING_ACTS, GRANTS_STEP, AUTHORITY_ACTS]);
+const AUTHORITY_RESET = `${SQLITE}/authority-reset.ts`;
+const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY, MAPPING_ACTS, GRANTS_STEP, AUTHORITY_ACTS, AUTHORITY_RESET]);
 /**
  * The only non-test importers of the step modules, each with the modules it may
  * import and why. The project directory (step 51) has no importer: it is not mounted.
@@ -95,11 +100,12 @@ const STEP_IMPORTS: Readonly<Record<string, Readonly<Record<string, string>>>> =
     [MAPPING_ACTS]: "registers the step-51 project-mapping act domain in the upgrade's registry", [GRANTS_STEP]: "names step 52 and its checksum among the structural steps",
     [AUTHORITY_ACTS]: "registers the step-52 authority act domain in the upgrade's registry, after the mapping domain" },
   [MAPPING_ACTS]: { [MAPPING_STEP]: "passes the step-51 gate with the step's version before reading the mapping columns" },
-  [AUTHORITY_ACTS]: { [GRANTS_STEP]: "passes the step-52 gate with the step's version before reading or writing the grants table" },
+  [AUTHORITY_ACTS]: { [GRANTS_STEP]: "passes the step-52 gate with the step's version before reading or writing the grants table",
+    [AUTHORITY_RESET]: "runs the quarantine's reset statements as the upgrade's revoke and release acts" },
   [`${SQLITE}/database-validation.ts`]: { [MAPPING_STEP]: "validates the step-51 clock, stamps, parents and journal at version 51",
     [GRANTS_STEP]: "validates the shape of the step-52 grants at version 52" },
   [`${SQLITE}/security-maintenance.ts`]: { [MAPPING_STEP]: "plans and applies the step-51 mapping quarantine at target 51",
-    [GRANTS_STEP]: "deletes every step-52 grant in the quarantine at target 52" },
+    [GRANTS_STEP]: "deletes every step-52 grant in the quarantine at target 52", [AUTHORITY_RESET]: "runs the reset statements it shares with the upgrade, in the quarantine's order, at every target" },
   [DIRECTORY]: { [MAPPING_STEP]: "passes the step-51 gate with the step's version" },
 });
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
@@ -475,6 +481,34 @@ describe("provisional schema steps stay switched off", () => {
     for (const file of [`${SQLITE}/upgrade-maintenance.ts`, MAPPING_ACTS, `${SQLITE}/sqlite-state-store.ts`]) {
       expect(strip(stepFindings(file, grants)), file).toEqual([`import of ${grantsModule} (${GRANTS_STEP})`]);
     }
+    // The shared authority reset: the quarantine and the authority acts only; every other file is reported, in every literal form.
+    const resetModule = "./authority-reset";
+    const reset = `import { revokeCredentials } from "${resetModule}";`;
+    for (const file of [`${SQLITE}/security-maintenance.ts`, AUTHORITY_ACTS]) expect(stepFindings(file, reset), file).toEqual([]);
+    for (const file of [`${SQLITE}/upgrade-maintenance.ts`, `${SQLITE}/upgrade-plan.ts`, `${SQLITE}/test-run-queries.ts`, `${SQLITE}/sqlite-state-store.ts`, MAPPING_ACTS, GRANTS_STEP, `${SQLITE}/example.ts`]) {
+      expect(strip(stepFindings(file, reset)), file).toEqual([`import of ${resetModule} (${AUTHORITY_RESET})`]);
+    }
+    expect(strip(stepFindings(`${SQLITE}/upgrade-maintenance.ts`, [
+      'export { revokeCredentials as revoke } from "./authority-reset.js";',
+      'const lazy = import("@/server/infrastructure/sqlite/authority-reset");',
+      'type Reset = typeof import("./authority-reset");',
+    ].join("\n")))).toEqual([
+      `re-export of ./authority-reset.js (${AUTHORITY_RESET})`, `import() of @/server/infrastructure/sqlite/authority-reset (${AUTHORITY_RESET})`,
+      `import() type of ./authority-reset (${AUTHORITY_RESET})`,
+    ]);
+    expect(strip(stepFindings("src/server/bootstrap/example.ts", 'import { revokeCredentials } from "@/server/infrastructure/sqlite/authority-reset";')))
+      .toEqual([`import of @/server/infrastructure/sqlite/authority-reset (${AUTHORITY_RESET})`]);
+  });
+
+  it("keeps the shared authority reset callable with the switch off, as the schema-49 quarantine needs", () => {
+    expect(provisionalSchemaEnabled()).toBe(false);
+    const memory = new Database(":memory:");
+    try {
+      initializeSchema(memory);
+      const at = "2025-01-01T00:00:00.000Z";
+      revokeCredentials(memory, at); revokeOldGrants(memory, at); releaseReservations(memory, at); cancelRemoteWork(memory, at);
+      expect(interruptTestRuns(memory)).toMatchObject({ runs: [], trimmed: [], hazardCount: 0 });
+    } finally { memory.close(); }
   });
 
   describe("with the switch on", () => {

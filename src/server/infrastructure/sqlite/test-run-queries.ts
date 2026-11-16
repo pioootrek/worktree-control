@@ -216,7 +216,12 @@ class RecoveryProjection implements SummaryLedger {
   constructor(private readonly database: Database.Database, private readonly position: RecoveryPosition) {}
 
   private write(sql: string, parameters: readonly unknown[]): void { this.writes.push({ sql, parameters }); }
+  private readonly hazardKeys = new Set<string>();
+  /** Each refusal once per row and problem. */
   private hazard(table: string, id: string, problem: string): void {
+    const key = JSON.stringify([table, id, problem]);
+    if (this.hazardKeys.has(key)) return;
+    this.hazardKeys.add(key);
     this.hazardCount++;
     if (this.hazards.length < RECOVERY_HAZARD_LIMIT) this.hazards.push({ table, id, problem });
   }

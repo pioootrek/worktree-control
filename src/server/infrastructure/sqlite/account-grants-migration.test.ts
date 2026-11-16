@@ -311,6 +311,26 @@ describe("step 52 grant table guards", () => {
     } finally { database.close(); }
   });
 
+  it.each(["OFF", "ON"])("refuses duplicate grants inserted together by one INSERT ... SELECT, with recursive_triggers %s", recursive => {
+    const database = withGrants();
+    try {
+      database.pragma(`recursive_triggers = ${recursive}`);
+      // Two equal rows in one statement: the guard sees the first row when the second is inserted, and the statement leaves nothing.
+      for (const [account, role, scope, project] of [["owner", "admin", "installation", "NULL"], ["human", "reader", "project", "'project-a'"]]) {
+        const pair = `SELECT '${account}','${role}','${scope}',${project},'${AT}' UNION ALL SELECT '${account}','${role}','${scope}',${project},'${LATER}'`;
+        for (const statement of [`INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) ${pair}`,
+          `INSERT OR IGNORE INTO account_grants(account_id,role,scope_kind,project_id,granted_at) ${pair}`,
+          `INSERT OR REPLACE INTO account_grants(account_id,role,scope_kind,project_id,granted_at) ${pair}`]) {
+          expect(() => database.exec(statement), statement).toThrow("account grant already exists");
+          expect(grants(database), statement).toEqual([]);
+        }
+      }
+      // Distinct rows in one statement are each stored once.
+      database.exec(`INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) SELECT 'owner','admin','installation',NULL,'${AT}' UNION ALL SELECT 'human','reader','project','project-a','${AT}'`);
+      expect(grants(database)).toHaveLength(2);
+    } finally { database.close(); }
+  });
+
   it("refuses every UPDATE, allows DELETE, and refuses a replacing insert by rowid", () => {
     const database = withGrants();
     try {
