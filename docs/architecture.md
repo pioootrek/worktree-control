@@ -1072,6 +1072,13 @@ turn it on, so a target above 49 has no effect in production, whichever alias,
 re-export or wrapper passes it. Activation raises `SUPPORTED_SCHEMA_VERSION`;
 the switch then no longer matters for that step.
 
+`schemaTarget` also refuses any value below `SECURITY_FENCE_SCHEMA_VERSION`
+(49, the schema the security fence was introduced at). That constant does not
+move: it is the lowest explicit target or ceiling and the lowest source of the
+explicit upgrade's structural steps. `SUPPORTED_SCHEMA_VERSION` is what this
+release creates by default and its default target and ceiling. Both are 49
+until the activation.
+
 The guard test `provisional-schema.test.ts` checks module imports. No non-test
 script file under `src/` may import the gate module, except
 `migration-registry.ts`, which may only import the read function by name. The

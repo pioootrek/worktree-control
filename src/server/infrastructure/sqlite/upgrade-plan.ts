@@ -5,7 +5,7 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import { parseStrictProviderJson } from "../../modules/authentication";
 import { durableJson, privateDirectory, readPrivateBoundedFile, syncDirectory, validateSensitivePath } from "../../private-storage";
-import { schemaTarget, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
+import { schemaTarget, SECURITY_FENCE_SCHEMA_VERSION } from "./migration-registry";
 import { UPGRADE_MARKER_VERSION, upgradeMarkerChecksum, upgradeMarkerMigration } from "./upgrade-marker-migration";
 import { PROJECT_MAPPING_VERSION, projectMappingChecksum, projectMappingMigration } from "./mapping-structure-migration";
 import { ACCOUNT_GRANTS_VERSION, accountGrantsChecksum, accountGrantsMigration } from "./account-grants-migration";
@@ -61,15 +61,18 @@ export const UPGRADE_PLAN_FORMAT = 2;
 
 /** What a structural step is known as: its registry name and checksum. */
 export interface UpgradeStep { version: number; name: string; checksum: string }
-/** Steps the upgrade may run, above the released schema 49 the fence requires. */
+/** Steps the upgrade may run, above the released schema 49 the fence requires (SECURITY_FENCE_SCHEMA_VERSION). */
 const STRUCTURAL_STEPS: ReadonlyMap<number, Omit<UpgradeStep, "version">> = new Map([
   [UPGRADE_MARKER_VERSION, { name: upgradeMarkerMigration.name, checksum: upgradeMarkerChecksum }],
   [PROJECT_MAPPING_VERSION, { name: projectMappingMigration.name, checksum: projectMappingChecksum }],
   [ACCOUNT_GRANTS_VERSION, { name: accountGrantsMigration.name, checksum: accountGrantsChecksum }],
 ]);
-/** The steps from `source` (exclusive) to `target`, as this code would run them. */
+/**
+ * The steps from `source` (exclusive) to `target`, as this code would run them.
+ * The lowest source is the fence base, whatever version this release supports.
+ */
 export function structuralSteps(source: number, target: number): UpgradeStep[] {
-  if (!Number.isSafeInteger(source) || source < SUPPORTED_SCHEMA_VERSION || source > target) throw new UpgradeError("upgrade_step_mismatch", "upgrade inspect");
+  if (!Number.isSafeInteger(source) || source < SECURITY_FENCE_SCHEMA_VERSION || source > target) throw new UpgradeError("upgrade_step_mismatch", "upgrade inspect");
   const steps: UpgradeStep[] = [];
   for (let version = source + 1; version <= target; version++) {
     const step = STRUCTURAL_STEPS.get(version);
