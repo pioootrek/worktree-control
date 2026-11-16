@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { TestRunQueries } from "./test-run-queries";
+import { TestRunQueries, type InterruptedRunsPreparation } from "./test-run-queries";
 
 /**
  * The statement groups that reset stored authority and running work: the one
@@ -34,14 +34,25 @@ export const CANCELLED_ATTEMPT_PHASES = Object.freeze(["assigned", "preparing", 
 export const INTERRUPTED_RUN_PHASES = Object.freeze(["queued", "running"] as const);
 
 /**
- * The statements write the time as a literal, exactly as the quarantine always
- * has; only the canonical form `toISOString` writes is accepted, so nothing
- * else can reach the SQL text.
+ * The characters of every spelling `Date.prototype.toISOString` produces:
+ * `YYYY-MM-DDTHH:mm:ss.sssZ`, and `+YYYYYY-…` or `-YYYYYY-…` for years outside
+ * 0 to 9999. No quote, space or other character that could change the SQL text.
  */
-function instant(now: string): string {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(now)) throw new Error("Authority reset needs a canonical instant.");
+export const INSTANT_CHARACTERS = /^[0-9+\-:.TZ]+$/;
+/**
+ * The statements write the time as a literal, exactly as the quarantine always
+ * has. Accepted is exactly what `toISOString` produces (the value is its own
+ * round trip), which includes the extended years of an extreme clock, so the
+ * quarantine never refuses a time its base accepted; nothing outside
+ * {@link INSTANT_CHARACTERS} can reach the SQL.
+ */
+export function resetInstant(now: string): string {
+  if (typeof now !== "string" || !INSTANT_CHARACTERS.test(now) || Number.isNaN(Date.parse(now)) || new Date(now).toISOString() !== now) {
+    throw new Error("Authority reset needs a canonical instant.");
+  }
   return now;
 }
+const instant = resetInstant;
 
 /** Every credential, of every kind, revoked; a revocation time already stored is kept. */
 export function revokeCredentials(database: Database.Database, now: string): void {
@@ -91,9 +102,11 @@ export function cancelRemoteWork(database: Database.Database, now: string): void
 
 /**
  * Queued and running test runs (and runs whose summary is not terminal) marked
- * interrupted with terminal summaries, through the product's recovery path.
- * Its trimming of old history deletes the requester rows of the runs it trims.
+ * interrupted with terminal summaries, through the product's recovery path
+ * (`markInterruptedTestRuns`: its read-only preparation, then exactly its
+ * writes). Its trimming of old history deletes the requester rows of the runs
+ * it trims. Returns what the recovery prepared and wrote.
  */
-export function interruptTestRuns(database: Database.Database): void {
-  new TestRunQueries(database).markInterruptedTestRuns();
+export function interruptTestRuns(database: Database.Database): InterruptedRunsPreparation {
+  return new TestRunQueries(database).recoverInterruptedTestRuns();
 }

@@ -6,7 +6,7 @@ import {
   CANCELLED_ATTEMPT_PHASES, CANCELLED_REQUEST_PHASES, cancelRemoteWork, CREDENTIAL_KINDS, interruptTestRuns, INTERRUPTED_RUN_PHASES, OLD_GRANT_TABLES,
   releaseReservations, REVISED_GRANT_TABLES, revokeCredentials, revokeOldGrants, type OldGrantTable,
 } from "./authority-reset";
-import { recoveryTrimmedRuns } from "./test-run-queries";
+import { prepareInterruptedTestRuns, type InterruptedRunsPreparation, type RecoveryPosition } from "./test-run-queries";
 import {
   compareText, escapeDisplay, FindingList, UPGRADE_FINDINGS_LIMIT, UpgradeError,
   type UpgradeAct, type UpgradeActContext, type UpgradeActDomain, type UpgradeActKind, type UpgradeProposalContext,
@@ -29,8 +29,9 @@ import {
  * 3. `release_running_work`: every active claim is released, pending and
  *    assigned remote requests and their live attempts are cancelled, and
  *    queued and running test runs are interrupted, exactly as the quarantine
- *    does. Attribution and history stay. This invalidates the work logically;
- *    it does not prove that a remote process stopped.
+ *    does (the product's recovery: its preparation, then its writes).
+ *    Attribution and history stay. This invalidates the work logically; it
+ *    does not prove that a remote process stopped.
  * 4. `grant_admin`: one `admin` grant on the installation for the owner, only
  *    when exactly one principal of kind `owner` exists and it is active;
  *    otherwise there is no such act and no account holds `admin` afterwards.
@@ -122,7 +123,12 @@ function executeReleaseRunningWork(database: Database.Database, context: Upgrade
   gate();
   releaseReservations(database, context.at);
   cancelRemoteWork(database, context.at);
-  interruptTestRuns(database);
+  // The whole-plan validation prepared the same recovery in this transaction and
+  // found nothing it cannot carry out; the act's own preparation must agree: no
+  // hazard, and exactly the runs it prepared to trim are gone.
+  const runsBefore = number(database, "SELECT count(*) FROM test_runs");
+  const recovery = interruptTestRuns(database);
+  if (recovery.hazardCount !== 0 || runsBefore - number(database, "SELECT count(*) FROM test_runs") !== new Set(recovery.trimmed).size) actFailed(RELEASE_RUNNING_WORK);
   if (present(database, "SELECT 1 FROM reservations WHERE released_at IS NULL LIMIT 1")
     || present(database, "SELECT 1 FROM remote_verification_requests WHERE phase IN ('pending','assigned') LIMIT 1")
     || present(database, "SELECT 1 FROM remote_verification_attempts WHERE phase IN ('assigned','preparing','running') LIMIT 1")
@@ -199,7 +205,9 @@ export const AUTHORITY_STORED_COLUMNS: ReadonlyArray<StoredColumns> = Object.fre
   { table: "remote_verification_requests", key: "id", columns: [["id", "text"], ["phase", "text"]] },
   { table: "remote_verification_attempts", key: "id", columns: [["id", "text"], ["phase", "text"], ["version", "integer"]] },
   { table: "test_runs", key: "id", columns: [["id", "text"], ["project_id", "text"], ["phase", "text"], ["queued_at", "text"]] },
-  { table: "test_run_summaries", key: "run_id", columns: [["run_id", "text"], ["terminal", "integer"]] },
+  // What the recovery's preparation orders, compares and counts on (its stored JSON it parses itself).
+  { table: "test_run_summaries", key: "run_id", columns: [["run_id", "text"], ["project_id", "text"], ["queued_at", "text"], ["terminal", "integer"], ["bytes", "integer"]] },
+  { table: "test_summary_coverage", key: "project_id", columns: [["project_id", "text"], ["records", "integer"], ["bytes", "integer"], ["evicted", "integer"]] },
 ] as StoredColumns[]);
 const RULE_TEXT: Readonly<Record<StorageRule, string>> = { text: "text", text_or_null: "text or null", integer: "integer" };
 const holds = (type: unknown, rule: StorageRule) => rule === "text" ? type === "text" : rule === "integer" ? type === "integer" : type === "text" || type === "null";
@@ -229,6 +237,31 @@ function rowsOf(database: Database.Database, table: string, sql: string, problem
 
 const number = (database: Database.Database, sql: string) => Number(database.prepare(sql).pluck().get() ?? 0);
 const INTERRUPTED = `phase IN ('queued','running') OR id IN (SELECT run_id FROM test_run_summaries WHERE terminal=0)`;
+const ERROR_KINDS = new Set(["SyntaxError", "TypeError", "RangeError", "SqliteError", "Error"]);
+
+/**
+ * The test-run recovery `release_running_work` runs, prepared read-only on
+ * this database (the same preparation the act's recovery makes before its
+ * writes): any failure, and any write the database would refuse or stored
+ * evidence a later recovery could not read, is a stop naming the row. The
+ * message names the kind of failure only, never a stored value.
+ */
+function prepareRecovery(database: Database.Database): InterruptedRunsPreparation {
+  const position: RecoveryPosition = { current: null };
+  let recovery: InterruptedRunsPreparation;
+  try { recovery = prepareInterruptedTestRuns(database, position); } catch (error) {
+    const kind = error instanceof Error && ERROR_KINDS.has(error.name) ? error.name : "error";
+    const refused = new FindingList();
+    refused.add(position.current?.table ?? "test_runs", position.current?.id ?? "recovery", `the test-run recovery cannot be carried out on this row (${kind})`);
+    refused.raise("upgrade_authority_malformed");
+    throw error;
+  }
+  const hazards = new FindingList();
+  for (const hazard of recovery.hazards) hazards.add(hazard.table, hazard.id, hazard.problem);
+  if (recovery.hazardCount > recovery.hazards.length) hazards.more(recovery.hazardCount - recovery.hazards.length);
+  hazards.raise("upgrade_authority_malformed");
+  return recovery;
+}
 
 /**
  * The single proposal pass: the four acts (or three, without `grant_admin`)
@@ -250,7 +283,9 @@ export function proposeAuthority(database: Database.Database, context: UpgradePr
 
   // 1. Values the acts depend on: known principal kinds and statuses, known
   //    credential kinds and statuses, revisions and versions that can advance,
-  //    and stored JSON the test-run recovery parses for every run it interrupts.
+  //    and stored JSON the test-run recovery parses for every run it interrupts
+  //    (every such run listed here; the recovery's preparation below then
+  //    proves the whole recovery can be carried out).
   const malformed = new FindingList();
   rowsOf(database, "remote_principals", `SELECT id FROM remote_principals WHERE kind NOT IN (${PRINCIPAL_KINDS.map(kind => `'${kind}'`).join(",")}) OR status NOT IN ('active','revoked') ORDER BY id`,
     "a principal of unknown kind or status", malformed);
@@ -265,6 +300,7 @@ export function proposeAuthority(database: Database.Database, context: UpgradePr
   rowsOf(database, "test_runs", `SELECT id FROM test_runs WHERE (${INTERRUPTED}) AND (${json("args_json")} OR ${json("logs_json")} OR ${json("environment_variable_names_json")}
     OR ${json("source_json", true)} OR ${json("telemetry_json", true)}) ORDER BY id`, "a run to be interrupted holds stored JSON the recovery cannot read", malformed);
   malformed.raise("upgrade_authority_malformed");
+  const recovery = prepareRecovery(database);
 
   // 2. Grants of the new model while the upgrade is needed: a quarantine deletes every one.
   if (context.schemaVersion >= ACCOUNT_GRANTS_VERSION) {
@@ -302,7 +338,7 @@ export function proposeAuthority(database: Database.Database, context: UpgradePr
   };
   const requestPhases = phases("remote_verification_requests", REQUEST_PHASES), attemptPhases = phases("remote_verification_attempts", ATTEMPT_PHASES);
   const queued = number(database, "SELECT count(*) FROM test_runs WHERE phase='queued'"), running = number(database, "SELECT count(*) FROM test_runs WHERE phase='running'");
-  const interrupts = number(database, `SELECT count(*) FROM test_runs WHERE ${INTERRUPTED}`);
+  const interrupts = recovery.runs.length;
   // Kinds, statuses and storage classes were checked above: every owner has a text ID and a known status.
   const ownerList = ownerRows.map(row => ({ id: row.id as string, status: row.status as "active" | "revoked" })).sort((a, b) => compareText(a.id, b.id));
   if (ownerList.length === 1 && ownerList[0].status === "active" && !grantId(ownerList[0].id)) {
@@ -320,7 +356,7 @@ export function proposeAuthority(database: Database.Database, context: UpgradePr
     reservations: { active: activeReservations, released: releasedReservations, releases: activeReservations },
     remoteRequests: { phases: requestPhases, cancels: CANCELLED_REQUEST_PHASES.reduce((sum, phase) => sum + requestPhases[phase], 0) },
     remoteAttempts: { phases: attemptPhases, cancels: CANCELLED_ATTEMPT_PHASES.reduce((sum, phase) => sum + attemptPhases[phase], 0) },
-    testRuns: { queued, running, unfinishedSummaries: interrupts - queued - running, interrupts, trimmed: recoveryTrimmedRuns(database) },
+    testRuns: { queued, running, unfinishedSummaries: interrupts - queued - running, interrupts, trimmed: new Set(recovery.trimmed).size },
     owners: ownerList,
     admin,
   };
@@ -353,7 +389,9 @@ export function describeAuthority(acts: readonly UpgradeAct[], review: Authority
   ];
   if (acts.some(act => act.kind === REVOKE_OLD_GRANTS)) {
     for (const table of review.grantTables) {
-      lines.push(`Revoke ${table.table}: ${table.rows} row(s), ${table.alreadyRevoked} already revoked (kept as they are), ${table.revokes} revoked by this plan${table.revisionAdvances ? "; every row's revision advances" : ""}.`);
+      lines.push(table.revisionAdvances
+        ? `Revoke ${table.table}: ${table.rows} row(s), ${table.alreadyRevoked} already revoked (revocation time preserved; their revision still advances), ${table.revokes} revoked by this plan; every row's revision advances.`
+        : `Revoke ${table.table}: ${table.rows} row(s), ${table.alreadyRevoked} already revoked (revocation time preserved), ${table.revokes} revoked by this plan.`);
     }
     const scopes = review.credentialScopes;
     lines.push(`Credential scopes: ${scopes.rows} row(s) stay as inert rows; they name ${scopes.credentials.before.active + scopes.credentials.before.revoked + scopes.credentials.before.missing} credential(s) (before: ${scopes.credentials.before.active} active, ${scopes.credentials.before.revoked} revoked; after: ${scopes.credentials.after.active} active, ${scopes.credentials.after.revoked} revoked).`);

@@ -642,7 +642,7 @@ describe("authority acts: stops write no plan and change nothing", () => {
   }
   it("lists every column it reads with a storage class", () => {
     expect(AUTHORITY_STORED_COLUMNS.map(entry => entry.table)).toEqual(["remote_principals", "principal_credentials", ...OLD_GRANT_TABLES, "runtime_credential_scopes",
-      "reservations", "remote_verification_requests", "remote_verification_attempts", "test_runs", "test_run_summaries"]);
+      "reservations", "remote_verification_requests", "remote_verification_attempts", "test_runs", "test_run_summaries", "test_summary_coverage"]);
   });
   // Columns the mapping domain also reads (it runs first) are refused by it first; these are read by the authority pass only.
   it.each([
