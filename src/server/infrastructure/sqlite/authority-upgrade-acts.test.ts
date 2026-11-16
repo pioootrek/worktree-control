@@ -19,6 +19,7 @@ import { hashFile } from "./backup-validation";
 import { schemaTarget, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { applyMappingQuarantine, planMappingQuarantine } from "./mapping-structure-migration";
 import { TestRunQueries } from "./test-run-queries";
+import { predictRecovery } from "./test-run-recovery-prediction";
 import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup, type UpgradeBackupSource } from "./upgrade-maintenance";
 import { canonicalJson, normaliseUpgradeDecisions, upgradePlanPath, validateUpgradeProposal, type UpgradeAct, type UpgradePlan } from "./upgrade-plan";
 import {
@@ -651,7 +652,17 @@ describe("authority acts: the quarantine after the extraction", () => {
     } finally { database.close(); }
   });
 
-  /** One recorded call: `exec` (each statement of the batch, whitespace collapsed) or a prepared statement's method, with its bindings. */
+  /**
+   * One recorded call: `exec` (each statement of the batch, whitespace
+   * collapsed) or a prepared statement's method, with its bindings. Both
+   * quarantines run the same production recovery (`markInterruptedTestRuns`,
+   * the base's code), so its reads and writes appear in both traces alike.
+   * Not captured: the work of triggers (the fence's) and of foreign keys, the
+   * statements better-sqlite3 issues for its own transactions and savepoints,
+   * and anything inside SQL functions; `exec` batches are split on `;`, which
+   * holds for the quarantine's batches (no `;` inside a literal), not for SQL
+   * in general. The state comparison above covers what the trace does not.
+   */
   type Trace = Array<[call: string, sql: string, parameters: unknown[]]>;
   const squash = (sql: string) => sql.replace(/\s+/g, " ").trim();
   /** Records every `exec` and every prepared statement's `run`, `get`, `all` and `iterate` on this connection while `recording()` holds. */
@@ -744,10 +755,12 @@ describe("authority acts: the quarantine after the extraction", () => {
 
 /**
  * Stored values on which the test-run recovery of `release_running_work` cannot
- * be carried out (it throws, or the database refuses one of its writes), each
- * with the row a stop names.
+ * be carried out at some clock (it throws, or the database refuses one of its
+ * writes), or which its predictor cannot represent exactly, each with the row
+ * a stop names (an ID that is not printable text is named by its rowid).
  */
-const UNRECOVERABLE: ReadonlyArray<[string, (ids: Ids) => string, string, (ids: Ids) => string]> = [
+const BY_ROWID = expect.stringMatching(/^rowid \d+$/);
+const UNRECOVERABLE: ReadonlyArray<[string, (ids: Ids) => string, string, (ids: Ids) => unknown]> = [
   ["a queued run's source of JSON null", () => "UPDATE test_runs SET source_json='null' WHERE id='queued-run'", "test_runs", () => "queued-run"],
   ["a queued run's source of an empty object", () => "UPDATE test_runs SET source_json='{}' WHERE id='queued-run'", "test_runs", () => "queued-run"],
   ["a queued run's source of a number", () => "UPDATE test_runs SET source_json='5' WHERE id='queued-run'", "test_runs", () => "queued-run"],
@@ -757,6 +770,11 @@ const UNRECOVERABLE: ReadonlyArray<[string, (ids: Ids) => string, string, (ids: 
   ["a stored summary row of another registration", ids => `INSERT INTO test_run_summaries(run_id,project_id,queued_at,terminal,bytes,summary_json) VALUES('queued-run','${ids.registrationB}','${PAST}',0,2,'{}')`,
     "test_runs", () => "queued-run"],
   ["summary accounting an eviction would take below zero", ids => `UPDATE test_summary_coverage SET records=0 WHERE project_id='${ids.registrationA}'`, "test_summary_coverage", ids => ids.registrationA],
+  ["a run ID that is text but not UTF-8", () => "UPDATE test_runs SET id=CAST(x'80' AS TEXT) WHERE id='history-10'", "test_runs", () => BY_ROWID],
+  ["a summary's run ID that is text but not UTF-8", () => "UPDATE test_run_summaries SET run_id=CAST(x'80' AS TEXT) WHERE run_id='recent-run'", "test_run_summaries", () => BY_ROWID],
+  ["a summary's run ID that is a BLOB", () => "UPDATE test_run_summaries SET run_id=CAST(run_id AS BLOB) WHERE run_id='recent-run'", "test_run_summaries", () => "<blob>"],
+  ["an accounting counter above 2^53", ids => `UPDATE test_summary_coverage SET records=9007199254740993 WHERE project_id='${ids.registrationA}'`, "test_summary_coverage", ids => ids.registrationA],
+  ["a real-valued accounting counter", ids => `UPDATE test_summary_coverage SET records=4.5 WHERE project_id='${ids.registrationA}'`, "test_summary_coverage", ids => ids.registrationA],
 ];
 
 describe("authority acts: whole-plan validation", () => {
@@ -910,6 +928,17 @@ describe("authority acts: stops write no plan and change nothing", () => {
         .toThrowError(expect.objectContaining({ code: "upgrade_authority_malformed", details: expect.objectContaining({ findings: [expect.objectContaining({ table: "knowledge_project_grants" })] }) }));
     } finally { database.close(); }
   });
+  it("refuses a run's project ID that is text but not UTF-8 in its own pass, when called directly", () => {
+    // Through inspect the database's own foreign-key validation refuses such a row first: no registration has that ID.
+    const { paths } = authorityWorld();
+    const database = unmanagedFixtureDatabase(copy(paths));
+    try {
+      database.pragma("foreign_keys = OFF");
+      database.exec("UPDATE test_runs SET project_id=CAST(x'80' AS TEXT) WHERE id='history-10'");
+      expect(() => proposeAuthority(database, { schemaVersion: 49, source: 49, target: TARGET }, {}, null, true)).toThrowError(expect.objectContaining({
+        code: "upgrade_authority_malformed", details: expect.objectContaining({ findings: [{ table: "test_runs", id: "history-10", problem: "project_id is not valid UTF-8 text" }] }) }));
+    } finally { database.close(); }
+  });
   it("refuses grants of the new model stored while the upgrade is needed", async () => {
     const { paths, ids } = authorityWorld();
     await apply(paths, inspect(paths).planHash!);
@@ -932,6 +961,57 @@ describe("authority acts: stops write no plan and change nothing", () => {
       expect(proposal.review.owners).toHaveLength(AUTHORITY_OWNER_LIMIT);
       expect(proposal.review.admin).toEqual({ decision: "none", reason: "several_owners" });
     } finally { database.close(); }
+  });
+});
+
+describe("authority acts: the test-run recovery's prediction", () => {
+  const DAY = 86_400_000;
+  it("reviews only what does not depend on the time: the same review with the clock 31 days and a year ahead", () => {
+    const { paths } = authorityWorld();
+    const database = unmanagedFixtureDatabase(copy(paths));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const context = { schemaVersion: 49, source: 49, target: TARGET };
+      const start = Date.now();
+      const at = (offset: number) => {
+        vi.setSystemTime(new Date(start + offset));
+        return { review: proposeAuthority(database, context, {}, null, true).review, evicted: predictRecovery(database, new Date().toISOString()).evictions.map(entry => entry.runId) };
+      };
+      const now = at(0), month = at(31 * DAY), year = at(366 * DAY);
+      expect(month.review).toEqual(now.review);
+      expect(year.review).toEqual(now.review);
+      expect(now.review.testRuns).toEqual({ queued: 1, running: 1, unfinishedSummaries: 1, interrupts: 3, trimmed: 3 });
+      // What the time does change, the pruning by age, is not reviewed: the recent summary is evicted a month later, not now.
+      expect(now.evicted).not.toContain("recent-run");
+      expect(month.evicted).toContain("recent-run");
+      expect(year.evicted).toContain("recent-run");
+    } finally { database.close(); }
+  });
+
+  it.each([
+    ["deletes a run it did not predict", (database: Database.Database) => database.prepare("DELETE FROM test_runs WHERE id='history-40'").run()],
+    ["leaves an interrupted run in another phase", (database: Database.Database) => database.prepare("UPDATE test_runs SET phase='failed' WHERE id='queued-run'").run()],
+  ] as const)("aborts the upgrade when the real recovery %s, and after resume inspect and apply succeed", async (_name, fault) => {
+    const { paths, ids } = authorityWorld();
+    const noted = inspect(paths).planHash!;
+    const before = read(paths, exact);
+    // A disagreement between the recovery and its predictor (a rule changed on one side only), injected after the real recovery.
+    const original = TestRunQueries.prototype.markInterruptedTestRuns;
+    let faults = 0;
+    vi.spyOn(TestRunQueries.prototype, "markInterruptedTestRuns").mockImplementation(function (this: TestRunQueries) {
+      original.call(this);
+      faults++;
+      fault((this as unknown as { database: Database.Database }).database);
+    });
+    expect(await failure(() => apply(paths, noted))).toMatchObject({ code: "upgrade_outcome_uncertain", nextStep: "auth fence resume", committed: false, state: "fenced" });
+    expect(faults).toBe(1);
+    vi.restoreAllMocks();
+    expect({ ...read(paths, exact), security_checkpoint: undefined }).toEqual({ ...before, security_checkpoint: undefined });
+    read(paths, database => expect(inspectSchema(database).version).toBe(49));
+    resume(paths);
+    const inspection = inspect(paths);
+    await apply(paths, inspection.planHash!);
+    read(paths, database => expect(grantsOf(database)).toEqual([expect.objectContaining({ account_id: ids.owner, role: "admin" })]));
   });
 });
 

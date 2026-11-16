@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { TestRunQueries, type InterruptedRunsPreparation } from "./test-run-queries";
+import { TestRunQueries } from "./test-run-queries";
 
 /**
  * The statement groups that reset stored authority and running work: the one
@@ -103,10 +103,9 @@ export function cancelRemoteWork(database: Database.Database, now: string): void
 /**
  * Queued and running test runs (and runs whose summary is not terminal) marked
  * interrupted with terminal summaries, through the product's recovery path
- * (`markInterruptedTestRuns`: its read-only preparation, then exactly its
- * writes). Its trimming of old history deletes the requester rows of the runs
- * it trims. Returns what the recovery prepared and wrote.
+ * (`markInterruptedTestRuns`, unchanged). Its trimming of old history deletes
+ * the requester rows of the runs it trims.
  */
-export function interruptTestRuns(database: Database.Database): InterruptedRunsPreparation {
-  return new TestRunQueries(database).recoverInterruptedTestRuns();
+export function interruptTestRuns(database: Database.Database): void {
+  new TestRunQueries(database).markInterruptedTestRuns();
 }

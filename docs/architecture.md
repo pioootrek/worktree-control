@@ -1932,9 +1932,9 @@ as `upgrade_decisions_invalid`. Its acts, in this order:
    attempts to `cancel_requested`, and marks queued and running test runs
    (and runs whose summary is not terminal) interrupted through
    `markInterruptedTestRuns`, whose trimming of old history also deletes the
-   requester rows of the runs it trims. The act refuses to complete when its
-   own recovery reports a hazard or deletes a different number of runs than it
-   prepared. Attribution and history stay. This invalidates the work
+   requester rows of the runs it trims. The act then checks the recovery's
+   outcome against its prediction (see below) and refuses to complete on any
+   disagreement. Attribution and history stay. This invalidates the work
    logically; it does not prove that a remote process stopped. The upgrade
    runs with the controller stopped.
 4. `grant_admin` writes one `admin` grant on the installation for the owner,
@@ -1967,33 +1967,96 @@ Another test shows that the upgrade's reset acts and the quarantine leave
 identical rows in every shared table and differ exactly in those
 quarantine-only effects.
 
-#### The test-run recovery: preparation, then writes
+#### The test-run recovery and its predictor
 
-`markInterruptedTestRuns` (in `test-run-queries.ts`), the recovery of ordinary
-startup, the quarantine and `release_running_work`, is a read-only preparation
-followed by its writes. The preparation does every read, parse and computation
-of the recovery in its order: the runs it interrupts and their new values, the
-summaries it saves, the summary prunes by age and by the per-project and
-global caps with their accounting, and the history trims after each save and
-at the end. Each read is answered from the state the earlier writes would
-leave, over the unchanged database, and each write is recorded with its
-parameters. The write phase then runs exactly the recorded statements. The
-summary `save` and `prune` rules are one implementation, run against the
-database or against the preparation. For every input the recovery handled
-before, the rows, values and statements are those of the recovery before the
-split; a differential test compares both, with a fixed clock, on a populated
-fixture.
+`markInterruptedTestRuns` (in `test-run-queries.ts`) is the recovery of
+ordinary startup, of the quarantine and of `release_running_work`. It is the
+product's sequential code, unchanged: for each run it interrupts, it writes the
+run, saves its summary, prunes summaries by age and by the per-project and
+global caps, and trims that project's history; a final trim covers every
+project. It samples the clock at its start and again at each pruning.
 
-Where the recovery threw, the preparation throws the same error before
-anything is written and names the row: a run's stored source or telemetry of
-another shape (JSON `null`, `{}`, a number, an array, reason codes that are
-not a list), JSON that does not parse, a summary over its record budget, a
-stored summary of another registration, and a receipt payload that is not
-JSON when a trim reads the receipts (SQLite reads them only when a trim has a
-candidate). It also lists hazards without throwing: summary accounting a write
-would take outside its `CHECK` range (the write phase then fails exactly as
-the recovery did), and a receipt no trim of this recovery reads but a later
-one would.
+The upgrade adds a read-only predictor, `test-run-recovery-prediction.ts`,
+imported only by `authority-upgrade-acts.ts` (the import guard of
+`provisional-schema.test.ts` enforces that). It never writes and the recovery
+does not call it. It carries its own copies of the recovery's rules, so they
+exist twice; a differential test runs the real recovery on a copy of a rich
+fixture and compares every table the recovery writes with the prediction made
+on the original, by storage class and bytes and with a fixed clock, so a rule
+changed on one side only fails it. Its limits:
+
+- identifiers and ordered texts must be text whose bytes are the UTF-8 encoding
+  of the string read back, so that JavaScript equality and byte order are
+  SQLite's `BINARY` comparisons;
+- counters and byte totals are JavaScript numbers, so every one and every sum
+  the recovery can reach must be a safe integer;
+- it uses one instant for the whole recovery; with a moving clock only results
+  that depend on the time can differ (summary evictions by age and what the
+  caps evict after them, `finished_at`, `recoveredAt`, `last_pruned_at`);
+- it predicts the values bound for an interrupted run's columns, not the
+  conversion column affinity applies to a value of an unusual class, and rows
+  by key, not by rowid; trigger and foreign-key effects are not modelled.
+
+Before predicting, the proposal refuses as `upgrade_authority_malformed`
+(naming the table and the row's key, or its rowid when the key is not printable
+text, never a stored value) everything outside those limits or on which the
+recovery could fail for some clock:
+
+- a value of another storage class, or text that is not valid UTF-8, among run
+  IDs, project IDs, phases and queue times of `test_runs`, run IDs, project
+  IDs and queue times of `test_run_summaries`, project IDs of
+  `test_summary_coverage`, and run IDs of both requester tables;
+- a summary outside its `CHECK` (`terminal` 0 or 1, `bytes` 1 to 8192), and an
+  accounting counter that is not an integer from 0 to 2^53 - 1;
+- for a run to be interrupted: stored source or telemetry of a shape the
+  recovery cannot change, JSON that does not parse, a summary over the record
+  budget when counted with the longest instant spelling, a stored summary of
+  its ID that belongs to another registration, a stored summary that is the
+  one the recovery would write at one instant, and a stored value its upsert's
+  `CHECK` refuses;
+- totals that could leave the safe integer range: all records plus one per run
+  interrupted, all bytes plus a full summary per run, and each project's
+  evictions plus one per summary;
+- summaries without their project's accounting, and accounting below its
+  summaries' records or bytes;
+- a receipt payload the history trimming's pinning rule cannot read, whether or
+  not a trim of this recovery reads it.
+
+None of these depends on the time. Where the recovery's own outcome depends on
+it, the refusal is conservative: a stored summary of another registration is
+refused although the recovery reaches it only if pruning by age has not
+evicted it first; accounting below its summaries is refused although it fails
+only if enough evictions happen; the budget is counted at the longest instant
+spelling; and a receipt is refused although SQLite reads receipts only when a
+trim has a candidate. With these refused, the recovery cannot fail at any clock
+and the prediction is exact at a fixed one.
+
+The review contains only results that do not depend on the time: runs queued,
+running and with an unfinished summary, runs interrupted, and runs the history
+trims delete. Pruning by age deletes only finished summaries, which no trim
+reads, so the trims do not depend on it. A test recomputes the review with the
+clock 31 days and a year ahead and requires it to be equal.
+
+`release_running_work` predicts the recovery in its transaction, records the
+run IDs and requester run IDs, runs the original recovery, and checks: the runs
+deleted are exactly the predicted ones (by identity, not by count); every
+interrupted run that remains is `interrupted` with no queue position; no
+queued or running run and no run with an unfinished summary remains; the
+requester rows of deleted runs are gone and every other one remains. A
+disagreement aborts the transaction. That is a late failure by design: it
+means the predictor and the recovery disagree, the database is left fenced and
+needs `auth fence resume`. A test injects such a disagreement.
+
+When the quarantine's own recovery cannot run on a row (it throws), `auth
+fence resume` fails too, before anything is committed. The operator can then
+restore a verified backup, or repair the row offline with the controller
+stopped. `test_run_summaries` and `test_summary_coverage` are not covered by
+the security fence: a plain SQLite client can delete a summary or correct its
+project's accounting, and the database stays trusted. `test_runs`, both
+requester tables and `remote_worker_receipts` are covered by the fence: an edit
+made outside an owner fences the installation, `auth fence resume` then
+quarantines it again and runs the recovery on the edited rows, and no supported
+command repairs these rows.
 
 The reset acts have fixed payloads, and `grant_admin` names the account. So the
 plan hash binds what happens without listing every row. The row effects are
@@ -2008,11 +2071,9 @@ read.
 
 The pass reads only tables that exist at schema 49, plus `account_grants` from
 52 on, which is absent at the source and read as empty, so it gives the same
-result at the source and inside the transaction. It prepares the test-run
+result at the source and inside the transaction. It predicts the test-run
 recovery that `release_running_work` runs, read-only, at inspect and at both
-validations, and stops when the recovery cannot be carried out on this
-database; the storage classes it checks first include every summary and
-accounting column the preparation orders, compares or counts on. Its review, in counts, IDs,
+validations, after the refusals above. Its review, in counts, IDs,
 kinds and statuses only (no token hash, secret or stored JSON):
 
 - for each of the six tables: rows, rows already revoked, rows this plan
@@ -2025,7 +2086,7 @@ kinds and statuses only (no token hash, secret or stored JSON):
   are cancelled;
 - test runs queued, running and with an unfinished summary, how many are
   interrupted, and how many old runs the history trimming then deletes, both
-  from the recovery's preparation;
+  from the prediction and independent of the time;
 - every principal of kind `owner`, with its ID and status, and the admin
   decision: `grant` with the account, or `none` with the reason `no_owner`,
   `owner_not_active` or `several_owners`.
@@ -2036,7 +2097,7 @@ interrupted, and what is kept.
 
 | Stop | Meaning |
 | --- | --- |
-| `upgrade_authority_malformed` | A value the pass reads has another storage class; a principal or credential has an unknown kind or status; a revision or a live attempt's version cannot advance; a run to be interrupted holds stored JSON that does not parse; the recovery's preparation throws (naming the run or receipt by ID and the kind of failure, never a stored value) or lists a hazard; or the single active owner's ID cannot be a grant's account. |
+| `upgrade_authority_malformed` | A value the pass reads has another storage class; a principal or credential has an unknown kind or status; a revision or a live attempt's version cannot advance; a run to be interrupted holds stored JSON that does not parse; the test-run recovery's predictor refuses a row (see the list above; naming the row by its key or rowid and the kind of problem, never a stored value); or the single active owner's ID cannot be a grant's account. |
 | `upgrade_authority_unexpected` | Grants of the new model are stored while the upgrade is needed. A quarantine deletes every one, so the protocol does not produce this. |
 | `upgrade_plan_bounds` | More than 64 principals of kind `owner`, the fence's own bound (through the protocol the fence refuses first). |
 

@@ -6,7 +6,7 @@ import {
   CANCELLED_ATTEMPT_PHASES, CANCELLED_REQUEST_PHASES, cancelRemoteWork, CREDENTIAL_KINDS, interruptTestRuns, INTERRUPTED_RUN_PHASES, OLD_GRANT_TABLES,
   releaseReservations, REVISED_GRANT_TABLES, revokeCredentials, revokeOldGrants, type OldGrantTable,
 } from "./authority-reset";
-import { prepareInterruptedTestRuns, type InterruptedRunsPreparation, type RecoveryPosition } from "./test-run-queries";
+import { predictRecovery, recoveryBaseline, recoveryDisagreements, recoveryRefusals, type RecoveryPrediction } from "./test-run-recovery-prediction";
 import {
   compareText, escapeDisplay, FindingList, UPGRADE_FINDINGS_LIMIT, UpgradeError,
   type UpgradeAct, type UpgradeActContext, type UpgradeActDomain, type UpgradeActKind, type UpgradeProposalContext,
@@ -29,7 +29,8 @@ import {
  * 3. `release_running_work`: every active claim is released, pending and
  *    assigned remote requests and their live attempts are cancelled, and
  *    queued and running test runs are interrupted, exactly as the quarantine
- *    does (the product's recovery: its preparation, then its writes).
+ *    does (the product's recovery, unchanged), and the outcome is checked
+ *    against the read-only prediction of `test-run-recovery-prediction.ts`.
  *    Attribution and history stay. This invalidates the work logically; it
  *    does not prove that a remote process stopped.
  * 4. `grant_admin`: one `admin` grant on the installation for the owner, only
@@ -123,12 +124,17 @@ function executeReleaseRunningWork(database: Database.Database, context: Upgrade
   gate();
   releaseReservations(database, context.at);
   cancelRemoteWork(database, context.at);
-  // The whole-plan validation prepared the same recovery in this transaction and
-  // found nothing it cannot carry out; the act's own preparation must agree: no
-  // hazard, and exactly the runs it prepared to trim are gone.
-  const runsBefore = number(database, "SELECT count(*) FROM test_runs");
-  const recovery = interruptTestRuns(database);
-  if (recovery.hazardCount !== 0 || runsBefore - number(database, "SELECT count(*) FROM test_runs") !== new Set(recovery.trimmed).size) actFailed(RELEASE_RUNNING_WORK);
+  // The whole-plan validation ran the proposal in this transaction, so the
+  // predictor's refusals found nothing. The original recovery runs, then its
+  // outcome is checked against a prediction made here, just before it, on the
+  // clock-independent facts only. A disagreement is a late failure by design:
+  // it means the predictor and the recovery disagree (a rule changed on one
+  // side only); the transaction aborts and the database needs `auth fence
+  // resume`.
+  const prediction = predictRecovery(database, new Date().toISOString());
+  const baseline = recoveryBaseline(database);
+  interruptTestRuns(database);
+  if (recoveryDisagreements(database, prediction, baseline).length > 0) actFailed(RELEASE_RUNNING_WORK);
   if (present(database, "SELECT 1 FROM reservations WHERE released_at IS NULL LIMIT 1")
     || present(database, "SELECT 1 FROM remote_verification_requests WHERE phase IN ('pending','assigned') LIMIT 1")
     || present(database, "SELECT 1 FROM remote_verification_attempts WHERE phase IN ('assigned','preparing','running') LIMIT 1")
@@ -170,7 +176,12 @@ const reviewSchema = z.object({
   reservations: z.object({ active: count, released: count, releases: count }).strict(),
   remoteRequests: z.object({ phases: byPhase(REQUEST_PHASES), cancels: count }).strict(),
   remoteAttempts: z.object({ phases: byPhase(ATTEMPT_PHASES), cancels: count }).strict(),
-  /** Runs interrupted (queued, running, and others whose summary is not terminal) and the history trimming that follows. */
+  /**
+   * Runs interrupted (queued, running, and others whose summary is not
+   * terminal) and the history trimming that follows. Every count is
+   * independent of the time: summary pruning by age, which depends on it, is
+   * not reviewed.
+   */
   testRuns: z.object({ queued: count, running: count, unfinishedSummaries: count, interrupts: count, trimmed: count }).strict(),
   owners: z.array(z.object({ id: z.string(), status: z.enum(PRINCIPAL_STATUSES) }).strict()),
   admin: z.union([
@@ -205,7 +216,7 @@ export const AUTHORITY_STORED_COLUMNS: ReadonlyArray<StoredColumns> = Object.fre
   { table: "remote_verification_requests", key: "id", columns: [["id", "text"], ["phase", "text"]] },
   { table: "remote_verification_attempts", key: "id", columns: [["id", "text"], ["phase", "text"], ["version", "integer"]] },
   { table: "test_runs", key: "id", columns: [["id", "text"], ["project_id", "text"], ["phase", "text"], ["queued_at", "text"]] },
-  // What the recovery's preparation orders, compares and counts on (its stored JSON it parses itself).
+  // What the test-run recovery orders, compares and counts on (the predictor checks these and its other columns again, with UTF-8; the stored JSON it parses itself).
   { table: "test_run_summaries", key: "run_id", columns: [["run_id", "text"], ["project_id", "text"], ["queued_at", "text"], ["terminal", "integer"], ["bytes", "integer"]] },
   { table: "test_summary_coverage", key: "project_id", columns: [["project_id", "text"], ["records", "integer"], ["bytes", "integer"], ["evicted", "integer"]] },
 ] as StoredColumns[]);
@@ -237,30 +248,22 @@ function rowsOf(database: Database.Database, table: string, sql: string, problem
 
 const number = (database: Database.Database, sql: string) => Number(database.prepare(sql).pluck().get() ?? 0);
 const INTERRUPTED = `phase IN ('queued','running') OR id IN (SELECT run_id FROM test_run_summaries WHERE terminal=0)`;
-const ERROR_KINDS = new Set(["SyntaxError", "TypeError", "RangeError", "SqliteError", "Error"]);
 
 /**
- * The test-run recovery `release_running_work` runs, prepared read-only on
- * this database (the same preparation the act's recovery makes before its
- * writes): any failure, and any write the database would refuse or stored
- * evidence a later recovery could not read, is a stop naming the row. The
- * message names the kind of failure only, never a stored value.
+ * The test-run recovery `release_running_work` runs, predicted read-only on
+ * this database. First every stored value the predictor cannot represent
+ * exactly, or on which the recovery could fail at some clock, is a stop naming
+ * the row (`recoveryRefusals`; none depends on the time); then the prediction,
+ * at the current time, of which only clock-independent results reach the
+ * review. A message names the kind of problem only, never a stored value.
  */
-function prepareRecovery(database: Database.Database): InterruptedRunsPreparation {
-  const position: RecoveryPosition = { current: null };
-  let recovery: InterruptedRunsPreparation;
-  try { recovery = prepareInterruptedTestRuns(database, position); } catch (error) {
-    const kind = error instanceof Error && ERROR_KINDS.has(error.name) ? error.name : "error";
-    const refused = new FindingList();
-    refused.add(position.current?.table ?? "test_runs", position.current?.id ?? "recovery", `the test-run recovery cannot be carried out on this row (${kind})`);
-    refused.raise("upgrade_authority_malformed");
-    throw error;
-  }
-  const hazards = new FindingList();
-  for (const hazard of recovery.hazards) hazards.add(hazard.table, hazard.id, hazard.problem);
-  if (recovery.hazardCount > recovery.hazards.length) hazards.more(recovery.hazardCount - recovery.hazards.length);
-  hazards.raise("upgrade_authority_malformed");
-  return recovery;
+function predictedRecovery(database: Database.Database): RecoveryPrediction {
+  const { refusals, count } = recoveryRefusals(database, UPGRADE_FINDINGS_LIMIT);
+  const refused = new FindingList();
+  for (const refusal of refusals) refused.add(refusal.table, refusal.id, refusal.problem);
+  if (count > refusals.length) refused.more(count - refusals.length);
+  refused.raise("upgrade_authority_malformed");
+  return predictRecovery(database, new Date().toISOString());
 }
 
 /**
@@ -284,8 +287,8 @@ export function proposeAuthority(database: Database.Database, context: UpgradePr
   // 1. Values the acts depend on: known principal kinds and statuses, known
   //    credential kinds and statuses, revisions and versions that can advance,
   //    and stored JSON the test-run recovery parses for every run it interrupts
-  //    (every such run listed here; the recovery's preparation below then
-  //    proves the whole recovery can be carried out).
+  //    (every such run listed here; the predictor's refusals below then cover
+  //    the rest of what the recovery reads).
   const malformed = new FindingList();
   rowsOf(database, "remote_principals", `SELECT id FROM remote_principals WHERE kind NOT IN (${PRINCIPAL_KINDS.map(kind => `'${kind}'`).join(",")}) OR status NOT IN ('active','revoked') ORDER BY id`,
     "a principal of unknown kind or status", malformed);
@@ -300,7 +303,7 @@ export function proposeAuthority(database: Database.Database, context: UpgradePr
   rowsOf(database, "test_runs", `SELECT id FROM test_runs WHERE (${INTERRUPTED}) AND (${json("args_json")} OR ${json("logs_json")} OR ${json("environment_variable_names_json")}
     OR ${json("source_json", true)} OR ${json("telemetry_json", true)}) ORDER BY id`, "a run to be interrupted holds stored JSON the recovery cannot read", malformed);
   malformed.raise("upgrade_authority_malformed");
-  const recovery = prepareRecovery(database);
+  const recovery = predictedRecovery(database);
 
   // 2. Grants of the new model while the upgrade is needed: a quarantine deletes every one.
   if (context.schemaVersion >= ACCOUNT_GRANTS_VERSION) {
@@ -338,7 +341,7 @@ export function proposeAuthority(database: Database.Database, context: UpgradePr
   };
   const requestPhases = phases("remote_verification_requests", REQUEST_PHASES), attemptPhases = phases("remote_verification_attempts", ATTEMPT_PHASES);
   const queued = number(database, "SELECT count(*) FROM test_runs WHERE phase='queued'"), running = number(database, "SELECT count(*) FROM test_runs WHERE phase='running'");
-  const interrupts = recovery.runs.length;
+  const interrupts = recovery.interrupted.length;
   // Kinds, statuses and storage classes were checked above: every owner has a text ID and a known status.
   const ownerList = ownerRows.map(row => ({ id: row.id as string, status: row.status as "active" | "revoked" })).sort((a, b) => compareText(a.id, b.id));
   if (ownerList.length === 1 && ownerList[0].status === "active" && !grantId(ownerList[0].id)) {

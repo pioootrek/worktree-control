@@ -54,7 +54,10 @@ import { SecurityFence } from "./security-fence";
  * project directory. STEP_MODULES also holds the authority reset shared by the
  * quarantine and the upgrade (AUTHORITY_RESET): it is not provisional (the
  * schema-49 quarantine runs it with the switch off, so it has no gate), but its
- * revocations may be reached only through its two listed importers.
+ * revocations may be reached only through its two listed importers; and the
+ * read-only predictor of the test-run recovery (RECOVERY_PREDICTION), whose
+ * only importer is the authority acts: no other code may rely on its copies
+ * of the recovery's rules.
  *
  * Limits, not covered here:
  * - non-literal specifiers (`import(name)`, `require(name)`, `createRequire`
@@ -82,8 +85,8 @@ const MARKER_STEP = `${SQLITE}/upgrade-marker-migration.ts`, COVERAGE = `${SQLIT
 const MAPPING_STEP = `${SQLITE}/mapping-structure-migration.ts`, DIRECTORY = `${SQLITE}/project-directory-queries.ts`;
 const MAPPING_ACTS = `${SQLITE}/mapping-upgrade-acts.ts`;
 const GRANTS_STEP = `${SQLITE}/account-grants-migration.ts`, AUTHORITY_ACTS = `${SQLITE}/authority-upgrade-acts.ts`;
-const AUTHORITY_RESET = `${SQLITE}/authority-reset.ts`;
-const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY, MAPPING_ACTS, GRANTS_STEP, AUTHORITY_ACTS, AUTHORITY_RESET]);
+const AUTHORITY_RESET = `${SQLITE}/authority-reset.ts`, RECOVERY_PREDICTION = `${SQLITE}/test-run-recovery-prediction.ts`;
+const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY, MAPPING_ACTS, GRANTS_STEP, AUTHORITY_ACTS, AUTHORITY_RESET, RECOVERY_PREDICTION]);
 /**
  * The only non-test importers of the step modules, each with the modules it may
  * import and why. The project directory (step 51) has no importer: it is not mounted.
@@ -101,7 +104,8 @@ const STEP_IMPORTS: Readonly<Record<string, Readonly<Record<string, string>>>> =
     [AUTHORITY_ACTS]: "registers the step-52 authority act domain in the upgrade's registry, after the mapping domain" },
   [MAPPING_ACTS]: { [MAPPING_STEP]: "passes the step-51 gate with the step's version before reading the mapping columns" },
   [AUTHORITY_ACTS]: { [GRANTS_STEP]: "passes the step-52 gate with the step's version before reading or writing the grants table",
-    [AUTHORITY_RESET]: "runs the quarantine's reset statements as the upgrade's revoke and release acts" },
+    [AUTHORITY_RESET]: "runs the quarantine's reset statements as the upgrade's revoke and release acts",
+    [RECOVERY_PREDICTION]: "refuses what the test-run recovery could fail on and checks the recovery's outcome against its prediction" },
   [`${SQLITE}/database-validation.ts`]: { [MAPPING_STEP]: "validates the step-51 clock, stamps, parents and journal at version 51",
     [GRANTS_STEP]: "validates the shape of the step-52 grants at version 52" },
   [`${SQLITE}/security-maintenance.ts`]: { [MAPPING_STEP]: "plans and applies the step-51 mapping quarantine at target 51",
@@ -498,6 +502,13 @@ describe("provisional schema steps stay switched off", () => {
     ]);
     expect(strip(stepFindings("src/server/bootstrap/example.ts", 'import { revokeCredentials } from "@/server/infrastructure/sqlite/authority-reset";')))
       .toEqual([`import of @/server/infrastructure/sqlite/authority-reset (${AUTHORITY_RESET})`]);
+    // The recovery's predictor: the authority acts only; the recovery itself, the quarantine and every other file are reported.
+    const predictionModule = "./test-run-recovery-prediction";
+    const prediction = `import { predictRecovery } from "${predictionModule}";`;
+    expect(stepFindings(AUTHORITY_ACTS, prediction)).toEqual([]);
+    for (const file of [`${SQLITE}/test-run-queries.ts`, `${SQLITE}/test-summary-queries.ts`, AUTHORITY_RESET, `${SQLITE}/security-maintenance.ts`, `${SQLITE}/upgrade-plan.ts`, `${SQLITE}/sqlite-state-store.ts`, `${SQLITE}/example.ts`]) {
+      expect(strip(stepFindings(file, prediction)), file).toEqual([`import of ${predictionModule} (${RECOVERY_PREDICTION})`]);
+    }
   });
 
   it("keeps the shared authority reset callable with the switch off, as the schema-49 quarantine needs", () => {
@@ -509,7 +520,7 @@ describe("provisional schema steps stay switched off", () => {
       memory.function("worktree_security_pending", () => 0);
       const at = "2025-01-01T00:00:00.000Z";
       revokeCredentials(memory, at); revokeOldGrants(memory, at); releaseReservations(memory, at); cancelRemoteWork(memory, at);
-      expect(interruptTestRuns(memory)).toMatchObject({ runs: [], trimmed: [], hazardCount: 0 });
+      expect(() => interruptTestRuns(memory)).not.toThrow();
     } finally { memory.close(); }
   });
 
