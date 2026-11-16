@@ -73,6 +73,17 @@ async function refusal(cli, args, extra) {
   assert.equal(result.code, 1, `Expected a refusal: ${args[0]} ${args[1] ?? ""}`);
   return JSON.parse(result.stderr.trim().split("\n").at(-1));
 }
+/**
+ * A CLI opening refused by the security fence: exit code 1 and, as the last stderr line, the
+ * product's SecurityFenceError message for exactly that code ("<code>: Use protected offline auth
+ * fence inspect, ..."); outside `auth fence` the CLI prints fence refusals as that text, not JSON.
+ */
+async function fenceRefusal(cli, args, code, extra) {
+  const result = await command(cli, args, extra);
+  assert.equal(result.code, 1, `Expected a fence refusal: ${args[0]} ${args[1] ?? ""}`);
+  const last = result.stderr.trim().split("\n").at(-1);
+  assert(last.startsWith(`${code}: Use protected offline auth fence inspect`), `${args[0]} must be refused with ${code}`);
+}
 /** The database and its WAL (a missing and an empty WAL are the same state), the witness and the upgrade plan file, each by its bytes. */
 async function sourceFiles(directory = directoryArgs[1]) {
   const read = async path => { try { return await readFile(path); } catch (error) { if (error.code === "ENOENT") return null; throw error; } };
@@ -273,7 +284,7 @@ try {
     await step("pre-fence-ordinary-refusal-preserves-database", async () => {
       const files = await sourceFiles();
       for (const args of [["auth", "status"], ["start", "--service-mode", "--no-open", "--host", "127.0.0.1", "--port", String(await freePort()), "--mcp-port", String(await freePort())]]) {
-        assert.equal((await refusal(currentCli, args)).code, "security_fence_establishment_required", `${args[0]} must refuse a database without a fence`);
+        await fenceRefusal(currentCli, args, "security_fence_establishment_required");
       }
       assert.deepEqual(await sourceFiles(), files, "Refused openings leave the 0.1.1 database and its WAL as they were.");
     });
@@ -517,7 +528,7 @@ try {
     const backup = join(root, "rollback.sqlite3"); const db = new native.Database(join(data, "state.sqlite3"), { readonly: true }); try { await db.backup(backup); } finally { db.close(); }
     await json(currentCli, ["auth", "provider", "recover", "--principal-id", oldOwner.principalId, "--input-stdin"], {}, { newPassword: replacement });
     await cp(backup, join(data, "state.sqlite3")); await rm(join(data, "state.sqlite3-wal"), { force: true }); await rm(join(data, "state.sqlite3-shm"), { force: true });
-    assert.equal((await refusal(currentCli, ["auth", "status"])).code, "security_fence_recovery_required", "A rolled-back database goes to recovery.");
+    await fenceRefusal(currentCli, ["auth", "status"], "security_fence_recovery_required");
     const inspected = await json(currentCli, ["auth", "fence", "inspect"]);
     await json(currentCli, ["auth", "fence", "resume", "--expect", inspected.preflight, "--mode", "better-auth"]);
     // The resumed database needs the upgrade again before any credential recovery.
@@ -543,7 +554,7 @@ try {
     const restoreAndResume = async label => {
       await step(`${label}-public-backup-restore-requires-resume`, async () => {
         assert.equal((await command(currentCli, ["backup", "restore", oldBackup])).code, 0, "The candidate must restore the public 0.1.1 application backup.");
-        assert.equal((await refusal(currentCli, ["auth", "status"])).code, "security_fence_recovery_required", "A restored database goes to recovery.");
+        await fenceRefusal(currentCli, ["auth", "status"], "security_fence_recovery_required");
         const preflight = await json(currentCli, ["auth", "fence", "inspect"]);
         assert.equal(preflight.schemaVersion, PUBLIC_BASELINE.schema);
         assert.equal(preflight.code, "security_fence_recovery_required"); assert.equal(preflight.establishmentAllowed, false);
