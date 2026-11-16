@@ -17,12 +17,9 @@ import {
 } from "./upgrade-contract";
 
 /**
- * The plan of the explicit offline upgrade (integration branch, provisional).
- * `upgrade inspect` writes one plan beside the database; `upgrade apply --expect
- * <hash>` executes exactly that plan (see `upgrade-maintenance.ts`). Nothing here
- * is registered or reachable from production: every entry point that reads or
- * writes a file needs a schema target of at least 50, which only the provisional
- * switch allows ({@link assertUpgradeAvailable}).
+ * The plan of the explicit offline upgrade. `upgrade inspect` writes one plan
+ * beside the database; `upgrade apply --expect <hash>` executes exactly that
+ * plan (see `upgrade-maintenance.ts`).
  */
 
 export {
@@ -34,21 +31,13 @@ export {
 /**
  * The schema target of every upgrade entry point, checked before any lock or
  * file is touched: at least step 50 (the marker), and only what `schemaTarget`
- * allows, so nothing is available while the provisional switch is off.
+ * allows (at most the supported version).
  */
 export function upgradeTarget(target?: number): number {
   let version: number;
   try { version = schemaTarget(target); } catch { throw new UpgradeError("upgrade_unsupported", "none"); }
   if (version < UPGRADE_MARKER_VERSION) throw new UpgradeError("upgrade_unsupported", "none");
   return version;
-}
-/**
- * Refuses, as {@link upgradeTarget} does, unless the upgrade's schema target is
- * allowed. Every upgrade-specific helper that reads or writes a file calls it
- * first, including those of `security-fence.ts`.
- */
-export function assertUpgradeAvailable(): void {
-  upgradeTarget(UPGRADE_MARKER_VERSION);
 }
 
 const hex = z.string().regex(/^[0-9a-f]{64}$/);
@@ -273,7 +262,6 @@ function assertPrivateEntry(path: string): void {
  * Returns the plan hash.
  */
 export function writeUpgradePlan(database: string, plan: UpgradePlan): string {
-  assertUpgradeAvailable();
   const checked = parseUpgradePlan(plan);
   const hash = upgradePlanHash(checked);
   const envelope = { payload: JSON.parse(canonicalJson(checked)) as unknown, sha256: hash };
@@ -305,7 +293,6 @@ export function writeUpgradePlan(database: string, plan: UpgradePlan): string {
  * through a link, with the envelope hash verified against the canonical payload.
  */
 export function readUpgradePlan(database: string, domains: ReadonlyArray<UpgradeActDomain> = UPGRADE_ACT_DOMAINS): { plan: UpgradePlan; hash: string } {
-  assertUpgradeAvailable();
   const path = upgradePlanPath(database);
   let present: boolean;
   try { lstatSync(path); present = true; } catch (error) {
@@ -328,9 +315,8 @@ export function readUpgradePlan(database: string, domains: ReadonlyArray<Upgrade
   return { plan, hash };
 }
 
-/** Removes the executed plan. Returns false (and keeps the result) when that fails; the gate refuses before. */
+/** Removes the executed plan. Returns false (and keeps the result) when that fails. */
 export function removeUpgradePlan(database: string): boolean {
-  assertUpgradeAvailable();
   const path = upgradePlanPath(database);
   try {
     if (!existsSync(path)) return true;

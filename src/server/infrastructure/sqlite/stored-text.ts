@@ -1,9 +1,8 @@
 import type Database from "better-sqlite3";
 
 /**
- * Stored text that reads back exactly (integration branch, provisional, used
- * only by the upgrade's mapping and authority acts and by the test-run
- * recovery's predictor).
+ * Stored text that reads back exactly (used only by the upgrade's mapping and
+ * authority acts and by the test-run recovery's predictor).
  *
  * SQLite stores the bytes of a text value as it was given them and does not
  * check that they are UTF-8. better-sqlite3 decodes them into a JavaScript

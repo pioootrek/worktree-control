@@ -14,9 +14,8 @@ import {
 } from "./upgrade-contract";
 
 /**
- * The authority acts of the explicit offline upgrade (integration branch,
- * provisional, from target 52 on, not registered anywhere outside the
- * upgrade): the one-way reset of the old authorization model and the first
+ * The authority acts of the explicit offline upgrade (from target 52 on, not
+ * registered anywhere outside the upgrade): the one-way reset of the old authorization model and the first
  * grant of the new one. The rules are in `docs/architecture.md` ("Authority
  * acts").
  *

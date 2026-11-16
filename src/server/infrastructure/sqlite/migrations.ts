@@ -377,8 +377,8 @@ export interface SchemaInitializationOptions {
   acts?: (database: Database.Database) => void;
   /**
    * The highest step to apply, validated with `schemaTarget`. Defaults to
-   * `SUPPORTED_SCHEMA_VERSION`; a higher, provisional step is applied only when
-   * named here. The acts and `validateDatabase` run at this version.
+   * `SUPPORTED_SCHEMA_VERSION`; a lower explicit target (49 to 51) stops
+   * there. The acts and `validateDatabase` run at this version.
    */
   target?: number;
 }

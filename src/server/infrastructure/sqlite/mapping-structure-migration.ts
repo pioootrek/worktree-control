@@ -3,10 +3,10 @@ import type Database from "better-sqlite3";
 import { schemaTarget } from "./migration-registry";
 
 /**
- * Provisional step 51 (integration branch): the structure of project mapping.
- * It is applied and recognised only with an explicit schema target of 51 and
- * the provisional switch on; the supported version stays 49, and this step may
- * still change until the release candidate.
+ * Step 51: the structure of project mapping, applied by the default target
+ * (the supported version) and by an explicit target of 51 or more. It may
+ * still change until the release candidate; a database migrated by an
+ * unreleased build is disposable.
  *
  * `knowledge_projects` is the project (a `ProjectId`); `projects` is the
  * registration of a repository on this machine (a `RegistrationId`), and
@@ -206,7 +206,7 @@ export const projectMappingChecksum = createHash("sha256")
  * gets a row).
  */
 export function applyProjectMappingMigration(database: Database.Database): void {
-  // A direct call passes the provisional gate too, not only initializeSchema's target.
+  // A direct call checks the step against the supported version, as initializeSchema's target does.
   schemaTarget(PROJECT_MAPPING_VERSION);
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=51").get()) return;
   for (const statement of statements) database.exec(statement);
@@ -219,7 +219,7 @@ export function applyProjectMappingMigration(database: Database.Database): void 
  * database breaks, or null.
  */
 export function projectMappingViolation(database: Database.Database): string | null {
-  // Reads step-51 tables: passes the provisional gate first, like every operation of the step.
+  // Reads step-51 tables: checks the step against the supported version first, like every operation of the step.
   schemaTarget(PROJECT_MAPPING_VERSION);
   const clock = database.prepare("SELECT singleton,value,typeof(value) AS type FROM project_mapping_clock LIMIT 2").all() as Array<{ singleton: unknown; value: unknown; type: string }>;
   if (clock.length !== 1 || clock[0].singleton !== 1 || clock[0].type !== "integer" || !Number.isSafeInteger(clock[0].value) || (clock[0].value as number) < 0) return "project mapping clock";
@@ -255,8 +255,8 @@ export interface MappingQuarantine { readonly base: number; readonly final: numb
 /**
  * Reads what the quarantine of `auth fence resume` will stamp, or null when
  * the clock cannot advance: it is missing, malformed, behind a stamp, or would
- * pass {@link MAPPING_CLOCK_MAX}. Writes nothing. Passes the provisional gate
- * before it reads anything.
+ * pass {@link MAPPING_CLOCK_MAX}. Writes nothing. Checks the step against the
+ * supported version before it reads anything.
  *
  * Every row ends with mapping version `final`, the clock's new value. A row not
  * stamped yet also gets an incarnation of its own, from `base + 1` up, so no
@@ -285,8 +285,8 @@ export function planMappingQuarantine(database: Database.Database): MappingQuara
  * `final`); clear every parent and set every other row's version to `final`.
  * Incarnations already issued, `knowledge_projects` and the journal stay as
  * they are. The guard triggers permit exactly this: the new incarnations are
- * distinct and above every issued one. Passes the provisional gate before it
- * prepares any statement.
+ * distinct and above every issued one. Checks the step against the supported
+ * version before it prepares any statement.
  */
 export function applyMappingQuarantine(database: Database.Database, plan: MappingQuarantine): void {
   schemaTarget(PROJECT_MAPPING_VERSION);
