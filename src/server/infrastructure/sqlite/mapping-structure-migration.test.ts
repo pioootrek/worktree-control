@@ -20,6 +20,7 @@ import {
 } from "./mapping-structure-migration";
 import { SECURITY_COVERAGE, schemaTriggersAt, securityTriggersAt, STEP_TRIGGERS } from "./security-coverage";
 import { rewindProjectMapping, rewindUpgradeMarker } from "./fixtures/schema-rewind";
+import { openStoreAt49, RELEASED_SCHEMA_VERSION, schemaAt49 } from "./fixtures/released-schema";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { RemoteVerificationQueries } from "./remote-verification-queries";
 import { maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
@@ -52,7 +53,7 @@ const observed = (path = ":memory:") => unmanagedFixtureDatabase(path);
 const at = (target: number) => (database: Database.Database) => { inspectSchema(database, target); };
 const fresh51 = (database = ordinary()) => { initializeSchema(database, undefined, at(TARGET), { target: TARGET }); return database; };
 const fresh50 = (database = ordinary()) => { initializeSchema(database, undefined, at(50), { target: 50 }); return database; };
-const fresh49 = (database = ordinary()) => { initializeSchema(database, undefined, inspectSchema); return database; };
+const fresh49 = (database = ordinary()) => schemaAt49(database);
 const to51 = (database: Database.Database) => { initializeSchema(database, false, at(TARGET), { target: TARGET }); return database; };
 const clock = (database: Database.Database) => database.prepare("SELECT value FROM project_mapping_clock").pluck().get() as number;
 type Stamps = { id: string; parent: string | null; incarnation: number; version: number };
@@ -117,7 +118,7 @@ function backupTree(build: (database: Database.Database) => void, schemaVersion:
 /** A schema-49 installation built by the store itself (confirmed witness), with registrations and an identity. */
 function installation() {
   const paths = resolveAppPaths(join(temporary(), "data"));
-  const store = new SqliteStateStore(paths.databasePath);
+  const store = openStoreAt49(paths.databasePath);
   try {
     registration(store, "first"); registration(store, "second");
     store.saveRemoteProjectIdentity({ id: "remote-a", name: "Remote A", sourceRemote: "origin", status: "active" }, "local-cli");
@@ -1139,8 +1140,8 @@ describe("step 51 in the quarantine of auth fence resume", () => {
     } finally { database.close(); }
   });
 
-  it("keeps the quarantine's statements at the default target and at 50 free of step 51", () => {
-    for (const [build, target] of [[() => fresh49(observed()), undefined], [() => fresh50(observed()), 50]] as const) {
+  it("keeps the quarantine's statements at the released target 49 and at 50 free of step 51", () => {
+    for (const [build, target] of [[() => fresh49(observed()), RELEASED_SCHEMA_VERSION], [() => fresh50(observed()), 50]] as const) {
       const database = build(), statements: string[] = [];
       try {
         const prepare = database.prepare.bind(database), exec = database.exec.bind(database);

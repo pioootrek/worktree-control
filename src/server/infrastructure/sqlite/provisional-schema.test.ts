@@ -27,6 +27,7 @@ import {
 } from "./upgrade-plan";
 import { MAPPING_ACT_DOMAIN, normaliseMappingDecisions, proposeProjectMapping } from "./mapping-upgrade-acts";
 import { SecurityFence } from "./security-fence";
+import { schemaAt49 } from "./fixtures/released-schema";
 
 /**
  * Provisional schema steps stay switched off (C1b).
@@ -343,7 +344,7 @@ function current49() {
   const root = mkdtempSync(join(tmpdir(), "provisional-gate-")); temporary.push(root);
   const paths = resolveAppPaths(join(root, "data")); mkdirSync(paths.dataDirectory, { mode: 0o700 });
   const database = new Database(paths.databasePath);
-  try { initializeSchema(database, undefined, inspectSchema); } finally { database.close(); }
+  try { schemaAt49(database); } finally { database.close(); }
   chmodSync(paths.databasePath, 0o600);
   const backup = join(root, "backup"); mkdirSync(join(backup, "attachments"), { recursive: true });
   const snapshot = join(backup, "state.sqlite3");

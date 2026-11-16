@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAppPaths, type AppPaths } from "../server/paths";
-import { SqliteStateStore } from "../server/infrastructure/sqlite/sqlite-state-store";
+import { createFencedAt49 } from "../server/infrastructure/sqlite/fixtures/released-schema";
 import { enableProvisionalSchema } from "../server/infrastructure/sqlite/provisional-schema-gate";
 import { SecurityFenceBackupError, SecurityFenceError } from "../server/infrastructure/sqlite/security-fence";
 import { boundedFindings, UpgradeError } from "../server/infrastructure/sqlite/upgrade-contract";
@@ -159,7 +159,7 @@ describe("upgrade CLI runner: decisions file", () => {
 describe("upgrade CLI runner: through the composition", () => {
   it("inspects without printing the raw plan, then applies with the backup directory and prints the result", async () => {
     const paths = resolveAppPaths(join(temporary(), "data")), backups = join(temporary(), "operator-backups");
-    new SqliteStateStore(paths.databasePath).close();
+    createFencedAt49(paths.databasePath);
     const inspected = await run(["upgrade", "inspect"], paths);
     expect(inspected.body).toBeNull();
     const output = JSON.parse(inspected.lines.join("\n"));
@@ -178,7 +178,7 @@ describe("upgrade CLI runner: through the composition", () => {
 
   it("prints the error body of a refused apply without the paths involved", async () => {
     const paths = resolveAppPaths(join(temporary(), "data-sentinel")), blocked = join(temporary(), "backup-sentinel");
-    new SqliteStateStore(paths.databasePath).close();
+    createFencedAt49(paths.databasePath);
     writeFileSync(blocked, "a file, not a directory");
     const { planHash } = composition.inspectUpgrade(paths, undefined, TARGET);
     const { body, lines } = await run(["upgrade", "apply", "--expect", planHash!, "--backup-dir", blocked], paths);

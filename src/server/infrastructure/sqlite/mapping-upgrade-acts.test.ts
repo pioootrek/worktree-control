@@ -29,6 +29,7 @@ import {
 } from "./mapping-upgrade-acts";
 import { parseKnowledgeProjectSnapshot } from "../../modules/knowledge/project-transfer-schema";
 import { exact, plain } from "./fixtures/exact-rows";
+import { openStoreAt49 } from "./fixtures/released-schema";
 
 // Every test here needs target 51; the switch is restored after each one.
 const TARGET = 51;
@@ -118,7 +119,7 @@ let ports = 5200;
 /** A schema-49 installation built through the product's own write paths (confirmed witness, historical clock). */
 function installation(build?: (world: World) => void): AppPaths {
   const paths = resolveAppPaths(join(temporary(), "data"));
-  const store = new SqliteStateStore(paths.databasePath);
+  const store = openStoreAt49(paths.databasePath);
   try {
     const identity = new IdentityService(store, () => PAST);
     const owner = identity.authenticateBearer(identity.bootstrapOwnerSession().token);
@@ -632,7 +633,7 @@ describe("project mapping: backup, restore, resume, inspect, apply", () => {
   it("restores a schema-49 backup over an upgraded database and then maps exactly the approved plan", async () => {
     const { paths, ids } = standard();
     const backup = join(paths.dataDirectory, "..", "schema-49-backup");
-    const store = new SqliteStateStore(paths.databasePath);
+    const store = openStoreAt49(paths.databasePath);
     try { await createControllerBackup(store, backup, { applicationVersion: "test", attachmentDirectory: paths.knowledgeAttachmentDirectory }); } finally { store.close(); }
     const decisions = { links: [{ registrationId: ids.linked, projectId: ids.knowledge }], bindings: [{ remoteIdentityId: ids.remote, registrationId: ids.linked }] };
     const approved = inspect(paths, decisions);
@@ -789,7 +790,7 @@ describe("project mapping: determinism", () => {
     const third = inspect(paths);
     expect(third.plan!.decisions).toEqual(first.plan!.decisions);
     expect(inspect(paths).planHash).toBe(third.planHash);
-    const store = new SqliteStateStore(paths.databasePath);
+    const store = openStoreAt49(paths.databasePath);
     try { store.addProject({ name: "late", repositoryPath: `${SECRET_PATH}/late`, port: ports++, executable: "node", args: [] }); } finally { store.close(); }
     const changed = inspect(paths);
     expect(changed.plan!.base).not.toBe(third.plan!.base);

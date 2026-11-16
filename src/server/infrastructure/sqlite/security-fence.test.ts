@@ -29,15 +29,17 @@ import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { UPGRADE_MARKER_VERSION } from "./upgrade-marker-migration";
 import { enableProvisionalSchema, provisionalSchemaEnabled } from "./provisional-schema-gate";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
+import { openStoreAt49, RELEASED_SCHEMA_VERSION } from "./fixtures/released-schema";
 
 vi.mock("node:fs", async original=>({...await original<typeof import("node:fs")>()}));
 vi.mock("./database-validation", async original=>({...await original<typeof import("./database-validation")>()}));
 const roots:string[]=[];
 afterEach(()=>{ vi.restoreAllMocks(); for(const root of roots.splice(0)) rmSync(root,{recursive:true,force:true}); });
-function fixture() {
+/** `open` creates the store: by default this release's (`new SqliteStateStore`), or the released schema-49 one. */
+function fixture(open:(path:string)=>SqliteStateStore=path=>new SqliteStateStore(path)) {
   const root=mkdtempSync(join(tmpdir(),"security-fence-")); roots.push(root);
   const paths=resolveAppPaths(join(root,"data"));
-  const store=new SqliteStateStore(paths.databasePath), auth=new AuthenticationService(store);
+  const store=open(paths.databasePath), auth=new AuthenticationService(store);
   const token=auth.generateToken("local-cli").token;
   return {root,paths,store,token};
 }
@@ -97,8 +99,11 @@ const HISTORICAL_EVENT_AT="2026-01-01T00:00:00.000Z";
 const MALFORMED_DETAILS=["'{receipt:'","x'ff00133780'",`CAST('{"receipt":"historical-blob"}' AS BLOB)`,`jsonb('{"receipt":"historical-jsonb"}')`,"42"];
 /** A current-schema store whose authority was written outside its owner, so it needs resume.
  * `malformed` adds the older quarantine events of MALFORMED_DETAILS. */
-function current49(malformed=false) {
-  const f=fixture();f.store.close();
+function current49(malformed=false) { return outsideWrites(fixture(),malformed); }
+/** The same at the released schema 49 (not whatever this release creates): the source of the provisional steps. */
+function released49(malformed=false) { return outsideWrites(fixture(openStoreAt49),malformed); }
+function outsideWrites(f:ReturnType<typeof fixture>,malformed:boolean) {
+  f.store.close();
   const db=unmanagedFixtureDatabase(f.paths.databasePath);try{db.exec(authority(true));
     if(malformed)for(const details of MALFORMED_DETAILS)db.exec(`INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('authentication.security_quarantined','local-cli',${details},'${HISTORICAL_EVENT_AT}')`);
   }finally{db.close();}
@@ -161,6 +166,9 @@ const HANDOFF={preflight:(database:string)=>{preflightSecurityRecoveryHandoff(da
 const TARGET=UPGRADE_MARKER_VERSION;
 const inspect50=(paths:ReturnType<typeof resolveAppPaths>)=>maintainSqliteSecurityFence(paths,{action:"inspect"},HANDOFF,TARGET);
 const resume50=(paths:ReturnType<typeof resolveAppPaths>)=>maintainSqliteSecurityFence(paths,{action:"resume",expect:inspect50(paths).preflight,mode:"token"},HANDOFF,TARGET);
+/** The resume of the released schema 49: what the default resume is while the supported version is 49. */
+const resume49=(paths:ReturnType<typeof resolveAppPaths>)=>maintainSqliteSecurityFence(paths,{action:"resume",
+  expect:maintainSqliteSecurityFence(paths,{action:"inspect"},HANDOFF,RELEASED_SCHEMA_VERSION).preflight,mode:"token"},HANDOFF,RELEASED_SCHEMA_VERSION);
 const upgradeMarker=(db:Database.Database)=>has(db,"upgrade_marker")?db.prepare("SELECT state FROM upgrade_marker").pluck().all():"absent";
 /** The quarantine effects without the schema version, which the target raises. */
 const effects=(db:Database.Database)=>({...quarantine(db),version:"ignored"});
@@ -562,8 +570,8 @@ describe("provisional upgrade marker under the security fence (target 50)",()=>{
   });
 
   it("resumes schema 49 to 50 with the marker pending in the one quarantine transaction",()=>{
-    const paths=current49(),twin=current49(),reference=current49();
-    resume(reference);const expected=read(reference,effects);
+    const paths=released49(),twin=released49(),reference=released49();
+    resume49(reference);const expected=read(reference,effects);
     // Success: every quarantine effect of the default resume, at version 50 with a pending marker.
     expect(resume50(twin)).toMatchObject({trusted:true,quarantined:true,schemaVersion:50});
     read(twin,db=>{
@@ -583,7 +591,7 @@ describe("provisional upgrade marker under the security fence (target 50)",()=>{
   });
 
   it.each([["from schema 49",false],["already at step 50",true]] as const)("reports a post-commit resume failure %s as committed with the marker pending",(_name,migrated)=>{
-    const paths=current49();
+    const paths=released49();
     if(migrated){
       const db=unmanagedFixtureDatabase(paths.databasePath);
       try{initializeSchema(db,false,current=>{inspectSchema(current,TARGET);},{target:TARGET});db.exec("UPDATE upgrade_marker SET state='complete'");}finally{db.close();}
@@ -600,7 +608,7 @@ describe("provisional upgrade marker under the security fence (target 50)",()=>{
   });
 
   it("sets a complete marker of a step-50 database back to pending on resume",()=>{
-    const paths=current49();
+    const paths=released49();
     const db=unmanagedFixtureDatabase(paths.databasePath);
     try{initializeSchema(db,false,current=>{inspectSchema(current,TARGET);},{target:TARGET});db.exec("UPDATE upgrade_marker SET state='complete'");}finally{db.close();}
     expect(read(paths,upgradeMarker)).toEqual(["complete"]);
@@ -625,7 +633,7 @@ describe("default maintenance of a step-50 database (provisional switch off)",()
   let provisional:ReturnType<typeof resolveAppPaths>,unknown:ReturnType<typeof resolveAppPaths>;
   // Only building the step-50 fixture needs the switch; every test body runs with it off.
   beforeEach(()=>{
-    provisional=current49();unknown=current49();
+    provisional=released49();unknown=released49();
     const restore=enableProvisionalSchema();
     try{const db=unmanagedFixtureDatabase(provisional.databasePath);try{initializeSchema(db,false,current=>{inspectSchema(current,TARGET);},{target:TARGET});}finally{db.close();}}
     finally{restore();}

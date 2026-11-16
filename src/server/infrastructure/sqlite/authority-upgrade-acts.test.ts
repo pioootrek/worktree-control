@@ -10,7 +10,6 @@ import { createControllerBackup } from "../../controller-backup";
 import { IdentityService, type AuthenticatedPrincipal } from "../../modules/identity";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
 import { enableProvisionalSchema } from "./provisional-schema-gate";
-import { SqliteStateStore } from "./sqlite-state-store";
 import { SecurityFence, SecurityFenceError, securityFenceRoot } from "./security-fence";
 import { maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
 import { initializeSchema } from "./migrations";
@@ -28,6 +27,7 @@ import {
 } from "./authority-upgrade-acts";
 import { CREDENTIAL_KINDS, INSTANT_CHARACTERS, OLD_GRANT_TABLES, resetInstant, REVISED_GRANT_TABLES } from "./authority-reset";
 import { exact, plain } from "./fixtures/exact-rows";
+import { openStoreAt49, RELEASED_SCHEMA_VERSION, schemaAt49 } from "./fixtures/released-schema";
 import { emptyTelemetry } from "../../modules/verification";
 import { legacySourceEvidence } from "../../test-source-attribution";
 import { validateDatabase } from "./database-validation";
@@ -158,7 +158,7 @@ interface Ids {
  */
 function authorityWorld(options: { owner?: boolean } = {}): { paths: AppPaths; ids: Ids } {
   const paths = resolveAppPaths(join(temporary(), "data"));
-  const store = new SqliteStateStore(paths.databasePath);
+  const store = openStoreAt49(paths.databasePath);
   const ids = {} as Ids;
   try {
     const identity = new IdentityService(store, () => PAST, undefined, undefined, { isCurrentInstallationActor: () => true }, store);
@@ -616,7 +616,7 @@ describe("authority acts: the quarantine after the extraction", () => {
       .run(JSON.stringify({receipt,mode}),now);
   }
 
-  it.each([[undefined], [50], [51]] as const)("has exactly the pre-extraction effects at target %s, compared by storage class and bytes", target => {
+  it.each([[RELEASED_SCHEMA_VERSION], [50], [51]] as const)("has exactly the pre-extraction effects at target %s, compared by storage class and bytes", target => {
     const { paths } = authorityWorld();
     const left = unmanagedFixtureDatabase(copy(paths)), right = unmanagedFixtureDatabase(copy(paths));
     vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date());
@@ -640,7 +640,7 @@ describe("authority acts: the quarantine after the extraction", () => {
       const exec = database.exec.bind(database);
       let recording = false;
       Object.assign(database, { exec: (source: string) => { if (recording) statements.push(source); return exec(source); } });
-      initializeSchema(database, false, undefined, { acts: current => { recording = true; try { quarantineAuthority(current, RECEIPT, "token"); } finally { recording = false; } } });
+      initializeSchema(database, false, undefined, { target: RELEASED_SCHEMA_VERSION, acts: current => { recording = true; try { quarantineAuthority(current, RECEIPT, "token", RELEASED_SCHEMA_VERSION); } finally { recording = false; } } });
       const order = statements.join("\n").split("\n").map(line => line.trim()).filter(line => /^(UPDATE|DELETE)/.test(line)).map(line => line.split(" ")[0] + " " + line.split(" ")[line.startsWith("DELETE") ? 2 : 1].replace(/;$/, ""));
       expect(order).toEqual([
         "UPDATE principal_credentials", ...OLD_GRANT_TABLES.map(table => `UPDATE ${table}`),
@@ -695,7 +695,7 @@ describe("authority acts: the quarantine after the extraction", () => {
     ["projects", "1"], ["remote_project_identities", "1"],
   ];
 
-  it.each([[undefined], [50], [51]] as const)("issues exactly the pre-extraction statements, in order and with their bindings, at target %s", target => {
+  it.each([[RELEASED_SCHEMA_VERSION], [50], [51]] as const)("issues exactly the pre-extraction statements, in order and with their bindings, at target %s", target => {
     const { paths } = authorityWorld();
     read(paths, database => {
       for (const [table, where] of WRITTEN) expect(database.prepare(`SELECT count(*) FROM ${table} WHERE ${where}`).pluck().get(), `${table} WHERE ${where}`).toBeGreaterThan(0);
@@ -729,8 +729,8 @@ describe("authority acts: the quarantine after the extraction", () => {
     vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date(instant));
     try {
       expect(new Date().toISOString()).toBe(instant);
-      initializeSchema(left, false, at(49), { acts: current => quarantineBefore(current, RECEIPT, "token") });
-      initializeSchema(right, false, at(49), { acts: current => quarantineAuthority(current, RECEIPT, "token") });
+      initializeSchema(left, false, at(49), { target: RELEASED_SCHEMA_VERSION, acts: current => quarantineBefore(current, RECEIPT, "token", RELEASED_SCHEMA_VERSION) });
+      initializeSchema(right, false, at(49), { target: RELEASED_SCHEMA_VERSION, acts: current => quarantineAuthority(current, RECEIPT, "token", RELEASED_SCHEMA_VERSION) });
       const a = exact(left), b = exact(right);
       delete a.security_checkpoint; delete b.security_checkpoint;
       expect(Object.keys(b)).toEqual(Object.keys(a));
@@ -952,7 +952,7 @@ describe("authority acts: stops write no plan and change nothing", () => {
   it("refuses more owners than its bound, never truncating (the fence's own bound refuses first through the protocol)", () => {
     const database = unmanagedFixtureDatabase();
     try {
-      initializeSchema(database);
+      schemaAt49(database);
       const insert = database.prepare("INSERT INTO remote_principals(id,kind,status) VALUES(?,'owner','active')");
       for (let index = 0; index <= AUTHORITY_OWNER_LIMIT; index++) insert.run(`owner-${String(index).padStart(3, "0")}`);
       const context = { schemaVersion: 49, source: 49, target: TARGET };

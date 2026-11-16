@@ -12,7 +12,7 @@ import { createControllerBackup, restoreControllerBackup } from "../../controlle
 import { maintainSecurityFence } from "../../bootstrap/security-maintenance";
 import { AuthenticationService } from "../../modules/authentication";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
-import { SqliteStateStore } from "./sqlite-state-store";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { OwnedSqliteDatabase, ReopenedDatabaseChangedError } from "./owned-database";
 import { getOwnedRestoreStatus, restoreRoot } from "./restore-recovery";
 import { SecurityFence, SecurityFenceError, securityFenceBinding, securityFenceRoot, securityRecoveryBoundary } from "./security-fence";
@@ -147,7 +147,7 @@ async function failure(operation: () => Promise<unknown> | unknown) {
 function installation(token = false) {
   const root = temporary("upgrade-49-");
   const paths = resolveAppPaths(join(root, "data"));
-  const store = new SqliteStateStore(paths.databasePath);
+  const store = openStoreAt49(paths.databasePath);
   try { if (token) new AuthenticationService(store).generateToken("local-cli"); } finally { store.close(); }
   return paths;
 }
@@ -188,7 +188,7 @@ function rewriteWitness(paths: AppPaths, mutate: (payload: Record<string, unknow
 async function restored() {
   const root = temporary("upgrade-restore-");
   const paths = resolveAppPaths(join(root, "data")), backup = join(root, "restore-source");
-  const store = new SqliteStateStore(paths.databasePath);
+  const store = openStoreAt49(paths.databasePath);
   try {
     await createControllerBackup(store, backup, { applicationVersion: "test", attachmentDirectory: paths.knowledgeAttachmentDirectory });
     new AuthenticationService(store).generateToken("local-cli");
@@ -259,7 +259,7 @@ describe("explicit offline upgrade: inspect", () => {
     const paths = installation(true);
     const first = inspect(paths);
     expect(inspect(paths).planHash).toBe(first.planHash);
-    const store = new SqliteStateStore(paths.databasePath);
+    const store = openStoreAt49(paths.databasePath);
     try { new AuthenticationService(store).rotateToken("local-cli"); } finally { store.close(); }
     const second = inspect(paths);
     expect(second.planHash).not.toBe(first.planHash);
@@ -429,7 +429,7 @@ describe("explicit offline upgrade: apply refusals change nothing", () => {
     expect((await refused(paths, () => apply(paths, noted))).result).toMatchObject({ code: "upgrade_plan_missing", nextStep: "upgrade inspect" });
     // Replaced by a second inspect after the hash was noted (the database changed in between).
     expect(inspect(paths).planHash).toBe(noted);
-    const store = new SqliteStateStore(paths.databasePath);
+    const store = openStoreAt49(paths.databasePath);
     try { new AuthenticationService(store).rotateToken("local-cli"); } finally { store.close(); }
     const replaced = inspect(paths).planHash!;
     expect(replaced).not.toBe(noted);
@@ -445,7 +445,7 @@ describe("explicit offline upgrade: apply refusals change nothing", () => {
   it("refuses a base changed by an ordinary owned write after inspect", async () => {
     const paths = installation(true);
     const noted = inspect(paths).planHash!, plan = files(paths).plan;
-    const store = new SqliteStateStore(paths.databasePath);
+    const store = openStoreAt49(paths.databasePath);
     try { new AuthenticationService(store).rotateToken("local-cli"); } finally { store.close(); }
     // Still trusted and still needing the upgrade; only the base moved.
     expect(files(paths).plan).toBe(plan);
@@ -532,7 +532,7 @@ describe("explicit offline upgrade: apply refusals change nothing", () => {
     const foreign = await priorBackup(twin);
     // (b) A valid older backup of this database, then a further authority write.
     const older = await priorBackup(paths);
-    const store = new SqliteStateStore(paths.databasePath);
+    const store = openStoreAt49(paths.databasePath);
     try { new AuthenticationService(store).rotateToken("local-cli"); } finally { store.close(); }
     const noted = inspect(paths).planHash!;
     // (c) A valid current backup of this database that the run did not take.
@@ -657,7 +657,7 @@ describe("explicit offline upgrade: apply refusals change nothing", () => {
   it("refuses inspect and apply over an interrupted restore without recovering or normalising anything; auth fence inspect completes it", async () => {
     const root = temporary("upgrade-restore-interrupted-");
     const paths = resolveAppPaths(join(root, "data")), backup = join(root, "restore-source");
-    const store = new SqliteStateStore(paths.databasePath);
+    const store = openStoreAt49(paths.databasePath);
     try {
       await createControllerBackup(store, backup, { applicationVersion: "test", attachmentDirectory: paths.knowledgeAttachmentDirectory });
       new AuthenticationService(store).generateToken("local-cli");
@@ -1244,7 +1244,7 @@ describe("explicit offline upgrade: witness compatibility", () => {
     // What this code writes for a record without an upgrade is the pre-change bytes.
     expect(written).toBe(legacyBytes(legacyDecode(written)));
     writeFileSync(witnessPath(paths), legacyBytes(legacyDecode(written)));
-    const store = new SqliteStateStore(paths.databasePath);
+    const store = openStoreAt49(paths.databasePath);
     try {
       new AuthenticationService(store).rotateToken("local-cli");
       expect(store.getAuthenticationPolicy().mode).toBe("token");
@@ -1253,7 +1253,7 @@ describe("explicit offline upgrade: witness compatibility", () => {
     expect(republished).not.toBe(written);
     expect(republished).toBe(legacyBytes(legacyDecode(republished)));
     expect(JSON.parse(republished).payload).not.toHaveProperty("upgrade");
-    new SqliteStateStore(paths.databasePath).close();
+    openStoreAt49(paths.databasePath).close();
     expect(inspect(paths)).toMatchObject({ state: "upgrade_needed" });
   });
 

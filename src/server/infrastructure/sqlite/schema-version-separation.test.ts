@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveAppPaths } from "../../paths";
 import * as registry from "./migration-registry";
 import { enableProvisionalSchema } from "./provisional-schema-gate";
 import { initializeSchema } from "./migrations";
@@ -8,6 +12,10 @@ import { ProjectDirectoryQueries } from "./project-directory-queries";
 import { normaliseMappingDecisions } from "./mapping-upgrade-acts";
 import { normaliseAuthorityDecisions } from "./authority-upgrade-acts";
 import { assertUpgradeAvailable, structuralSteps, upgradeTarget } from "./upgrade-plan";
+import { OwnedSqliteDatabase } from "./owned-database";
+import { SecurityFence } from "./security-fence";
+import { inspectSqliteUpgrade } from "./upgrade-maintenance";
+import { createFencedAt49, openStoreAt49, schemaAt49 } from "./fixtures/released-schema";
 
 /**
  * C3c-1: the fence base and the supported version are separate constants.
@@ -43,7 +51,9 @@ vi.mock("./migration-registry", async original => {
 });
 
 let restoreGate: (() => void) | undefined;
-afterEach(() => { restoreGate?.(); restoreGate = undefined; });
+const roots: string[] = [];
+afterEach(() => { restoreGate?.(); restoreGate = undefined; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const installationPaths = () => { const root = mkdtempSync(join(tmpdir(), "schema-separation-")); roots.push(root); return resolveAppPaths(join(root, "data")); };
 const message = (operation: () => unknown) => { try { operation(); } catch (error) { return (error as Error).message; } return "accepted"; };
 const at = (target: number) => (database: Database.Database) => { inspectSchema(database, target); };
 const freshAt = (target?: number) => {
@@ -117,5 +127,32 @@ describe("with the supported version at 52 (simulated activation)", () => {
         if (target !== undefined && target < 52) expect(message(() => inspectSchema(database, target + 1))).toBe("accepted");
       } finally { database.close(); }
     }
+  });
+});
+
+describe("the released schema-49 fixtures with the supported version at 52 (simulated activation)", () => {
+  it("still build schema 49 on a raw connection and as a fenced database", () => {
+    const database = schemaAt49(new Database(":memory:"));
+    try { expect(inspectSchema(database)).toEqual({ version: 49, fresh: false }); } finally { database.close(); }
+    const paths = installationPaths();
+    createFencedAt49(paths.databasePath);
+    const owner = new OwnedSqliteDatabase(paths.databasePath, false, undefined, { inspectOnly: true });
+    try {
+      expect(owner.inspection).toEqual({ version: 49, fresh: false });
+      expect(() => SecurityFence.inspect(owner.canonicalPath, owner.database, false)).not.toThrow();
+    } finally { owner.close(); }
+  });
+
+  it("upgrades a fenced schema-49 fixture at the default target 52 through every step from the fence base", () => {
+    const paths = installationPaths();
+    createFencedAt49(paths.databasePath);
+    const status = inspectSqliteUpgrade(paths);
+    expect(status).toMatchObject({ state: "upgrade_needed", schemaVersion: 49, target: 52, marker: "absent" });
+    expect(status.plan!.steps.map(step => step.version)).toEqual([50, 51, 52]);
+  }, 30_000);
+
+  it("refuses a schema-49 store once the ordinary store would migrate it, instead of returning another schema", () => {
+    const paths = installationPaths();
+    expect(() => openStoreAt49(paths.databasePath)).toThrow("The schema-49 store fixture opened schema 52.");
   });
 });
