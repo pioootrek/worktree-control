@@ -188,7 +188,7 @@ const FINGERPRINT = "f".repeat(64);
  *   two old runs and two that do not, and requester rows (agent and human) on
  *   runs that are trimmed and on runs that are kept;
  * - B: ten finished runs and a queued one, its accounting over the
- *   per-project record cap;
+ *   per-project record cap even after its old summaries are pruned by age;
  * - C: a running run, its accounting putting the installation a little over
  *   the global byte cap.
  */
@@ -245,7 +245,7 @@ function populated(): { path: string; ids: { a: string; b: string; c: string } }
     const human = database.prepare(`INSERT INTO human_test_run_requesters(run_id,project_id,principal_id,session_owner,authority_json,reference_json,reservation_id,fingerprint) VALUES(?,?,'human-1','human:test:human-1','{}','{}',NULL,'${FINGERPRINT}')`);
     for (const id of ["a-old-02", "a-40", "a-queued"]) agent.run(id, ids!.a);
     for (const id of ["a-old-04", "a-45"]) human.run(id, ids!.a);
-    database.exec(`UPDATE test_summary_coverage SET records=5003 WHERE project_id='${ids!.b}'`);
+    database.exec(`UPDATE test_summary_coverage SET records=5010 WHERE project_id='${ids!.b}'`);
     database.exec(`UPDATE test_summary_coverage SET bytes=${TEST_SUMMARY_POLICY.globalBytes}+3000-(SELECT sum(bytes) FROM test_summary_coverage WHERE project_id<>'${ids!.c}') WHERE project_id='${ids!.c}'`);
   } finally { database.close(); }
   return { path, ids: ids! };
@@ -311,7 +311,8 @@ describe("test-run recovery: the same writes as before the split", () => {
     // Summaries evicted by age, and (newer than the 30-day horizon) by the per-project and global caps.
     const evicted = beforeWrites.filter(([sql]) => sql.startsWith("DELETE FROM test_run_summaries")).map(([, [runId]]) => runId as string);
     expect(evicted.some(id => /^a-(0\d|1\d|2[0-4])$/.test(id)), "an eviction by age").toBe(true);
-    expect(evicted.some(id => /^b-[5-9]$|^a-(2[5-9]|[34]\d)$/.test(id)), "an eviction by a cap").toBe(true);
+    expect(evicted.filter(id => /^b-[5-9]$/.test(id)), "evictions by the per-project cap").toEqual(["b-5", "b-6", "b-7", "b-8", "b-9"]);
+    expect(evicted, "an eviction by the global cap").toContain("c-running");
     // Receipts pin two old runs through the per-project trims; the final trim deletes them all the same.
     expect(prepared.trims.filter(trim => trim.selection === "project").flatMap(trim => trim.runs)).not.toEqual(expect.arrayContaining(["a-old-00"]));
     expect(prepared.trims.at(-1)).toMatchObject({ selection: "recovery", runs: expect.arrayContaining(["a-old-00", "a-old-03"]) });

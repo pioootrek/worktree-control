@@ -219,7 +219,10 @@ function authorityWorld(options: { owner?: boolean } = {}): { paths: AppPaths; i
       finishedAt: queuedAt, exitCode: 0, signal: null, error: null, logs: [], environmentMode: "inherit-server-profile", environmentProfile: "legacy", inheritedServerProfile: null,
       environmentVariableNames: [], source: legacySourceEvidence(), ...overrides,
     });
-    // Saved at the time of their history, so the store's own pruning keeps their summaries until the recovery prunes them by age.
+    store.saveTestRun(saved("finalizing-run", registrationC, RECENT(), { phase: "cancelled", telemetry: emptyTelemetry("observed") }));
+    store.saveTestRun(saved("recent-run", registrationC, RECENT()));
+    // Saved last and at the time of their history: every save prunes summaries by age across all registrations, so none
+    // after them may run at today's time; the recovery then prunes them by age.
     vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2025-01-01T01:00:00.000Z"));
     for (const [id, kind] of Object.entries(REQUESTED)) {
       const queuedAt = `2025-01-01T00:00:${id.slice(-2)}.000Z`;
@@ -233,8 +236,6 @@ function authorityWorld(options: { owner?: boolean } = {}): { paths: AppPaths; i
       }
     }
     vi.useRealTimers();
-    store.saveTestRun(saved("finalizing-run", registrationC, RECENT(), { phase: "cancelled", telemetry: emptyTelemetry("observed") }));
-    store.saveTestRun(saved("recent-run", registrationC, RECENT()));
     Object.assign(ids, { owner: bootstrapped.principalId, agent, agentB, worker: "worker-a", workerPrincipal, human: "human-a", knowledge, remote: "remote-a",
       activeAgentToken, revokedAgentToken, scopedToken, workerToken, ownerSession: bootstrapped.credential.id });
   } finally { store.close(); }
