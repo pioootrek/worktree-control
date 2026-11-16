@@ -1060,7 +1060,7 @@ provisional until the release candidate and is not activated: the supported
 schema version stays 49, ordinary startup applies and recognises nothing beyond
 it, and a step-50 database is refused like any unknown newer schema.
 
-`PROVISIONAL_SCHEMA_VERSION` (51, see step 51 below) is the highest step the code
+`PROVISIONAL_SCHEMA_VERSION` (52, see step 52 below) is the highest step the code
 knows.
 `initializeSchema`, `inspectSchema`, the owned database, offline fence
 maintenance, the quarantine and backup manifest validation take an optional
@@ -1287,6 +1287,71 @@ The recovery boundary is the quarantine, which re-stamps every row. So anything
 that keeps a version across requests must be emptied or invalidated by the
 quarantine. That is an obligation of the change that adds such a store.
 
+### Provisional grants storage, schema step 52 (integration branch only)
+
+This section describes `integration/auth-unification`, not a release. Step 52 is
+provisional until the release candidate and is not activated. It is applied and
+recognised only with an explicit target of 52 and the provisional switch on,
+like steps 50 and 51, and a step-52 database is refused like any unknown newer
+schema by default and at ceilings 50 and 51. The code is in
+`account-grants-migration.ts`.
+
+Step 52 adds the table `account_grants`: one row per stored role assignment of
+the authorization contract (`StoredGrant`). A row names an account
+(`remote_principals.id`), one of the six roles, a scope kind (`project` or
+`installation`), the Knowledge project when the scope is a project, and the time
+it was granted. There is no expiry column: a grant holds until it is deleted,
+and revocation is deletion. The step carries structure only and writes no
+grant; only the upgrade's authority acts write one (below). Nothing outside
+the SQLite adapter directory reads the table yet; the adapter that reads grants
+comes with a later change.
+
+The table enforces:
+
+- a known role, and the scope kind the contract's role table gives it: `admin`
+  on the installation, every other role on a project. The roles and scopes are
+  a literal list in the step, because production code must not import the
+  unmounted contract. A test parses the contract's source and fails if the
+  list or the table's `CHECK` disagree with it;
+- a project exactly when the scope is a project, and both foreign keys;
+- typed, bounded IDs (text of 1 to 640 bytes, at most 160 characters, no NUL)
+  and a `granted_at` that is canonical UTC with milliseconds and a real
+  instant, by the Julian-day rule of the step-51 journal;
+- at most one row per account, role and scope. A `UNIQUE` constraint over the
+  four columns would accept a second installation grant, because SQLite treats
+  NULLs as distinct in a unique key. The unique index
+  `account_grants_key` therefore indexes `ifnull(project_id,'')`, which is
+  never a project ID;
+- immutable rows. A trigger refuses every `UPDATE`. Another refuses an `INSERT`
+  of a grant that exists before any conflict resolution, so `INSERT OR
+  REPLACE`, `REPLACE INTO` and an upsert cannot replace a stored grant with a
+  new `granted_at`, and `INSERT OR IGNORE` reports the duplicate. It also
+  refuses an `INSERT` that names the rowid of an existing row, and
+  `CHECK(rowid>0)` keeps an explicit rowid away from the -1 the trigger reads
+  for an omitted one. This holds whatever `recursive_triggers` says. `DELETE`
+  is allowed.
+
+The table does not enforce who may hold a role (`maintainer` and `admin` only
+humans, `executor` only agents), and validation does not either. The contract
+re-validates every stored grant against the account's stored kind on every
+evaluation, so an inconsistent row refuses only itself instead of making the
+installation unstartable. Validation at 52 checks the table's shape rules
+again: role, scope consistency, project presence, typed IDs, canonical time
+and no duplicate; an existing account and project are the foreign-key check's.
+
+The table has the three fence triggers of step 49, in a coverage entry for step
+52, and its two guard triggers in the list of the step's other triggers, so the
+expected triggers stay a function of the schema version. Recognition at ceiling
+52 compares the table's, its two indexes' and its five triggers' `CREATE` text
+byte for byte, with the step's name and checksum. The step is DDL only and
+writes no fenced row, so it is safe in ordinary startup before the fence
+attaches. Its operations pass the provisional gate.
+
+`auth fence resume` at target 52 also deletes every grant in its one
+transaction, so no grant written after an upgrade survives a quarantine; the
+next upgrade grants `admin` again when its rule holds. Below 52 the quarantine
+runs exactly the statements it ran before.
+
 ### Explicit offline upgrade (integration branch only)
 
 This section describes `integration/auth-unification`, not a release. The
@@ -1298,8 +1363,9 @@ same refusal guards each upgrade-specific helper that reads or writes a file:
 the plan file's write, read and removal, and the fence's `beginUpgrade`,
 `registerUpgradeObserver` and `upgradeReceipt`. Decoding is not gated: a
 format-2 witness once written is read, verified and carried forward by ordinary
-fenced writes with the switch on or off. The project mapping acts are described
-below; a later pull request registers the commands.
+fenced writes with the switch on or off. The project mapping acts and the
+authority acts are described below; a later pull request registers the
+commands.
 
 An installation's database is in one of four states. The fence decides trust
 exactly as `SecurityFence.preflight` does. A confirmed witness that carries an
@@ -1816,15 +1882,122 @@ number was not raised for an unreleased change.
 An act domain supplies its decision keys, the strict schemas of its stored
 decisions and review, its act kinds (a strict payload and `execute`), one
 `propose` pass, and `describe`. The domains run in registry order, so the
-grants and revocations of a later change run after the mapping acts. Its
-`minimumTarget` decides at which targets it applies. Mapping is the only
-domain, from 51.
+authority acts run after the mapping acts. A domain's `minimumTarget` decides
+at which targets it applies: mapping from 51, authority from 52. Adding the
+authority domain did not change the plan's envelope, which already carries
+decisions and a review per domain under the hash, so the format stays 2; no
+plan at target 52 was ever written by a release.
 
 The bounds are 50 000 acts, 8 MiB per plan file, 500 000 rows each of
 `knowledge_projects`, links, bindings, workers and journal rows read by the
 pass, 100 findings and 64 KiB of details per refusal, 400 characters per
 problem, 120 characters (UTF-16 code units) per created project's name and 200
 per displayed name.
+
+### Authority acts (integration branch only)
+
+This section describes `integration/auth-unification`, not a release. Nothing
+here is activated: the supported schema stays 49, every entry point passes the
+provisional gate, and no command is registered. The authority domain needs
+target 52. The code is in `authority-upgrade-acts.ts` (the pass, the review and
+the act kinds) and `authority-reset.ts` (the reset statements it shares with
+the quarantine), under `src/server/infrastructure/sqlite/`.
+
+The upgrade is one-way. It resets the authority of the old model and writes the
+first grant of the new one, as acts of the approved plan, after every mapping
+act. The domain takes no operator decision: any decision key for it is refused
+as `upgrade_decisions_invalid`. Its acts, in this order:
+
+1. `revoke_old_grants` revokes the six tables with a revocation column in place
+   (`knowledge_project_grants`, `knowledge_role_bindings`,
+   `runtime_delegations`, `runtime_human_memberships`,
+   `remote_principal_project_grants`, `remote_worker_project_grants`). A
+   revocation time already stored is kept. Role bindings, delegations and
+   memberships also advance their revision and take the run's time as
+   `updated_at`, as the quarantine always did. `runtime_credential_scopes` has
+   no revocation column: its rows stay as inert rows, and their credentials are
+   revoked by the next act. Worker bindings stay revoked and are never rebuilt
+   from the mapping.
+2. `revoke_credentials` revokes every row of `principal_credentials`. Its kinds
+   are `agent_token`, `owner_session` and `worker_token`, all three revoked;
+   there is no other kind. A revoked credential cannot be revived.
+3. `release_running_work` releases every active claim or reservation, cancels
+   pending and assigned remote requests, sets assigned, preparing and running
+   attempts to `cancel_requested`, and marks queued and running test runs
+   (and runs whose summary is not terminal) interrupted through
+   `markInterruptedTestRuns`, whose trimming of old history also deletes the
+   requester rows of the runs it trims. Attribution and history stay. This
+   invalidates the work logically; it does not prove that a remote process
+   stopped. The upgrade runs with the controller stopped.
+4. `grant_admin` writes one `admin` grant on the installation for the owner,
+   only when exactly one principal of kind `owner` exists and it is active.
+   Otherwise there is no such act, no account holds `admin` after the upgrade,
+   and the local operator creates the first admin later. The act checks the
+   rule again when it runs, and that no grant is stored yet.
+
+Kept: the installation token and the authentication mode in
+`controller_settings`, accounts, passwords, factors, every table of the
+authentication provider, and history. No Vault ciphertext is read or written.
+
+The quarantine of `auth fence resume` and these acts share one implementation
+of each statement group: credentials, the six tables, reservations, remote
+requests and attempts, and test runs. The quarantine runs them in its own
+order, around the statements only it runs: clearing provider passwords and
+tokens, sessions, verifications, passkeys and two-factor material, advancing
+account policies, consuming factor contexts and failing charged receipts,
+setting the mode and removing the installation token. A test runs the
+quarantine as it was before the extraction and the extracted one on twin
+databases and compares every table by storage class and bytes; another shows
+that the upgrade's reset acts and the quarantine leave identical rows in every
+shared table and differ exactly in those quarantine-only effects.
+
+The reset acts have fixed payloads, and `grant_admin` names the account. So the
+plan hash binds what happens without listing every row. The row effects are
+bound by the review's counts under the same hash and by the plan's base
+preflight, and the whole-plan validation recomputes the acts and the review,
+before the backup and inside the transaction, and refuses any difference as
+`upgrade_plan_unproposed`. A plan without a reset act, with acts out of order,
+with an `admin` grant for another account, a non-owner or while several owners
+exist, or with counts that do not match the database is refused. Authority acts
+before a mapping act are refused as `upgrade_plan_invalid` when the plan is
+read.
+
+The pass reads only tables that exist at schema 49, plus `account_grants` from
+52 on, which is absent at the source and read as empty, so it gives the same
+result at the source and inside the transaction. Its review, in counts, IDs,
+kinds and statuses only (no token hash, secret or stored JSON):
+
+- for each of the six tables: rows, rows already revoked, rows this plan
+  revokes, and whether revisions advance;
+- `runtime_credential_scopes`: its rows, all of which stay inert, and the
+  distinct credentials they name by stored status before and after;
+- credentials by kind: active (revoked by this plan), revoked, and revoked
+  without a revocation time (which this plan sets);
+- reservations to release; remote requests and attempts by phase, and how many
+  are cancelled;
+- test runs queued, running and with an unfinished summary, how many are
+  interrupted, and how many old runs the history trimming then deletes: every
+  run beyond its registration's newest 50 by queue time and ID;
+- every principal of kind `owner`, with its ID and status, and the admin
+  decision: `grant` with the account, or `none` with the reason `no_owner`,
+  `owner_not_active` or `several_owners`.
+
+The operator's lines state that the upgrade is one-way, that every listed token
+stops working, that rights must be granted again, that running work is
+interrupted, and what is kept.
+
+| Stop | Meaning |
+| --- | --- |
+| `upgrade_authority_malformed` | A value the pass reads has another storage class; a principal or credential has an unknown kind or status; a revision or a live attempt's version cannot advance; a run to be interrupted holds stored JSON the recovery cannot read; or the single active owner's ID cannot be a grant's account. |
+| `upgrade_authority_unexpected` | Grants of the new model are stored while the upgrade is needed. A quarantine deletes every one, so the protocol does not produce this. |
+| `upgrade_plan_bounds` | More than 64 principals of kind `owner`, the fence's own bound (through the protocol the fence refuses first). |
+
+A stop writes no plan and changes nothing. A failure of an act aborts the
+transaction, which rolls back the mapping acts and the structural steps too and
+leaves the database fenced; after `auth fence resume`, inspect and apply run
+again. After a completed upgrade, resume deletes every grant, sets the marker
+to `pending` and clears every parent; the next upgrade grants `admin` again
+when its rule still holds. At targets 50 and 51 the domain does not apply.
 
 ### Pre-establishment backup (integration branch only)
 
