@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,6 +13,8 @@ import { ProviderAdminError } from "../server/modules/authentication";
 import * as composition from "../server/bootstrap/upgrade-maintenance";
 import { parseUpgradeArguments, runUpgradeCommand, UPGRADE_DECISIONS_FILE_BYTES, UPGRADE_FAILED, upgradeErrorBody } from "./upgrade";
 
+// Spyable `node:fs`, for the descriptor open of the decisions reader.
+vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>() }));
 // The real composition, observed: each test sees the parsed values it was called with.
 vi.mock("../server/bootstrap/upgrade-maintenance", async original => {
   const actual = await original<typeof import("../server/bootstrap/upgrade-maintenance")>();
@@ -104,7 +108,9 @@ describe("upgrade CLI runner: decisions file", () => {
     ["larger than the limit", (root: string) => { const path = join(root, "large.json"); writeFileSync(path, "{}"); truncateSync(path, UPGRADE_DECISIONS_FILE_BYTES + 1); return path; }],
     ["not JSON", (root: string) => { const path = join(root, "text.json"); writeFileSync(path, "links: []"); return path; }],
     ["JSON with a duplicate key", (root: string) => { const path = join(root, "duplicate.json"); writeFileSync(path, '{"links":[],"links":[]}'); return path; }],
-    ["not UTF-8", (root: string) => { const path = join(root, "binary.json"); writeFileSync(path, Buffer.from([0x7b, 0xff, 0x7d])); return path; }],
+    // The invalid byte sits inside a JSON string: decoded permissively it would be valid JSON, so only strict decoding refuses it.
+    ["not UTF-8", (root: string) => { const path = join(root, "binary.json"); writeFileSync(path, Buffer.concat([Buffer.from('{"x":"'), Buffer.from([0xff]), Buffer.from('"}')])); return path; }],
+    ["a FIFO", (root: string) => { const path = join(root, "fifo.json"); execFileSync("mkfifo", [path]); return path; }],
   ] as const)("refuses a decisions file that is %s, naming neither the file nor its content, before any lock", async (_name, make) => {
     const { root, paths } = absent();
     const file = make(temporary());
@@ -114,6 +120,32 @@ describe("upgrade CLI runner: decisions file", () => {
     expect(inspectUpgrade).not.toHaveBeenCalled();
     expect(readdirSync(root)).toEqual([]);
   });
+
+  it("refuses a regular file replaced by a FIFO between the lstat check and the open, without blocking", async () => {
+    const { root, paths } = absent(), file = join(temporary(), "decisions.json");
+    writeFileSync(file, JSON.stringify(DECISIONS));
+    const open = fs.openSync, opens: number[] = [];
+    let fifoOpened = false;
+    const spy = vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, flags?: fs.OpenMode, mode?: fs.Mode | null) => {
+      if (path !== file) return open(path, flags, mode);
+      // The lstat check has passed on the regular file; now another process swaps in a FIFO.
+      opens.push(flags as number);
+      rmSync(file); execFileSync("mkfifo", [file]);
+      // Without O_NONBLOCK this open would wait for a writer: refuse instead, so a regression fails the assertion below and never leaves a blocked open.
+      if (typeof flags !== "number" || !(flags & fs.constants.O_NONBLOCK)) throw new Error("blocking open of a FIFO");
+      const fd = open(path, flags, mode); fifoOpened = true; return fd;
+    }) as typeof fs.openSync);
+    try {
+      const { body, lines } = await run(["upgrade", "inspect", "--decisions", file], paths);
+      expect(opens).toHaveLength(1);
+      expect(opens[0]! & fs.constants.O_NONBLOCK).not.toBe(0);
+      expect(fifoOpened).toBe(true);
+      expect(body).toEqual(INVALID);
+      expect(lines).toEqual([]);
+      expect(inspectUpgrade).not.toHaveBeenCalled();
+      expect(readdirSync(root)).toEqual([]);
+    } finally { spy.mockRestore(); }
+  }, 5_000);
 
   it("accepts a file at the limit by size; the act domains then judge its content", async () => {
     const { paths } = absent(), file = join(temporary(), "padded.json");

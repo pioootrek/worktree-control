@@ -61,8 +61,8 @@ export function parseUpgradeArguments(args: readonly string[]): UpgradeCliComman
 }
 
 /**
- * The operator's decisions: a regular file (no symbolic link, no directory or
- * device), at most {@link UPGRADE_DECISIONS_FILE_BYTES}, UTF-8 JSON without
+ * The operator's decisions: a regular file (no symbolic link, directory, FIFO
+ * or device; one swapped in after the check is refused without blocking), at most {@link UPGRADE_DECISIONS_FILE_BYTES}, UTF-8 JSON without
  * duplicate keys. Hard links are accepted: the file is only read. Its content
  * is checked by the act domains; any failure here is `upgrade_invalid_input`
  * and names neither the file nor its content.
