@@ -1,6 +1,17 @@
 import { z } from "zod";
 
-export const backupIdSchema = z.string().regex(/^(backup-[0-9a-f-]{36}|pre-migration-v[0-9]+-[0-9a-f-]{36})$/);
+/**
+ * Maintenance backups: `pre-migration-v<n>-<uuid>` (taken by earlier releases at
+ * an ordinary start), `pre-establishment-v<n>-<uuid>` (`auth fence establish
+ * --backup-dir`) and `pre-upgrade-v<n>-<uuid>` (`upgrade apply --backup-dir`),
+ * where `n` is the source schema. They are plain trees the operator removes:
+ * always protected in the catalogue, never retention candidates, and counted
+ * toward catalogue capacity when they sit in the configured backup directory.
+ */
+export const MAINTENANCE_BACKUP_PATTERN = /^(pre-migration|pre-establishment|pre-upgrade)-v[0-9]+-[0-9a-f-]{36}$/;
+/** Whether a catalogue ID names a maintenance backup; see {@link MAINTENANCE_BACKUP_PATTERN}. */
+export function isMaintenanceBackupId(id: string): boolean { return MAINTENANCE_BACKUP_PATTERN.test(id); }
+export const backupIdSchema = z.string().regex(/^(backup-[0-9a-f-]{36}|(pre-migration|pre-establishment|pre-upgrade)-v[0-9]+-[0-9a-f-]{36})$/);
 export const backupKeySchema = z.string().min(1).max(256);
 /** Bounded admission/preflight evidence. Bytes for capacity reasons, counts otherwise. */
 export const backupLimitSchema = z.object({

@@ -1,6 +1,6 @@
 import { lstatSync, mkdtempSync, opendirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { backupIdSchema, type BackupEntry } from "@/shared/contracts/backups";
+import { backupIdSchema, isMaintenanceBackupId, type BackupEntry } from "@/shared/contracts/backups";
 import { BACKUP_LIMITS, parseManifest, readBoundedJson, verifyBackupSnapshot, type ControllerBackupManifest } from "@/server/infrastructure/sqlite";
 import { privateDirectory } from "@/server/private-storage";
 import { BackupError } from "./policy";
@@ -29,7 +29,7 @@ export class BackupCatalog {
         if (entries.length >= 1024) throw new BackupError("backup_limit", 400, { reason: "catalog_entries", current: entries.length, required: 1, maximum: 1024 });
         try {
           const manifest = this.manifest(item.name);
-          entries.push({ id: item.name, createdAt: manifest.createdAt, sizeBytes: manifestBytes(manifest), compatibility: "supported", verification: "unverified", protected: item.name.startsWith("pre-migration-") });
+          entries.push({ id: item.name, createdAt: manifest.createdAt, sizeBytes: manifestBytes(manifest), compatibility: "supported", verification: "unverified", protected: isMaintenanceBackupId(item.name) });
         } catch {
           entries.push({ id: item.name, createdAt: null, sizeBytes: null, compatibility: "unsupported", verification: "failed", protected: true });
         }
