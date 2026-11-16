@@ -126,8 +126,8 @@ const repository = resolve(".");
 
 interface ModuleImport { specifier: string; form: string; line: number; readOnly: boolean }
 
-/** Every literal module specifier of a source text, with its form. */
-function moduleImports(fileName: string, text: string): ModuleImport[] {
+/** Every literal module specifier of a source text, with its form; `identifiers`, when given, also collects every identifier's text. */
+function moduleImports(fileName: string, text: string, identifiers?: Set<string>): ModuleImport[] {
   const kind = /\.[jt]sx$/.test(fileName) ? ts.ScriptKind.TSX : /\.[cm]?js$/.test(fileName) ? ts.ScriptKind.JS : ts.ScriptKind.TS;
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind);
   const found: ModuleImport[] = [];
@@ -154,6 +154,7 @@ function moduleImports(fileName: string, text: string): ModuleImport[] {
       const form = callee.kind === ts.SyntaxKind.ImportKeyword ? "import()" : ts.isIdentifier(callee) && callee.text === "require" ? "require()" : undefined;
       if (form && first && ts.isStringLiteralLike(first)) found.push({ specifier: first.text, form, line: line(node), readOnly: false });
     }
+    if (identifiers && ts.isIdentifier(node)) identifiers.add(node.text);
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -232,6 +233,50 @@ function sources(): string[] {
   };
   walk(join(repository, "src"));
   return files.map(file => relative(repository, file).split(sep).join("/")).sort();
+}
+
+interface ScannedSource { file: string; text: string; imports: ModuleImport[]; steps: Array<ModuleImport & { module: string }>; identifiers: ReadonlySet<string> }
+let scanned: ScannedSource[] | undefined;
+/** Every non-test source file under `src/`, read and parsed once for every rule of this file. */
+function scan(): ScannedSource[] {
+  scanned ??= sources().map(file => {
+    const text = readFileSync(join(repository, file), "utf8"), identifiers = new Set<string>(), imports = moduleImports(file, text, identifiers);
+    return { file, text, imports, steps: stepImportEntries(file, text, imports), identifiers };
+  });
+  return scanned;
+}
+
+/*
+ * C3b: the upgrade's composition and its command runner exist but are not
+ * mounted. Only the runner may import the composition, nothing may import the
+ * runner (the CLI entry `src/cli/index.ts` included), and only the files named
+ * in UNMOUNTED_CALLS may name the entry points that reach the upgrade or
+ * establishment with a backup. The activation (C3c) deletes or narrows this
+ * rule deliberately. Same limits as the rules above: literal specifiers, files
+ * under `src/`, test files excluded; a name is found wherever it is written,
+ * so an alias still needs the name once.
+ */
+const UPGRADE_COMPOSITION = "src/server/bootstrap/upgrade-maintenance.ts", UPGRADE_RUNNER = "src/cli/upgrade.ts";
+const UNMOUNTED_IMPORTERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  [UPGRADE_COMPOSITION]: [UPGRADE_RUNNER],
+  [UPGRADE_RUNNER]: [],
+});
+const BOOTSTRAP_FENCE = "src/server/bootstrap/security-maintenance.ts";
+/** The only non-test files that may name each entry point: its definition, the SQLite public API that re-exports it, and its composition. */
+const UNMOUNTED_CALLS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  establishSecurityFenceWithBackup: [BOOTSTRAP_FENCE],
+  establishSqliteSecurityFence: [`${SQLITE}/security-maintenance.ts`, `${SQLITE}/index.ts`, BOOTSTRAP_FENCE],
+  inspectSqliteUpgrade: [`${SQLITE}/upgrade-maintenance.ts`, `${SQLITE}/index.ts`, UPGRADE_COMPOSITION],
+  applySqliteUpgrade: [`${SQLITE}/upgrade-maintenance.ts`, `${SQLITE}/index.ts`, UPGRADE_COMPOSITION],
+});
+/** Imports of the unmounted composition or runner that UNMOUNTED_IMPORTERS does not permit. */
+function unmountedImportFindings(fileName: string, imports: readonly ModuleImport[]): string[] {
+  return imports.flatMap(entry => Object.entries(UNMOUNTED_IMPORTERS).filter(([module, importers]) => !importers.includes(fileName) && reaches(fileName, entry.specifier, module))
+    .map(([module]) => `${entry.form} of ${entry.specifier} (${module}) at line ${entry.line}`));
+}
+/** Entry points named by a file UNMOUNTED_CALLS does not list for them. */
+function unmountedCallFindings(fileName: string, identifiers: ReadonlySet<string>): string[] {
+  return Object.entries(UNMOUNTED_CALLS).filter(([name, files]) => identifiers.has(name) && !files.includes(fileName)).map(([name]) => name);
 }
 
 const temporary: string[] = [];
@@ -380,14 +425,10 @@ describe("provisional schema steps stay switched off", () => {
   });
 
   it("finds no gate import outside the reader, and no step-module import outside its listed importer and module pairs", () => {
-    const files = sources();
-    expect(files.length).toBeGreaterThan(100);
-    expect(files).toContain(GATE);
-    // Each file is read and parsed once; both rules use the same imports.
-    const scanned = files.map(file => {
-      const text = readFileSync(join(repository, file), "utf8"), imports = moduleImports(file, text);
-      return { file, text, imports, steps: stepImportEntries(file, text, imports) };
-    });
+    const scanned = scan();
+    expect(scanned.length).toBeGreaterThan(100);
+    expect(scanned.map(({ file }) => file)).toContain(GATE);
+    // Each file is read and parsed once; every rule uses the same imports.
     expect(scanned.flatMap(({ file, text, imports }) => gateFindings(file, text, imports).map(finding => `${file}: ${finding}`))).toEqual([]);
     // Every file, listed importers included: each may import only its own listed modules.
     expect(scanned.flatMap(({ file, text, steps }) => stepFindings(file, text, steps).map(finding => `${file}: ${finding}`))).toEqual([]);
@@ -395,6 +436,50 @@ describe("provisional schema steps stay switched off", () => {
     expect(Object.values(STEP_IMPORTS).some(modules => Object.hasOwn(modules, DIRECTORY))).toBe(false);
     expect(scanned.filter(({ steps }) => steps.some(entry => entry.module === DIRECTORY)).map(({ file }) => file)).toEqual([]);
   }, 30_000); // One parse of every source file under src/: about a second here, growing with the tree.
+
+  it("keeps the upgrade composition and runner unmounted and establishment with a backup uncalled (C3b; the activation removes this)", () => {
+    const scanned = scan();
+    for (const file of [UPGRADE_COMPOSITION, UPGRADE_RUNNER, BOOTSTRAP_FENCE, "src/cli/index.ts"]) expect(scanned.map(({ file: name }) => name), file).toContain(file);
+    expect(scanned.flatMap(({ file, imports }) => unmountedImportFindings(file, imports).map(finding => `${file}: ${finding}`))).toEqual([]);
+    expect(scanned.flatMap(({ file, identifiers }) => unmountedCallFindings(file, identifiers).map(name => `${file}: ${name}`))).toEqual([]);
+    // Each listed file needs its exception: it names the entry point (the composition calls it, the definition and the public API name it).
+    for (const [name, files] of Object.entries(UNMOUNTED_CALLS)) {
+      for (const file of files) expect(scanned.find(entry => entry.file === file)?.identifiers.has(name), `${file} → ${name}`).toBe(true);
+    }
+    // The runner is the composition's importer, and the entry of the CLI imports neither.
+    expect(scanned.find(({ file }) => file === UPGRADE_RUNNER)!.imports.some(entry => reaches(UPGRADE_RUNNER, entry.specifier, UPGRADE_COMPOSITION))).toBe(true);
+    expect(scanned.find(({ file }) => file === "src/cli/index.ts")!.imports.filter(entry => reaches("src/cli/index.ts", entry.specifier, UPGRADE_COMPOSITION)
+      || reaches("src/cli/index.ts", entry.specifier, UPGRADE_RUNNER))).toEqual([]);
+  }, 30_000); // Shares the one parse of every source file with the scan above; this budget covers it when run alone.
+
+  it("reports every literal import of the unmounted modules outside their importer, and every call of the entry points outside their files", () => {
+    const strip = (findings: string[]) => findings.map(entry => entry.replace(/ at line \d+$/, ""));
+    const imports = (file: string, text: string) => strip(unmountedImportFindings(file, moduleImports(file, text)));
+    expect(imports("src/cli/index.ts", [
+      'import { runUpgradeCommand } from "./upgrade";',
+      'const lazy = import("./upgrade.js");',
+      'import { applyUpgrade } from "@/server/bootstrap/upgrade-maintenance";',
+      'export * from "../server/bootstrap/upgrade-maintenance";',
+    ].join("\n"))).toEqual([
+      `import of ./upgrade (${UPGRADE_RUNNER})`, `import() of ./upgrade.js (${UPGRADE_RUNNER})`,
+      `import of @/server/bootstrap/upgrade-maintenance (${UPGRADE_COMPOSITION})`, `re-export of ../server/bootstrap/upgrade-maintenance (${UPGRADE_COMPOSITION})`,
+    ]);
+    // The runner may import the composition; another bootstrap or CLI file may not.
+    expect(imports(UPGRADE_RUNNER, 'import { applyUpgrade } from "../server/bootstrap/upgrade-maintenance";')).toEqual([]);
+    for (const file of [BOOTSTRAP_FENCE, "src/cli/security-fence.ts", "src/server/controller.ts"]) {
+      expect(imports(file, 'import { inspectUpgrade } from "@/server/bootstrap/upgrade-maintenance";'), file).toEqual([`import of @/server/bootstrap/upgrade-maintenance (${UPGRADE_COMPOSITION})`]);
+    }
+    // Not findings: a namesake elsewhere.
+    expect(imports("src/server/example.ts", 'import { x } from "./upgrade"; import { y } from "./bootstrap/upgrade-maintenance-notes";')).toEqual([]);
+    const calls = (file: string, text: string) => { const names = new Set<string>(); moduleImports(file, text, names); return unmountedCallFindings(file, names); };
+    expect(calls("src/cli/security-fence.ts", "import { establishSecurityFenceWithBackup as establish } from \"../server/bootstrap/security-maintenance\"; void establish;")).toEqual(["establishSecurityFenceWithBackup"]);
+    expect(calls(UPGRADE_RUNNER, "applySqliteUpgrade(paths, command, backup);")).toEqual(["applySqliteUpgrade"]);
+    expect(calls(UPGRADE_COMPOSITION, "inspectSqliteUpgrade(paths); applySqliteUpgrade(paths, command, backup);")).toEqual([]);
+    expect(calls(BOOTSTRAP_FENCE, "establishSecurityFenceWithBackup; establishSqliteSecurityFence;")).toEqual([]);
+    // A string of the same text is not a name; a property access is.
+    expect(calls("src/server/example.ts", 'const text = "establishSecurityFenceWithBackup";')).toEqual([]);
+    expect(calls("src/server/example.ts", "bootstrap.establishSecurityFenceWithBackup(paths);")).toEqual(["establishSecurityFenceWithBackup"]);
+  });
 
   it("lists only existing files that need the exception", () => {
     for (const file of [GATE, ...STEP_MODULES]) expect(existsSync(join(repository, file)), file).toBe(true);
