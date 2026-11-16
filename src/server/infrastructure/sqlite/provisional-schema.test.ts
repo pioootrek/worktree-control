@@ -18,7 +18,11 @@ import { applyUpgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applyMappingQuarantine, applyProjectMappingMigration, planMappingQuarantine, projectMappingViolation } from "./mapping-structure-migration";
 import { ProjectDirectoryQueries } from "./project-directory-queries";
 import { applySqliteUpgrade, inspectSqliteUpgrade } from "./upgrade-maintenance";
-import { assertUpgradeAvailable, readUpgradePlan, removeUpgradePlan, structuralSteps, upgradeTarget, UpgradeError, writeUpgradePlan } from "./upgrade-plan";
+import {
+  assertUpgradeAvailable, executeUpgradeActs, normaliseUpgradeDecisions, proposeUpgrade, readUpgradePlan, removeUpgradePlan, structuralSteps, upgradeTarget, UpgradeError,
+  validateUpgradeProposal, writeUpgradePlan,
+} from "./upgrade-plan";
+import { MAPPING_ACT_DOMAIN, normaliseMappingDecisions, proposeProjectMapping } from "./mapping-upgrade-acts";
 import { SecurityFence } from "./security-fence";
 
 /**
@@ -70,7 +74,8 @@ const READ_FUNCTION = "provisionalSchemaEnabled";
 const SQLITE = "src/server/infrastructure/sqlite";
 const MARKER_STEP = `${SQLITE}/upgrade-marker-migration.ts`, COVERAGE = `${SQLITE}/security-coverage.ts`;
 const MAPPING_STEP = `${SQLITE}/mapping-structure-migration.ts`, DIRECTORY = `${SQLITE}/project-directory-queries.ts`;
-const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY]);
+const MAPPING_ACTS = `${SQLITE}/mapping-upgrade-acts.ts`;
+const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY, MAPPING_ACTS]);
 /**
  * The only non-test importers of the step modules, each with the modules it may
  * import and why. The project directory (step 51) has no importer: it is not mounted.
@@ -81,7 +86,9 @@ const STEP_IMPORTS: Readonly<Record<string, Readonly<Record<string, string>>>> =
   [`${SQLITE}/schema-inspection.ts`]: { [MARKER_STEP]: "recognises step 50 by its text and checksum", [COVERAGE]: "builds the expected triggers of each version",
     [MAPPING_STEP]: "recognises step 51's tables, columns and checksum at ceiling 51" },
   [`${SQLITE}/fixtures/schema-rewind.ts`]: { [MARKER_STEP]: "rewinds synthetic step-50 fixtures", [MAPPING_STEP]: "rewinds synthetic step-51 fixtures" },
-  [`${SQLITE}/upgrade-plan.ts`]: { [MARKER_STEP]: "names step 50 and its checksum among the structural steps", [MAPPING_STEP]: "names step 51 and its checksum among the structural steps" },
+  [`${SQLITE}/upgrade-plan.ts`]: { [MARKER_STEP]: "names step 50 and its checksum among the structural steps", [MAPPING_STEP]: "names step 51 and its checksum among the structural steps",
+    [MAPPING_ACTS]: "registers the step-51 project-mapping act domain in the upgrade's registry" },
+  [MAPPING_ACTS]: { [MAPPING_STEP]: "passes the step-51 gate with the step's version before reading the mapping columns" },
   [`${SQLITE}/database-validation.ts`]: { [MAPPING_STEP]: "validates the step-51 clock, stamps, parents and journal at version 51" },
   [`${SQLITE}/security-maintenance.ts`]: { [MAPPING_STEP]: "plans and applies the step-51 mapping quarantine at target 51" },
   [DIRECTORY]: { [MAPPING_STEP]: "passes the step-51 gate with the step's version" },
@@ -287,7 +294,9 @@ describe("provisional schema steps stay switched off", () => {
       const before = tree(data);
       expect(Object.keys(before)).toContain(join("state.sqlite3.security", "witness.json"));
       const receipt = "00000000-0000-4000-8000-000000000000";
-      const plan = { kind: "worktree-control/upgrade-plan" as const, format: 1 as const, binding: "a".repeat(64), installation: "b".repeat(64), base: "c".repeat(64), source: 49, target: 49, steps: structuralSteps(49, 49), acts: [] };
+      const plan = { kind: "worktree-control/upgrade-plan" as const, format: 2 as const, binding: "a".repeat(64), installation: "b".repeat(64), base: "c".repeat(64), source: 49, target: 49, steps: structuralSteps(49, 49), decisions: {}, acts: [], review: {} };
+      const mappingPlan = { ...plan, source: 49, target: 51, decisions: { mapping: { links: [], bindings: [], isolate: { registrations: [], remoteIdentities: [] } } } };
+      const context = { source: 49, target: 51, planHash: "0".repeat(64), receipt, at: new Date(0).toISOString() };
       const refusals = {
         assertUpgradeAvailable: () => assertUpgradeAvailable(),
         beginUpgrade: () => SecurityFence.beginUpgrade(path, { receipt, plan: "0".repeat(64), at: new Date().toISOString() }),
@@ -297,6 +306,15 @@ describe("provisional schema steps stay switched off", () => {
         writeUpgradePlan: () => writeUpgradePlan(path, plan),
         readUpgradePlan: () => readUpgradePlan(path),
         removeUpgradePlan: () => removeUpgradePlan(path),
+        // C2b: the decisions, the proposal pass, the whole-plan validation and the acts.
+        normaliseUpgradeDecisions: () => normaliseUpgradeDecisions({}, 51),
+        proposeUpgrade: () => proposeUpgrade(database, { schemaVersion: 49, source: 49, target: 51 }, {}, null, true),
+        validateUpgradeProposal: () => validateUpgradeProposal(database, mappingPlan, 49),
+        executeUpgradeActs: () => database.transaction(() => executeUpgradeActs(database, mappingPlan, context))(),
+        normaliseMappingDecisions: () => normaliseMappingDecisions({}),
+        proposeProjectMapping: () => proposeProjectMapping(database, { schemaVersion: 49, source: 49, target: 51 }, { links: [], bindings: [], isolate: { registrations: [], remoteIdentities: [] } }, null, true),
+        ...Object.fromEntries(MAPPING_ACT_DOMAIN.kinds.map(kind => [kind.kind, () => database.transaction(() => kind.execute(database, {}, context))()])),
+        inspectSqliteUpgradeWithDecisions: () => inspectSqliteUpgrade(fixture.paths, 51, { isolate: { registrations: ["x"] } }),
       };
       for (const [entry, refusal] of Object.entries(refusals)) {
         expect(refusal, entry).toThrowError(expect.objectContaining({ name: "UpgradeError", code: "upgrade_unsupported", message: UNSUPPORTED }));
@@ -421,6 +439,13 @@ describe("provisional schema steps stay switched off", () => {
     }
     // A listed pair is not a finding.
     expect(stepFindings(`${SQLITE}/security-maintenance.ts`, 'import { applyMappingQuarantine } from "./mapping-structure-migration";')).toEqual([]);
+    // The mapping acts (C2b) are importable only by the plan's registry: the maintenance, the mapping step and any other file are reported.
+    const actsModule = "@/server/infrastructure/sqlite/mapping-upgrade-acts";
+    const acts = `import { MAPPING_ACT_DOMAIN } from "${actsModule}";`;
+    expect(stepFindings(`${SQLITE}/upgrade-plan.ts`, acts)).toEqual([]);
+    for (const file of [`${SQLITE}/upgrade-maintenance.ts`, MAPPING_STEP, `${SQLITE}/security-maintenance.ts`, "src/server/bootstrap/example.ts"]) {
+      expect(strip(stepFindings(file, acts)), file).toEqual([`import of ${actsModule} (${MAPPING_ACTS})`]);
+    }
   });
 
   describe("with the switch on", () => {
