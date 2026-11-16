@@ -337,3 +337,58 @@ describe("the admission at every ordinary entry point", () => {
     }
   }, 30_000);
 });
+
+describe("an admitted current database at the store's opening", () => {
+  /** Every row of `table` with every column SQLite-quoted, so a changed type, value or row shows. */
+  const rows = (path: string, table: string): string[] => {
+    const reader = new Database(path, { readonly: true, fileMustExist: true });
+    try {
+      const columns = (reader.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map(({ name }) => `quote("${name}")`);
+      return reader.prepare(`SELECT ${columns.join("||'|'||")} FROM "${table}" ORDER BY rowid`).pluck().all() as string[];
+    } finally { reader.close(); }
+  };
+  const indexSql = (path: string, name: string) => {
+    const reader = new Database(path, { readonly: true, fileMustExist: true });
+    try { return reader.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name=?").pluck().get(name) as string | undefined; }
+    finally { reader.close(); }
+  };
+
+  it("restores the bootstrap's idempotency index that a current database lost, and the uniqueness it enforces holds", () => {
+    const paths = freshAt(TARGET), path = canonical(paths);
+    const definition = indexSql(path, "test_runs_actor_idempotency");
+    expect(definition).toMatch(/CREATE UNIQUE INDEX test_runs_actor_idempotency/);
+    // DDL outside the owner: no row changes, so no fence trigger fires and the witness still matches.
+    const dropper = unmanagedFixtureDatabase(path);
+    try { dropper.exec("DROP INDEX test_runs_actor_idempotency"); } finally { dropper.close(); }
+    expect(indexSql(path, "test_runs_actor_idempotency")).toBeUndefined();
+
+    new SqliteStateStore(paths.databasePath).close();
+    expect(indexSql(path, "test_runs_actor_idempotency")).toBe(definition);
+
+    // The constraint itself: a second run of the same actor with the same key is refused.
+    const writer = unmanagedFixtureDatabase(path);
+    try {
+      writer.pragma("foreign_keys = OFF");
+      const insert = (id: string) => writer.prepare(`INSERT INTO test_runs(id,project_id,worktree_path,worktree_head,worktree_dirty,preset_id,preset_name,adapter,actor,phase,executable,args_json,cwd,queued_at,idempotency_key)
+        VALUES(?,'project','/code/project','head',0,'node:test','test','node','local-cli','queued','pnpm','["test"]','/code/project',?,'same-key')`).run(id, new Date().toISOString());
+      writer.exec("BEGIN");
+      try {
+        insert("first");
+        expect(() => insert("second")).toThrow(/UNIQUE constraint failed: test_runs\.actor, test_runs\.idempotency_key/);
+      } finally { writer.exec("ROLLBACK"); }
+    } finally { writer.close(); }
+  });
+
+  it("leaves schema_migrations and the upgrade marker as they were, for a fresh and an upgraded database", async () => {
+    const upgradedPaths = fenced49();
+    await upgraded(upgradedPaths);
+    for (const paths of [freshAt(TARGET), upgradedPaths]) {
+      const path = canonical(paths);
+      const before = { migrations: rows(path, "schema_migrations"), marker: rows(path, "upgrade_marker") };
+      expect(before.migrations).toHaveLength(TARGET);
+      expect(before.marker).toHaveLength(1);
+      new SqliteStateStore(paths.databasePath).close();
+      expect({ migrations: rows(path, "schema_migrations"), marker: rows(path, "upgrade_marker") }).toEqual(before);
+    }
+  }, 30_000);
+});
