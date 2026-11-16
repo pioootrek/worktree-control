@@ -191,7 +191,7 @@ describe("service install first-run token", () => {
     expect(withStore(appPaths.databasePath, (authentication) => authentication.status().token)).toBeNull();
   });
 
-  it("leaves a running controller and a database awaiting migration to the controller", () => {
+  it("leaves a running controller to the controller, and refuses an older database before any token instead of leaving its migration to the controller", () => {
     const running = paths();
     const lock = acquireControllerLock(running.controllerLockPath);
     const tty = terminal(true);
@@ -206,7 +206,8 @@ describe("service install first-run token", () => {
     const database = unmanagedFixtureDatabase(pending.databasePath);
     database.exec(readFileSync(new URL("../server/infrastructure/sqlite/fixtures/schema-v26.sql", import.meta.url), "utf8"));
     database.close();
-    expect(bootstrapServiceInstallationToken(pending, { terminal: tty, locale: "en" })).toBe(false);
+    // The ordinary admission refuses it (here: no fence yet) before a token is issued or a service definition changes.
+    expect(() => bootstrapServiceInstallationToken(pending, { terminal: tty, locale: "en" })).toThrowError(expect.objectContaining({ code: "security_fence_establishment_required" }));
     const inspected = unmanagedFixtureDatabase(pending.databasePath, { readonly: true });
     try {
       expect((inspected.prepare("SELECT max(version) version FROM schema_migrations").get() as { version: number }).version).toBe(26);

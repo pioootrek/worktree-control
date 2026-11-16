@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import { maintainSecurityFence } from "@/server/bootstrap/security-maintenance";
+import { upgradeFixture } from "@/server/infrastructure/sqlite/fixtures/protected-security";
 import { createControllerAuthentication } from "@/server/bootstrap/authentication-provider-lifetime";
 import { AuthenticationService, loadAuthenticationProvider, type AuthenticationProviderRuntime } from "@/server/modules/authentication";
 import { IdentityService, HumanAccountService } from "@/server/modules/identity";
@@ -46,6 +47,8 @@ describe("real protected provider restore quarantine",()=>{
       expect(()=>new SqliteStateStore(f.path)).toThrow(/security_fence/);
       const paths=resolveAppPaths(f.root),status=maintainSecurityFence(paths,{action:"inspect"});
       expect(maintainSecurityFence(paths,{action:"resume",expect:status.preflight,mode:"token"})).toMatchObject({trusted:true,quarantined:true});
+      // A resumed database needs the explicit upgrade before an ordinary opening.
+      await upgradeFixture(f.path);
       current=new SqliteStateStore(f.path);runtime=(await loadProof(current,undefined,undefined,factorOptions())).runtime;
       const old=new Browser({runtime});expect((await old.signIn()).status).toBe(401);expect(await runtime.resolve(new Headers({cookie:b.cookieHeader()}))).toBeNull();
       if(totp)expect((await old.post("/two-factor/verify-totp",{code:totp.authenticator.code()},{cookie:pending!.cookieHeader()})).status).toBeGreaterThanOrEqual(400);
@@ -78,6 +81,8 @@ describe("real protected provider restore quarantine",()=>{
     const result=maintainSecurityFence(f.paths,{action:"resume",expect:preflight.preflight,mode:"token"});expect(result).toMatchObject({trusted:true,quarantined:true});
     expect(readCommitted(f.paths.databasePath,db=>db.prepare("SELECT id,kind,status FROM remote_principals WHERE kind='owner'").all())).toEqual([{id:f.principalId,kind:"owner",status:"active"}]);
     expect(readCommitted(f.paths.databasePath,db=>db.prepare("SELECT password FROM authentication_ba_account").all())).toEqual([{password:null}]);
+    // A resumed database needs the explicit upgrade before an ordinary opening.
+    await upgradeFixture(f.paths.databasePath);
     current=f.open();try{
       // This is the actual P1 lifetime and P3a protected recovery, after the durable receipt.
       expect(()=>new IdentityService(current.store).authenticateBearer(machine.token)).toThrow();
