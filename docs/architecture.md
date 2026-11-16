@@ -1078,8 +1078,10 @@ script file under `src/` may import the gate module, except
 test recognises static imports (type-only and side-effect imports included),
 `export ... from`, `import x = require()`, `import()` types, and `import()`
 or `require()` calls with a literal specifier. It resolves relative, `@/`,
-absolute and `file:` specifiers to a file. A second rule allows imports of the
-provisional step modules only in a listed set of adapter files. The guard does not cover
+absolute and `file:` specifiers to a file. A second rule lists importer and
+module pairs: each listed adapter file may import only the provisional step
+modules it needs, no other file may import one, and no non-test file may import
+the project directory of step 51. The guard does not cover
 non-literal specifiers, files outside `src/`, test files, or files that are not
 scripts. It also does not see code that reaches the switch without importing
 the module. Non-literal specifiers under `src` fail the separate unmounted
@@ -1148,27 +1150,52 @@ The step adds these parts, in `mapping-structure-migration.ts`:
 - The three fence triggers of step 49 for the clock and the journal, in a
   coverage entry for step 51, and a separate list of the step's other triggers.
 
-Every stamp is the next value of the clock: the clock is advanced, then its
-value is used. `incarnation` is the value issued when the row was created and
-never changes after it is stamped. `mapping_version` is the value of the row's
-creation or of its last mapping change (a parent set or cleared). The step's
-triggers enforce this:
+Every stamp is a value the clock has issued: a writer advances the clock, then
+uses its value. A stamp need not be freshly issued. A mapping version may be set
+to the clock's current value, which other rows may already carry (the quarantine
+gives every row the same one), and an unstamped row may take any issued value as
+its incarnation that no other row of its table holds. `incarnation` is the value
+issued when the row was created, or the value it was stamped with if it predates
+the step, and never changes after it is stamped. Non-zero incarnations are
+unique within each table. `mapping_version` is the value of the row's creation
+or of its last mapping change (a parent set or cleared). The step's triggers
+enforce this:
 
 - An `INSERT` that brings a stamp of its own is refused. After every other
   `INSERT`, a trigger advances the clock and stamps both columns of the new row.
   So the existing writers (`project add` and remote provisioning), which do not
-  know these columns, still get a fresh incarnation. A row deleted and created
-  again with the same ID gets a new, larger one. The insert's own `changes` and
-  `lastInsertRowid` are unaffected.
+  know these columns, still get a fresh incarnation. Each row of a multi-row
+  `INSERT` gets its own advance. A row deleted and created again with the same
+  ID gets a new, larger one, including through `INSERT OR REPLACE` on any unique
+  key, whatever `recursive_triggers` says. The insert's own `changes` and
+  `lastInsertRowid` are unaffected. The trigger checks that its stamp landed.
+  Through the file's own schema that check cannot fail; a connection's `TEMP`
+  trigger, which the file does not hold, can skip or undo the stamp, and then
+  the insert fails.
 - An incarnation changes only from 0 to a value the clock has issued, with a
-  mapping version no smaller than it.
+  mapping version no smaller than it, and only to a value no other row of the
+  table holds. A row's trigger sees the rows its statement has already changed,
+  so one `UPDATE` that gives several rows the same value fails as a whole. A
+  unique index would not do this: under `UPDATE OR REPLACE` it would delete the
+  row that holds the value.
 - A changed mapping version must be larger than before and equal to the
   clock's current value. A changed parent needs a larger mapping version. An
   update of any other column leaves both stamps alone.
 - The clock only advances, and its row is neither replaced nor deleted.
-- The journal refuses `UPDATE`, `DELETE` and an `INSERT` whose sequence
-  already exists. This refuses every replacing form (`INSERT OR REPLACE`,
-  `REPLACE INTO`, an upsert), whatever `recursive_triggers` says.
+- The journal refuses `UPDATE`, `DELETE` and an `INSERT` with an explicit
+  sequence that is not above every existing one. This refuses every replacing
+  form (`INSERT OR REPLACE`, `REPLACE INTO`, an upsert), whatever
+  `recursive_triggers` says, and an insert into an earlier gap, so sequence
+  order is append order. The later acts read a subject's latest record by the
+  largest sequence. An omitted sequence is issued by `AUTOINCREMENT`, which
+  never issues one at or below the largest existing sequence.
+- A journal `INSERT` must name an incarnation the clock has issued: at most the
+  clock's current value, and none while the clock row is missing.
+- The journal's time is canonical UTC with milliseconds and a real instant: the
+  value must equal the formatting of its own Julian day. Formatting the value
+  directly is not enough, because SQLite's parser accepts hour 24 and prints it
+  back; the Julian day turns it into the next day. Every `toISOString` value
+  from year 0 to 9999 passes.
 
 Every refusal is `RAISE(ABORT)`. Inside a trigger, SQLite applies the conflict
 algorithm of the statement that fired it, so without these refusals an
@@ -1176,9 +1203,13 @@ algorithm of the statement that fired it, so without these refusals an
 the last stamp. At the maximum the insert fails; the clock never wraps.
 
 The structure guards against defects in the application, not against a raw
-rewrite of the file, a dropped trigger, a write to `sqlite_sequence` or a
-restore. An `INSERT` into the journal with an explicit sequence above the last
-one is still possible. The journal sequence orders records; it is not a version.
+rewrite of the file, a dropped trigger, a `TEMP` trigger, or a restore. An
+`INSERT` into the journal with an explicit sequence above the last one is still
+possible: it leaves a gap, and later sequences continue above it. A write to
+`sqlite_sequence` is not refused either. Raising it leaves a gap. Lowering it
+changes nothing, because `AUTOINCREMENT` also stays above the largest existing
+sequence. The journal sequence orders records; it is not a version, and a
+restore rewinds it like everything else.
 
 The step writes only DDL against tables that are already fenced, its own clock
 row before the clock's triggers exist, and `schema_migrations`. So it can run in
@@ -1208,8 +1239,14 @@ Validation at 51 requires the following:
   requires.
 - Every journal row has typed and bounded fields: lowercase hexadecimal plan
   hash and lowercase UUID receipt, both length-checked in bytes, a canonical
-  time, a legal kind and basis, an incarnation from 1 to the clock, and a
-  sequence within `sqlite_sequence`.
+  time that is a real instant (the same Julian-day rule as the table), a legal
+  kind and basis, an incarnation from 1 to the clock, and a sequence within
+  `sqlite_sequence`.
+
+Step 50's validation of the marker's `changed_at` had the same weakness: it
+accepted hour 24. It now uses the same Julian-day rule. Step 50's table and
+checksum are unchanged; its column has no `CHECK`, so validation is the only
+rule.
 
 `auth fence resume` at target 51 clears the mapping in its one schema and
 quarantine transaction. It advances the clock, clears every parent, and sets
@@ -1224,8 +1261,15 @@ included. At the default target and at 50 the quarantine runs exactly the
 statements it ran before. The explicit offline upgrade lists step 51 among its
 structural steps; it adds no act.
 
+The step's operations pass the provisional gate before they touch a database:
+the migration, the validation rule, the quarantine's plan and its statements.
+The directory's constructor passes it too. Its constants (statement text,
+trigger lists and checksum) are data and are not gated: the coverage lists and
+the upgrade's step list read them when their modules load.
+
 `project-directory-queries.ts` is a typed, read-only project directory. Nothing
-mounts it, and its construction passes the provisional gate. It looks up a
+mounts it, no non-test file imports it, and its construction passes the
+provisional gate. It looks up a
 registration, a remote identity and a project by ID, and the registrations and
 remote identities of a project. It returns storage facts only: the parent
 project or null and both stamps, with unstamped rows returned as 0. Each lookup
@@ -1235,8 +1279,9 @@ unmounted guard refuses every import of `src/shared/contracts/operations.ts`.
 
 The stamps have limits. `mapping_version` is a bounded change stamp, and not by
 itself the `version` of a `ResolvedResource`. A later adapter composes that
-version and must also account for relation changes. Stamps are unique and
-increasing only within one linear history of the database. A restore of an
+version and must also account for relation changes. Incarnations are unique
+per table, and clock values increase, only within one linear history of the
+database. A restore of an
 older database rewinds the clock, which may then issue values it issued before.
 The recovery boundary is the quarantine, which re-stamps every row. So anything
 that keeps a version across requests must be emptied or invalidated by the
@@ -1258,12 +1303,17 @@ and register the commands.
 
 An installation's database is in one of four states. The fence decides trust
 exactly as `SecurityFence.preflight` does. A confirmed witness that carries an
-earlier recovery receipt is trusted like any other confirmed witness.
+earlier recovery receipt is trusted like any other confirmed witness. The state
+depends on the target. A completed step-50 database is current at target 50
+but needs the upgrade at target 51: inspect plans step 51 only, and apply runs it
+and records the new plan hash in the marker. A database above the target is not
+in any state: ownership's schema ceiling is the target, and it refuses a newer
+schema as unrecognised before the state is read.
 
 | State | Recognised by | Operator's next step |
 | --- | --- | --- |
-| Current | trusted fence, marker `complete` | nothing |
-| Upgrade needed | trusted fence, marker absent (schema 49) or `pending` | `upgrade inspect`, then `upgrade apply --expect <plan hash>` |
+| Current | trusted fence, marker `complete`, schema at the target | nothing |
+| Upgrade needed | trusted fence, and marker absent (schema 49), marker `pending`, or schema below the target | `upgrade inspect`, then `upgrade apply --expect <plan hash>` |
 | Pre-fence | no fence, establishment allowed | `auth fence establish`, then upgrade |
 | Fenced | anything else: a pending, mismatched or missing witness on fenced data, or an unacknowledged restore | `auth fence resume`, then upgrade |
 
@@ -1313,8 +1363,10 @@ and refuses links and unknown entries.
 `upgrade apply --expect <plan hash>` runs in this order:
 
 1. Take both locks, with inspection-only ownership.
-2. Require "upgrade needed". When the state is "current" and the marker records
-   the same plan hash, answer "already applied" and change nothing. Refuse
+2. Require "upgrade needed". When the state is "current" (so the schema is at
+   this run's target) and the marker records the same plan hash, answer
+   "already applied" and change nothing. An earlier plan for a lower target is
+   not already applied at a higher one: it is not the plan inspect wrote there. Refuse
    every other state with its next step.
 3. Check owner continuity.
 4. Read the plan. Refuse it when it is missing or malformed, when its hash
