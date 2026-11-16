@@ -1,4 +1,5 @@
 import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -683,7 +684,7 @@ describe("remote verification SQLite persistence", () => {
     branchDatabase.close();
 
     establishFixtureSecurity(path);
-    const upgraded = new SqliteStateStore(path);
+    const upgraded = openStoreAt49(path);
     expect(upgraded.getProject(projectId)?.launchPreset).toBe("auto");
     upgraded.close();
 
@@ -704,7 +705,7 @@ describe("remote verification SQLite persistence", () => {
     first.close();
 
     establishFixtureSecurity(path);
-    new SqliteStateStore(path).close();
+    openStoreAt49(path).close();
     const replayed = unmanagedFixtureDatabase(path, { readonly: true });
     expect(replayed.prepare("SELECT version FROM schema_migrations WHERE version IN (14, 15) ORDER BY version").all())
       .toEqual([{ version: 14 }, { version: 15 }]);

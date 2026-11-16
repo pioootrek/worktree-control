@@ -218,6 +218,38 @@ describe("service backup operations", () => {
     f.advance(60_000); f.operations.tick(); await f.operations.drain();
     expect(readFileSync(join(f.policy.directory!, "unrelated"), "utf8")).toBe("keep");
   });
+  it("accepts, lists, protects and counts every maintenance prefix, and never offers one to retention, even through a scheduled ledger record", async () => {
+    const f = fixture({ intervalSeconds: 60, retainCount: 1 });
+    const ids = [`pre-migration-v28-${crypto.randomUUID()}`, `pre-establishment-v28-${crypto.randomUUID()}`, `pre-upgrade-v52-${crypto.randomUUID()}`];
+    for (const [index, id] of ids.entries()) {
+      const created = f.operations.create(f.actor, `maintenance-${index}`); await f.operations.drain();
+      renameSync(join(f.policy.directory!, created.backupId), join(f.policy.directory!, id));
+    }
+    // A scheduled copy whose ledger record names a maintenance ID: the overlay must not lift the protection.
+    f.advance(60_000); f.operations.tick(); await f.operations.drain();
+    const scheduled = f.operations.overview(f.actor).schedule.lastOperation!, overlaid = `pre-upgrade-v52-${crypto.randomUUID()}`;
+    await f.operations.close();
+    renameSync(join(f.policy.directory!, scheduled.backupId), join(f.policy.directory!, overlaid));
+    const path = join(f.operations.recordDirectory, "ledger.json"), envelope = JSON.parse(readFileSync(path, "utf8"));
+    const record = envelope.payload.operations.find((operation: { backupId: string }) => operation.backupId === scheduled.backupId);
+    Object.assign(record, { backupId: overlaid, destination: join(f.policy.directory!, overlaid) });
+    envelope.sha256 = recordHash(envelope.payload); writeFileSync(path, JSON.stringify(envelope), { mode: 0o600 });
+    const restarted = new BackupOperations(f.policy, f.deps);
+    try {
+      for (let round = 0; round < 3; round++) { f.advance(60_000); restarted.tick(); await restarted.drain(); }
+      expect(restarted.overview(f.actor).schedule.retention).toBe("succeeded");
+      const copies = restarted.overview(f.actor).copies;
+      for (const id of [...ids, overlaid]) {
+        expect(existsSync(join(f.policy.directory!, id)), id).toBe(true);
+        expect(copies.find(copy => copy.id === id), id).toMatchObject({ compatibility: "supported", protected: true });
+      }
+      // Each one counts toward the catalogue's bytes, as every listed copy in the configured directory does.
+      const listed = restarted.catalog.list();
+      for (const id of [...ids, overlaid]) expect(listed.find(copy => copy.id === id)?.sizeBytes, id).toBeGreaterThan(0);
+      // Only the scheduled copies beyond the retained count were removed.
+      expect(copies.filter(copy => copy.id.startsWith("backup-"))).toHaveLength(1);
+    } finally { await restarted.close(); }
+  });
   it("accounts for durable queued/running interruption and never repeats failed keys", async () => {
     const f = fixture(); await f.operations.close();
     const path = join(f.operations.recordDirectory, "ledger.json"), envelope = JSON.parse(readFileSync(path, "utf8"));

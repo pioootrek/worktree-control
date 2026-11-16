@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity, resumeFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,9 +23,10 @@ function genuine44(db: Database.Database) {
   db.exec(`INSERT INTO remote_principals VALUES('69849424-2aba-4fdd-b4fa-a394a77a193c','owner','active'),('human','human','active');
     INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
     VALUES('runtime','Runtime','/code/runtime',3601,'node','[]','/',45000,'now','now');
-    INSERT INTO knowledge_projects VALUES('runtime','Knowledge','active',1,'now','now');
-    INSERT INTO knowledge_project_grants VALUES('69849424-2aba-4fdd-b4fa-a394a77a193c','runtime','["knowledge:read"]',NULL);
-    INSERT INTO knowledge_history VALUES(1,'runtime','project','runtime','created',NULL,'69849424-2aba-4fdd-b4fa-a394a77a193c','owner_session',1,'now');`);
+    INSERT INTO knowledge_projects VALUES('knowledge','Knowledge','active',1,'now','now');
+    INSERT INTO knowledge_project_grants VALUES('69849424-2aba-4fdd-b4fa-a394a77a193c','knowledge','["knowledge:read"]',NULL);
+    INSERT INTO knowledge_history VALUES(1,'knowledge','project','knowledge','created',NULL,'69849424-2aba-4fdd-b4fa-a394a77a193c','owner_session',1,'now');`);
+  // Distinct IDs: the explicit upgrade refuses one ID naming a registration and a knowledge project (upgrade_mapping_collision).
 }
 const kept = (db: Database.Database) => Object.fromEntries(["remote_principals", "principal_credentials", "knowledge_project_grants", "knowledge_role_bindings", "knowledge_history", "runtime_credential_scopes", "runtime_delegations", "test_run_requesters", "projects"].map(t => [t, db.prepare(`SELECT * FROM ${t}`).all()]));
 describe("runtime membership migration 45", () => {
@@ -35,7 +37,7 @@ describe("runtime membership migration 45", () => {
       const before = kept(db), registry = db.prepare("SELECT * FROM schema_migrations").all();
       expect(() => initializeSchema(db, false, () => { throw new Error("rollback45"); })).toThrow("rollback45");
       expect(inspectSchema(db).version).toBe(44); expect(kept(db)).toEqual(before);
-      initializeSchema(db, false, inspectSchema);
+      initializeSchema(db, false, inspectSchema, { target: 49 });
       expect(inspectSchema(db).version).toBe(49); expect(kept(db)).toEqual(before);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=44").all()).toEqual(registry);
       expect(db.prepare("SELECT * FROM runtime_human_memberships").all()).toEqual([]);
@@ -47,16 +49,17 @@ describe("runtime membership migration 45", () => {
     const root = mkdtempSync(join(tmpdir(), "runtime-membership-backup-")), path = join(root, "state.sqlite3");
     const db = unmanagedFixtureDatabase(path); genuine44(db); db.close();
     establishFixtureSecurity(path);
-    const store = new SqliteStateStore(path);
+    const store = openStoreAt49(path);
     try {
       const row = store.runtimeMemberships().saveRuntimeMembership({ principalId: "human", scope: { kind: "runtime-project", id: "runtime" }, role: "reader", permissions: ["projects:read"], expectedRevision: 0 }, "local-cli", new Date().toISOString());
       await createControllerBackup(store, join(root, "backup"), { applicationVersion: "test", attachmentDirectory: join(root, "attachments") });
       const target = join(root, "restored.sqlite3"); restoreControllerBackup(join(root, "backup"), target);
-      resumeFixtureSecurity(target);
+      await resumeFixtureSecurity(target);
       const restored = new SqliteStateStore(target);
       try {
-        expect(restored.schemaVersion()).toBe(49);
-        expect(restored.runtimeMemberships().getRuntimeMembership("human", "runtime")).toMatchObject({...row,revision:row.revision+1,revokedAt:expect.any(String),updatedAt:expect.any(String)});
+        expect(restored.schemaVersion()).toBe(52);
+        // Revoked by the resume's quarantine, then again by the upgrade's reset: each advances the revision.
+        expect(restored.runtimeMemberships().getRuntimeMembership("human", "runtime")).toMatchObject({...row,revision:row.revision+2,revokedAt:expect.any(String),updatedAt:expect.any(String)});
         expect(restored.listPrincipalCredentials("human")).toEqual([]);
         expect(restored.hasAuthenticationProviderData()).toBe(false);
       } finally { restored.close(); }

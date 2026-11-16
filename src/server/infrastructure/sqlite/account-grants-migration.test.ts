@@ -4,9 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import ts from "typescript";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PROVISIONAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
-import { enableProvisionalSchema } from "./provisional-schema-gate";
+import { afterEach, describe, expect, it } from "vitest";
+import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { validateDatabase } from "./database-validation";
@@ -20,16 +19,12 @@ import {
 } from "./account-grants-migration";
 import { SECURITY_COVERAGE, schemaTriggersAt, securityTriggersAt, STEP_TRIGGERS } from "./security-coverage";
 import { rewindAccountGrants, rewindProjectMapping } from "./fixtures/schema-rewind";
-import { RELEASED_SCHEMA_VERSION } from "./fixtures/released-schema";
-import { SqliteStateStore } from "./sqlite-state-store";
+import { openStoreAt, RELEASED_SCHEMA_VERSION } from "./fixtures/released-schema";
 import { quarantineAuthority } from "./security-maintenance";
 import { structuralSteps } from "./upgrade-plan";
 
-// Every test here needs target 52; the switch is restored after each one.
-let restoreGate: () => void;
 const roots: string[] = [];
-beforeEach(() => { restoreGate = enableProvisionalSchema(); });
-afterEach(() => { restoreGate(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const temporary = () => { const root = mkdtempSync(join(tmpdir(), "account-grants-")); roots.push(root); return root; };
 
 const TARGET = ACCOUNT_GRANTS_VERSION;
@@ -114,12 +109,11 @@ function contractRoleScopes(): Array<[string, string]> {
   return names.map(name => [name, scopes.get(name)!]);
 }
 
-describe("provisional schema step 52: grants storage", () => {
+describe("schema step 52: grants storage", () => {
   it("pins step 52 and its coverage, and leaves steps 49, 50 and 51 as they were", () => {
-    expect(PROVISIONAL_SCHEMA_VERSION).toBe(52);
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(49);
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(52);
     expect(accountGrantsMigration).toMatchObject({ version: 52, name: "account-grants-structure" });
-    // Pinned while provisional: a change to the step's text is a visible edit here.
+    // Pinned: a change to the step's text is a visible edit here.
     expect(accountGrantsChecksum).toBe("8a65a27c2243118bd3f14dba323df6f00e3e6b608351c5c23463997a36115cff");
     // Steps 49 to 51 keep their pinned checksums (also pinned in their own tests).
     expect(securityFenceChecksum).toBe("320f46981c17c44f4d14ee48298bd91f43d01ab78bf4162c607d2118f29486ae");
@@ -167,13 +161,13 @@ describe("provisional schema step 52: grants storage", () => {
     } finally { database.close(); }
   });
 
-  it("neither applies nor recognises step 52 at the default target, at 50 or at 51, and refuses a step-52 database like an unknown newer schema", () => {
-    for (const target of [undefined, 50, 51]) {
+  it("neither applies nor recognises step 52 at targets 49, 50 or 51, and refuses a step-52 database there like an unknown newer schema", () => {
+    for (const target of [49, 50, 51]) {
       const database = freshAt(target);
       try {
         expect(database.prepare("SELECT 1 FROM sqlite_master WHERE tbl_name='account_grants'").get(), String(target)).toBeUndefined();
-        expect(database.prepare("SELECT max(version) FROM schema_migrations").pluck().get()).toBe(target ?? 49);
-        expect(database.prepare("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name").pluck().all()).toEqual(schemaTriggersAt(target ?? 49).map(trigger => trigger.name).sort());
+        expect(database.prepare("SELECT max(version) FROM schema_migrations").pluck().get()).toBe(target);
+        expect(database.prepare("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name").pluck().all()).toEqual(schemaTriggersAt(target).map(trigger => trigger.name).sort());
       } finally { database.close(); }
     }
     const provisional = fresh52(), unknown = freshAt(51);
@@ -181,25 +175,28 @@ describe("provisional schema step 52: grants storage", () => {
       unknown.exec(UNKNOWN_52);
       const refusal = message(() => inspectSchema(unknown, 51));
       expect(refusal).toMatch(SCHEMA_REFUSAL);
-      for (const ceiling of [undefined, 49, 50, 51]) {
+      for (const ceiling of [49, 50, 51]) {
         expect(message(() => inspectSchema(unknown, ceiling))).toMatch(SCHEMA_REFUSAL);
         expect(message(() => inspectSchema(provisional, ceiling))).toBe(message(() => inspectSchema(unknown, ceiling)));
       }
-      for (const target of [undefined, 50, 51]) expect(message(() => initializeSchema(provisional, false, at(target ?? 49), { target }))).toMatch(SCHEMA_REFUSAL);
+      for (const target of [49, 50, 51]) expect(message(() => initializeSchema(provisional, false, at(target), { target }))).toMatch(SCHEMA_REFUSAL);
     } finally { provisional.close(); unknown.close(); }
-    // Ordinary store opening refuses it as the unknown newer schema.
+    // A store opened at 51 (the test-side opener: an ordinary owner at that target) refuses it as the unknown newer schema.
     const provisionalPath = privateDatabase(database => fresh52(database));
     const unknownPath = privateDatabase(database => { freshAt(51, database); database.exec(UNKNOWN_52); });
-    const opening = message(() => new SqliteStateStore(unknownPath));
+    const opening = message(() => openStoreAt(unknownPath, 51));
     expect(opening).toMatch(SCHEMA_REFUSAL);
-    expect(message(() => new SqliteStateStore(provisionalPath))).toBe(opening);
+    expect(message(() => openStoreAt(provisionalPath, 51))).toBe(opening);
     // Backup validation: the manifest ceiling and the snapshot recognition follow the target.
     const backup = backupTree(database => fresh52(database), 52);
     const manifestRefusal = "Unsupported or invalid backup manifest (types, paths, versions or limits).";
-    for (const ceiling of [undefined, 50, 51]) expect(() => parseManifest(backup.manifest, ceiling)).toThrow(manifestRefusal);
+    for (const ceiling of [49, 50, 51]) expect(() => parseManifest(backup.manifest, ceiling)).toThrow(manifestRefusal);
+    // The default ceiling is the supported version, which accepts it.
+    expect(() => parseManifest(backup.manifest)).not.toThrow();
     const parsed = parseManifest(backup.manifest, TARGET);
     expect(() => validateBackup(backup.root, parsed, false, TARGET)).not.toThrow();
-    for (const ceiling of [undefined, 51]) expect(message(() => validateSnapshot(backup.path, parsed, ceiling))).toMatch(SCHEMA_REFUSAL);
+    for (const ceiling of [49, 51]) expect(message(() => validateSnapshot(backup.path, parsed, ceiling))).toMatch(SCHEMA_REFUSAL);
+    expect(() => validateSnapshot(backup.path, parsed)).not.toThrow();
     expect(() => parseManifest(backup.manifest, 53)).toThrow("Unsupported schema target.");
   });
 
@@ -267,18 +264,6 @@ describe("provisional schema step 52: grants storage", () => {
         expect(inspectSchema(database, TARGET).version).toBe(version);
       } finally { database.close(); }
     }
-  });
-
-  it("refuses a direct call of the step while the provisional switch is off", () => {
-    restoreGate();
-    try {
-      const database = ordinary();
-      try {
-        expect(() => applyAccountGrantsMigration(database)).toThrow("Unsupported schema target.");
-        expect(() => accountGrantsViolation(database)).toThrow("Unsupported schema target.");
-        expect(database.prepare("SELECT count(*) FROM sqlite_master").pluck().get()).toBe(0);
-      } finally { database.close(); }
-    } finally { restoreGate = enableProvisionalSchema(); }
   });
 });
 
@@ -459,12 +444,12 @@ describe("step 52 recognition at ceiling 52", () => {
   });
 
   it("refuses the grants table before step 52, at every ceiling, and recognises a step-51 database at ceiling 52 unchanged", () => {
-    for (const target of [undefined, 50, 51]) {
+    for (const target of [49, 50, 51]) {
       const database = freshAt(target, observed());
       try {
-        expect(inspectSchema(database, TARGET)).toEqual({ version: target ?? 49, fresh: false });
+        expect(inspectSchema(database, TARGET)).toEqual({ version: target, fresh: false });
         for (const statement of accountGrantsMigration.sql.split(";\n")) database.exec(statement.replace(/;$/, ""));
-        for (const ceiling of [target ?? 49, 51, 52]) expect(message(() => inspectSchema(database, ceiling)), `${target} at ${ceiling}`).toMatch(SCHEMA_REFUSAL);
+        for (const ceiling of [target, 51, 52]) expect(message(() => inspectSchema(database, ceiling)), `${target} at ${ceiling}`).toMatch(SCHEMA_REFUSAL);
       } finally { database.close(); }
     }
   });
@@ -544,7 +529,7 @@ describe("step 52 in the quarantine of auth fence resume", () => {
   });
 
   it("migrates to 52 and quarantines in one transaction from 49 and 51", () => {
-    for (const source of [undefined, 51]) {
+    for (const source of [49, 51]) {
       const database = freshAt(source, observed());
       try {
         quarantine(database);

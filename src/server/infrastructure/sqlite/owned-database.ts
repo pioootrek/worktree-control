@@ -7,6 +7,7 @@ import { inspectSchema, snapshotAttachments, type SchemaInspection } from "./sch
 import { getOwnedRestoreStatus, recoverOwnedRestore, restoreRoot } from "./restore-recovery";
 import { validateDatabase } from "./database-validation";
 import { schemaTarget } from "./migration-registry";
+import { assertOrdinaryAdmission } from "./ordinary-admission";
 
 /** The database and its sidecars, as ownership validates and normalises them. */
 const ownedFiles = (path: string) => [path, `${path}-wal`, `${path}-shm`, `${path}-journal`, `${path}.initializing`];
@@ -101,6 +102,14 @@ export class OwnedSqliteDatabase {
   private closed = false;
   readonly provenance: DatabaseProvenance;
   private readonly inspectOnly: boolean;
+  /**
+   * True only when this owner was opened as an ordinary opening and the
+   * database passed {@link assertOrdinaryAdmission} at {@link target}. The store
+   * (`SqliteStateStore`) accepts no other owner.
+   */
+  readonly admitted: boolean;
+  /** The schema target and recognition ceiling this owner was opened at. */
+  readonly target: number;
 
   /**
    * `ceiling` (default `SUPPORTED_SCHEMA_VERSION`) is the highest schema version {@link inspectSchema} recognises.
@@ -109,10 +118,20 @@ export class OwnedSqliteDatabase {
    * restore is refused ({@link UnfinishedRestoreError}) instead of recovered, and
    * no file mode is normalised. Such an owner never creates a database and
    * enables writes only through {@link enableVerifiedWrites}.
+   *
+   * `ordinary` marks application access (the store, the read-only remote
+   * recovery inspection): the constructor then runs the admission check
+   * ({@link assertOrdinaryAdmission}) at the ceiling, on the read-only
+   * connection, after the schema was recognised and validated and before it
+   * returns, so before anything can enable writes, migrate, attach the fence
+   * or copy the database. A refusal closes the connection and releases the
+   * lock. This is the only call of the check. Maintenance openings (fence
+   * maintenance, the upgrade, backup creation) omit it.
    */
-  constructor(path: string, create = false, ceiling?: number, options?: { inspectOnly?: boolean }) {
+  constructor(path: string, create = false, ceiling?: number, options?: { inspectOnly?: boolean; ordinary?: boolean }) {
     // Refuse an unsupported ceiling before any lock or file is touched.
-    schemaTarget(ceiling);
+    this.target = schemaTarget(ceiling);
+    this.admitted = false;
     this.inspectOnly = options?.inspectOnly === true;
     if (this.inspectOnly && create) throw new Error("An inspection-only owner never creates a database.");
     this.ownership = this.inspectOnly ? acquireDatabaseOwnership(path, { inspectOnly: true }) : acquireDatabaseOwnership(path);
@@ -143,6 +162,10 @@ export class OwnedSqliteDatabase {
       this.inspection = inspectSchema(connection, ceiling);
       if (this.inspection.fresh && !(create && initializing)) throw new Error("Unrecognized empty database without a verified initialization marker; startup stopped.");
       validateDatabase(connection, this.inspection.version);
+      if (options?.ordinary) {
+        assertOrdinaryAdmission({ canonicalPath: this.ownership.path, database: connection, inspection: this.inspection }, this.target);
+        this.admitted = true;
+      }
       this.connection = connection;
     } catch (error) {
       try { connection?.close(); } finally { this.ownership.lock.release(); }

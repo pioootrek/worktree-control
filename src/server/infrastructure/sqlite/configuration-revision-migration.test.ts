@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity, resumeFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +43,7 @@ describe("configuration revision migration 37", () => {
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=37").get())
         .toEqual({ name: configurationRevisionMigration.name, checksum: configurationRevisionChecksum });
     } finally { db.close(); }
-    const reopened = new SqliteStateStore(f.path);
+    const reopened = openStoreAt49(f.path);
     try {
       expect(reopened.getProjectConfigurationRevision(f.project.id)).toBe(0);
       expect(reopened.getProject(f.project.id)).toMatchObject({ testPresetTimeouts: { "node:test": 1000 }, environmentProfiles: [{ name: "default" }, { name: "staging" }] });
@@ -77,11 +78,11 @@ describe("configuration revision migration 37", () => {
     } finally { f.store.close(); }
     const path = join(f.root, "restored.sqlite3");
     restoreControllerBackup(backup, path);
-    resumeFixtureSecurity(path);
-    resumeFixtureSecurity(path);
+    await resumeFixtureSecurity(path);
+    await resumeFixtureSecurity(path);
     const restored = new SqliteStateStore(path);
     try {
-      expect(restored.schemaVersion()).toBe(49);
+      expect(restored.schemaVersion()).toBe(52);
       expect(restored.getProjectConfigurationRevision(f.project.id)).toBe(2);
     } finally { restored.close(); }
   });

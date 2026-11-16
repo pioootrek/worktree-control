@@ -3,13 +3,12 @@ import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, m
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { resolveAppPaths, type AppPaths } from "../../paths";
 import { createControllerBackup } from "../../controller-backup";
 import { IdentityService, type AuthenticatedPrincipal } from "../../modules/identity";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
-import { enableProvisionalSchema } from "./provisional-schema-gate";
 import { SecurityFence, SecurityFenceError, securityFenceRoot } from "./security-fence";
 import { maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
 import { initializeSchema } from "./migrations";
@@ -33,12 +32,9 @@ import { legacySourceEvidence } from "../../test-source-attribution";
 import { validateDatabase } from "./database-validation";
 import type { TestRun } from "@/shared/contracts";
 
-// Every test here needs target 52; the switch is restored after each one.
 const TARGET = 52;
 const roots: string[] = [];
-let restoreGate: () => void;
-beforeEach(() => { restoreGate = enableProvisionalSchema(); });
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); restoreGate(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const temporary = () => { const root = mkdtempSync(join(tmpdir(), "authority-acts-")); roots.push(root); return root; };
 
 /** Historical time of every fixture write that takes a clock. */

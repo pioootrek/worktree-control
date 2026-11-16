@@ -2,8 +2,7 @@ import type Database from "better-sqlite3";
 import type { z } from "zod";
 
 /**
- * The shared vocabulary of the explicit offline upgrade (integration branch,
- * provisional): its errors, canonical JSON, limits and the interface of an act
+ * The shared vocabulary of the explicit offline upgrade: its errors, canonical JSON, limits and the interface of an act
  * domain. It imports no upgrade module, so `upgrade-plan.ts` (the plan and its
  * registry) and each domain (`mapping-upgrade-acts.ts`, `authority-upgrade-acts.ts`) can both depend on it
  * without importing each other in a cycle. `upgrade-plan.ts` re-exports it.

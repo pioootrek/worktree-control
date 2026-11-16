@@ -94,17 +94,32 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   private sessionRecovery: Promise<void> | undefined;
   private sessionsRecovered = false;
 
+  /**
+   * Opens the store on an ordinary opening: a database the ordinary admission
+   * check admitted (`OwnedSqliteDatabase` with `ordinary: true`, which this
+   * constructor creates when `inspected` is omitted). Any other owner is
+   * refused before writes are enabled. The schema transaction then runs at the
+   * owner's target (the supported version unless a test opened the owner at a
+   * lower one). An admitted existing database is at that target with a complete
+   * upgrade marker, so no step applies: every recorded step returns at once and
+   * only the bootstrap's idempotent statements run (`CREATE ... IF NOT EXISTS`,
+   * `INSERT OR IGNORE` of migration 1), which restore a lost bootstrap index such
+   * as `test_runs_actor_idempotency` and write no row a fence trigger covers. A
+   * fresh database is created; its initialization marker is removed only after
+   * the fence published its witness.
+   */
   constructor(databasePath: string, inspected?: OwnedSqliteDatabase, connectionOptions?: ExclusiveConnectionOptions) {
-    this.ownedDatabase = inspected ?? new OwnedSqliteDatabase(databasePath, true);
+    this.ownedDatabase = inspected ?? new OwnedSqliteDatabase(databasePath, true, undefined, { ordinary: true });
     try {
-      SecurityFence.inspect(this.ownedDatabase.canonicalPath, this.ownedDatabase.database, this.ownedDatabase.inspection.fresh);
+      if (!this.ownedDatabase.admitted) throw new Error("The store opens only a database admitted by an ordinary opening.");
+      const { fresh } = this.ownedDatabase.inspection, target = this.ownedDatabase.target;
       const writable = this.ownedDatabase.enableWrites();
       configureDurability(writable);
-      initializeSchema(writable, this.ownedDatabase.inspection.fresh, inspectSchema);
+      initializeSchema(writable, fresh, database => { inspectSchema(database, target); }, { target });
       assertDurability(writable);
-      this.ownedDatabase.completeInitialization();
       // Query modules register functions while being built; strict admission starts once they exist.
-      this.securityFence=SecurityFence.attach(this.ownedDatabase.canonicalPath, writable, this.ownedDatabase.inspection.fresh);
+      this.securityFence=SecurityFence.attach(this.ownedDatabase.canonicalPath, writable, fresh);
+      this.ownedDatabase.completeInitialization();
       this.connection = new ExclusiveSqliteConnection(writable, { ...connectionOptions, admission: "compatible" }, this.securityFence);
       this.database = this.connection.core;
       this.testRuns = new TestRunQueries(this.database);

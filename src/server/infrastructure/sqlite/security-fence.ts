@@ -8,7 +8,6 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import { durableJson, privateDirectory, privateBoundedFileReader, readPrivateBoundedFile, syncDirectory, validateSensitivePath } from "../../private-storage";
 import { getOwnedRestoreStatus } from "./restore-recovery";
-import { assertUpgradeAvailable } from "./upgrade-plan";
 
 const hex = z.string().regex(/^[0-9a-f]{64}$/);
 const policySchema = z.object({ mode: z.enum(["legacy", "token", "open", "better-auth"]), generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict();
@@ -28,11 +27,10 @@ const upgradeSchema = z.object({ receipt: z.uuid(), plan: hex, at: z.iso.datetim
  * `receipt` and `recoveredAt` keep their meaning (the last establish/resume) in
  * both formats; an upgrade never writes them.
  *
- * Decoding is not gated: a format-2 record once written is read, verified and
- * carried forward by ordinary fenced writes whether or not the provisional
- * switch is on. Only the helpers that start or finish an upgrade
+ * A format-2 record once written is read, verified and carried forward by
+ * ordinary fenced writes. Only the explicit upgrade starts or finishes one
  * ({@link SecurityFence.beginUpgrade}, {@link SecurityFence.registerUpgradeObserver},
- * {@link SecurityFence.upgradeReceipt}) refuse unless the upgrade is available.
+ * {@link SecurityFence.upgradeReceipt}).
  */
 const recordV2 = recordV1.extend({ format: z.literal(2), upgrade: upgradeSchema }).strict();
 const recordSchema = z.discriminatedUnion("format", [recordV1, recordV2]);
@@ -220,7 +218,6 @@ export class SecurityFence implements SqliteExecutionBoundary {
    * database until {@link upgradeReceipt} confirms it.
    */
   static beginUpgrade(path: string, upgrade: SecurityUpgradeReceipt): void {
-    assertUpgradeAvailable();
     const previous = read(path);
     if (!previous || previous.state !== "confirmed") throw new SecurityFenceError("security_fence_recovery_required");
     const parsed = upgradeSchema.parse(upgrade);
@@ -238,7 +235,6 @@ export class SecurityFence implements SqliteExecutionBoundary {
    * observer registered. Nothing here writes.
    */
   static registerUpgradeObserver(path: string, database: Database.Database, receipt: string): void {
-    assertUpgradeAvailable();
     try {
       const record = read(path);
       if (!record || record.state !== "pending" || record.format !== 2 || record.upgrade.receipt !== receipt) throw new Error();
@@ -254,7 +250,6 @@ export class SecurityFence implements SqliteExecutionBoundary {
    * epoch changes in the upgrade's transaction, the installation and the file
    * identity never do. */
   static upgradeReceipt(path: string, database: Database.Database, receipt: string, phase: "pending" | "confirmed"): void {
-    assertUpgradeAvailable();
     const previous = read(path);
     if (!previous || previous.format !== 2 || previous.state !== "pending" || previous.upgrade.receipt !== receipt
       || previous.installation !== checkpoint(database).installation || hash(previous.file) !== hash(fileIdentity(path))) throw new SecurityFenceError("security_fence_recovery_required");

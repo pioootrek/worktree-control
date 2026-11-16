@@ -350,6 +350,12 @@ async function main() {
     const listed = JSON.parse((await run(cliCommand, ["project", "list", "--json", ...common], { cwd: root, env: runtimeEnv })).stdout);
     check(listed.length === 1 && listed[0].repositoryPath === fixture && listed[0].port === fixturePort, "Offline CLI registration mismatch.");
   });
+  // A fresh installation is created at schema 52 with a complete upgrade marker and no plan hash: nothing to upgrade.
+  await step("fresh-schema-52-marker-complete", async () => {
+    const inspection = JSON.parse((await run(cliCommand, ["upgrade", "inspect", ...common], { cwd: root, env: runtimeEnv })).stdout);
+    check(inspection.state === "current" && inspection.nextStep === "none" && inspection.schemaVersion === 52 && inspection.marker === "complete"
+      && inspection.appliedPlan === null && inspection.planHash === undefined, "A fresh installation is not current at schema 52 with a complete marker and no plan hash.");
+  });
   const project = JSON.parse((await run(cliCommand, ["project", "list", "--json", ...common], { cwd: root, env: runtimeEnv })).stdout)[0];
   // New installations run in token mode; the installation token authorizes every transport.
   const token = await step("installation-token", async () => {

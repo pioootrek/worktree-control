@@ -14,8 +14,8 @@ import { establishSecurityFenceWithBackup, maintainSecurityFence } from "./secur
 
 /*
  * Establishment with a pre-establishment backup through its bootstrap
- * composition, at the supported target: no provisional switch is needed, and
- * nothing outside tests calls it (provisional-schema.test.ts). Each test
+ * composition, at the supported target, as `auth fence establish --backup-dir`
+ * runs it (only that command calls it: schema-entry-points.test.ts). Each test
  * migrates a schema-40 store and flushes files several times: explicit 30 s
  * timeouts, since the hosted runner is about twice as slow as a workstation.
  */
@@ -55,7 +55,10 @@ describe("fence establishment with a pre-establishment backup", () => {
     const { backup, ...established } = result;
     const comparable = (value: Record<string, unknown>) => ({ ...value, preflight: "<preflight>", receipt: "<receipt>" });
     expect(comparable(established)).toEqual(comparable(plain));
-    expect(established).toMatchObject({ code: "security_fence_current", trusted: true, changed: true, quarantined: false, schemaVersion: 49 });
+    // At the supported target a non-fresh source reaches 52 with the upgrade marker pending: the upgrade is next.
+    expect(established).toMatchObject({ code: "security_fence_current", trusted: true, changed: true, quarantined: false, schemaVersion: 52 });
+    const live = new Database(paths.databasePath, { readonly: true, fileMustExist: true });
+    try { expect(live.prepare("SELECT state, plan_hash FROM upgrade_marker").get()).toEqual({ state: "pending", plan_hash: null }); } finally { live.close(); }
     const entries = readdirSync(directory);
     expect(entries).toEqual([expect.stringMatching(/^pre-establishment-v40-[0-9a-f-]{36}$/)]);
     expect(backup).toBe(join(directory, entries[0]!));

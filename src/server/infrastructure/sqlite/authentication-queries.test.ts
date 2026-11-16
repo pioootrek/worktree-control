@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -60,7 +61,7 @@ describe("authentication policy SQLite persistence", () => {
     downgradeToMigration24(path);
 
     establishFixtureSecurity(path);
-    const store = new SqliteStateStore(path);
+    const store = openStoreAt49(path);
     expect(store.schemaVersion()).toBe(49);
     expect(store.getPrincipal("owner-1")).toEqual({ id: "owner-1", kind: "owner", status: "active" });
     expect(store.getPrincipal("installation")).toEqual({ id: "installation", kind: "installation", status: "active" });

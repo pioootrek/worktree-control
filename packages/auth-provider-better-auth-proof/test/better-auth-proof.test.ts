@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { upgradeFixture } from "@/server/infrastructure/sqlite/fixtures/protected-security";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type Database from "better-sqlite3";
@@ -550,9 +551,11 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
     const paths=resolveAppPaths(join(f.root,"restored"));
     const status=maintainSecurityFence(paths,{action:"inspect"});
     expect(maintainSecurityFence(paths,{action:"resume",expect:status.preflight,mode:"token"})).toMatchObject({trusted:true,quarantined:true});
+    // After a restore: resume, then the explicit upgrade, before an ordinary opening.
+    await upgradeFixture(restoredPath, { attachmentDirectory: join(f.root, "restored-attachments") });
     const restored = new SqliteStateStore(restoredPath);
     try {
-      expect(restored.schemaVersion()).toBe(49);
+      expect(restored.schemaVersion()).toBe(52);
       expect(count(restoredPath, "authentication_provider_subjects")).toBe(1);
       expect(restored.listProjects().map(project => project.name)).toEqual(["after-disposal"]);
       // The durable protected receipt permits issuance only after restored authorities are quarantined.

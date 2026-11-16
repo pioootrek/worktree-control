@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,7 +37,7 @@ it("upgrades schema 30 with empty overrides, preserves policies, rolls back fail
     expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=31").get()).toEqual({ name: testPresetTimeoutMigration.name, checksum: testPresetTimeoutChecksum });
     expect(db.pragma("foreign_key_check")).toEqual([]);
   } finally { db.close(); }
-  const reopened = new SqliteStateStore(path);
+  const reopened = openStoreAt49(path);
   try {
     expect(reopened.getProject(project.id)!.testPresetTimeouts).toEqual({});
     expect(reopened.getProject(project.id)!.testPresetProfiles).toEqual({ "godot:check": "tooling" });

@@ -3,10 +3,11 @@ import type Database from "better-sqlite3";
 import { schemaTarget } from "./migration-registry";
 
 /**
- * Provisional step 50 (integration branch): the explicit upgrade marker. It is
- * applied and recognised only with an explicit schema target of 50; the
- * supported version stays 49 until a later pull request activates it, and this
- * step may still change until the release candidate.
+ * Step 50: the explicit upgrade marker, applied by the default target (the
+ * supported version) and by an explicit target of 50 or more. It may still
+ * change until the release candidate; a database migrated by an unreleased
+ * build is disposable. The ordinary admission check (`ordinary-admission.ts`)
+ * admits a database only when its marker is `complete`.
  *
  * `complete` on a fresh installation; `pending` on a database migrated from an
  * earlier schema, and again after `auth fence resume` (the quarantine). Who can
@@ -62,7 +63,7 @@ export const upgradeMarkerChecksum = createHash("sha256")
  * `fresh` is true only when the schema transaction began on an empty database.
  */
 export function applyUpgradeMarkerMigration(database: Database.Database, fresh: boolean): void {
-  // A direct call passes the provisional gate too, not only initializeSchema's target.
+  // A direct call checks the step against the supported version, as initializeSchema's target does.
   schemaTarget(UPGRADE_MARKER_VERSION);
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=50").get()) return;
   database.exec(table);

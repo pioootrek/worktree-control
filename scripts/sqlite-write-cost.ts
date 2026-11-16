@@ -9,7 +9,8 @@ function measureWriteCost(): void {
   let sqliteVersion = "";
   for (const mode of ["NORMAL", "FULL", "FULL", "NORMAL", "NORMAL", "FULL"]) {
     const root = mkdtempSync(join(dirname(process.cwd()), "sqlite-cost-"));
-    const owned = new OwnedSqliteDatabase(join(root,"state.sqlite3"), true);
+    // A fresh ordinary store, as the controller opens one; the store refuses an owner the ordinary admission did not admit.
+    const owned = new OwnedSqliteDatabase(join(root,"state.sqlite3"), true, undefined, { ordinary: true });
     const store = new SqliteStateStore(join(root,"state.sqlite3"), owned);
     try {
       // Only this disposable benchmark connection changes mode. Application opens always require FULL.

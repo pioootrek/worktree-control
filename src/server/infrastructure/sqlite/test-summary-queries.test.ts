@@ -1,6 +1,7 @@
 import { ownedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,7 +23,7 @@ afterEach(() => { for (const store of stores.splice(0)) store.close(); for (cons
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "wtc-summary-")); roots.push(root);
   const path = join(root, "state.sqlite3");
-  const owned = new OwnedSqliteDatabase(path, true);
+  const owned = new OwnedSqliteDatabase(path, true, undefined, { ordinary: true });
   const store = new SqliteStateStore(path, owned); stores.push(store);
   const project = store.addProject({ name: "App", repositoryPath: root, port: 3210, executable: "node", args: [] });
   const other = store.addProject({ name: "Other", repositoryPath: join(root, "other"), port: 3211, executable: "node", args: [] });
@@ -60,7 +61,7 @@ describe("durable bounded test summary history", () => {
     rewindProviderSessionHistory(old); old.exec(WITHOUT_AUTHENTICATION_PROVIDER_STORAGE + "DROP TABLE test_run_summaries; DROP TABLE test_summary_coverage; ALTER TABLE test_runs DROP COLUMN telemetry_json; DELETE FROM schema_migrations WHERE version>=29;");
     expect(inspectSchema(old).version).toBe(28); old.close();
     establishFixtureSecurity(f.path);
-    const owned = new OwnedSqliteDatabase(f.path);
+    const owned = new OwnedSqliteDatabase(f.path, false, 49, { ordinary: true });
     const reopened = new SqliteStateStore(f.path, owned); stores.push(reopened);
     expect(reopened.schemaVersion()).toBe(49);
     expect(reopened.getTestRun(run.id)?.telemetry).toMatchObject({ availability: "legacy_unknown", admittedAt: null, exitedAt: null });
@@ -80,10 +81,10 @@ describe("durable bounded test summary history", () => {
     expect(old.prepare("SELECT id FROM test_runs").get()).toEqual({ id: run.id });
     old.close();
     establishFixtureSecurity(f.path);
-    const reopened = new SqliteStateStore(f.path); reopened.close();
+    const reopened = openStoreAt49(f.path); reopened.close();
     const tampered = unmanagedFixtureDatabase(f.path);
     tampered.exec("UPDATE schema_migrations SET checksum='wrong' WHERE version=29"); tampered.close();
-    expect(() => new SqliteStateStore(f.path)).toThrow("migration checksum or name");
+    expect(() => openStoreAt49(f.path)).toThrow("migration checksum or name");
   });
 
   it("reconciles queued, active and unfinished-finalization rows once without fabricating exit/cleanup times", () => {

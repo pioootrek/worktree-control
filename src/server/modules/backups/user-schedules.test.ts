@@ -286,7 +286,7 @@ describe("independent user export schedules", () => {
     const snapshot = join(f.root, "before.sqlite3"); await f.store.backup(snapshot);
     const laterProject = f.identity.createKnowledgeProject({ name: "After snapshot" }, f.owner);
     f.save(first); for (let version = 1; version <= 5; version++) f.save(f.input(first.id, version)); f.schedules.close();
-    resumeFixtureSecurity(snapshot);
+    await resumeFixtureSecurity(snapshot);
     const restoredStore = new SqliteStateStore(snapshot); cleanup.push(() => restoredStore.close());
     expect(restoredStore.getKnowledgeProject(laterProject.id)).toBeNull();
     const restoredIdentity = new IdentityService(restoredStore);

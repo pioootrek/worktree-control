@@ -11,13 +11,13 @@ import { SecurityFence, securityFenceRoot } from "./security-fence";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { SECURITY_FENCE_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
-import { createFencedAt49, openStoreAt49, RELEASED_SCHEMA_VERSION, schemaAt49 } from "./fixtures/released-schema";
+import { createFencedAt49, openStoreAt, openStoreAt49, RELEASED_SCHEMA_VERSION, schemaAt49 } from "./fixtures/released-schema";
 
 /**
- * The schema-49 fixtures build what the default built before C3c-1, while the
- * supported version is 49. The comparisons with the default below are what the
- * activation deletes: after it the default builds schema 52, and the fixtures
- * keep building 49 (`schema-version-separation.test.ts` shows that).
+ * The schema-49 fixtures build the released schema 49 by its own steps, while
+ * this release creates 52 by default; the test-side store opens such a
+ * database at 49 through an ordinary owner (the admission check runs there)
+ * and refuses anything else loudly.
  */
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -45,51 +45,49 @@ const witness = (path: string) => {
 const sidecars = (path: string) => [`${path}.initializing`, `${path}-journal`].map(existsSync);
 
 describe("released schema-49 fixtures", () => {
-  it("keeps the released version, the fence base and (until the activation) the supported version at 49", () => {
+  it("keeps the released version and the fence base at 49, below the supported version", () => {
     expect(RELEASED_SCHEMA_VERSION).toBe(49);
     expect(SECURITY_FENCE_SCHEMA_VERSION).toBe(RELEASED_SCHEMA_VERSION);
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(RELEASED_SCHEMA_VERSION);
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(52);
   });
 
-  it("creates the fenced database and witness the default store creates, and the store reopens it unchanged", () => {
-    const fixture = dataPath(), reference = dataPath();
+  it("creates a fenced schema-49 database with a confirmed witness, which the store opened at 49 reopens unchanged", () => {
+    const fixture = dataPath();
     createFencedAt49(fixture);
-    new SqliteStateStore(reference).close();
-    expect(content(fixture)).toEqual(content(reference));
-    expect(witness(fixture)).toEqual(witness(reference));
     expect(witness(fixture)).toMatchObject({ format: 1, state: "confirmed", receipt: null, recoveredAt: null, restore: null });
-    expect(sidecars(fixture)).toEqual(sidecars(reference));
+    expect(sidecars(fixture)).toEqual([false, false]);
     // Trusted by the fence, at 49.
     const owner = new OwnedSqliteDatabase(fixture, false, RELEASED_SCHEMA_VERSION, { inspectOnly: true });
     try {
       expect(owner.inspection).toEqual({ version: 49, fresh: false });
       expect(() => SecurityFence.inspect(owner.canonicalPath, owner.database, false)).not.toThrow();
     } finally { owner.close(); }
-    // The store's own reopening changes no row.
+    // The store's own reopening at 49 changes no row; the ordinary store refuses it as needing the upgrade.
     const before = content(fixture);
     const store = openStoreAt49(fixture);
     try { expect(store.schemaVersion()).toBe(49); } finally { store.close(); }
     expect(content(fixture)).toEqual(before);
+    expect(() => new SqliteStateStore(fixture)).toThrowError(expect.objectContaining({ code: "upgrade_required" }));
+    expect(content(fixture)).toEqual(before);
     expect(() => createFencedAt49(fixture)).toThrow("creates a new database only");
   });
 
-  it("opens a store at 49 on a new path as the default store does", () => {
-    const fixture = dataPath(), reference = dataPath();
+  it("opens a store at 49 on a new path, and refuses a database of this release as an unknown newer schema", () => {
+    const fixture = dataPath(), current = dataPath();
     const store = openStoreAt49(fixture);
     try { expect(store.schemaVersion()).toBe(49); } finally { store.close(); }
-    new SqliteStateStore(reference).close();
-    expect(content(fixture)).toEqual(content(reference));
-    expect(witness(fixture)).toEqual(witness(reference));
+    new SqliteStateStore(current).close();
+    expect(() => openStoreAt49(current)).toThrow(/Unsupported or unrecognized database schema/);
+    expect(() => openStoreAt(current, 51)).toThrow(/Unsupported or unrecognized database schema/);
   });
 
-  it("initialises the schema-49 catalogue the default initialises, on a raw connection", () => {
-    const fixture = schemaAt49(new Database(":memory:")), reference = new Database(":memory:");
+  it("initialises the schema-49 catalogue on a raw connection, which the default extends to 52", () => {
+    const fixture = schemaAt49(new Database(":memory:")), current = new Database(":memory:");
     try {
-      initializeSchema(reference, undefined, inspectSchema);
+      initializeSchema(current, undefined, inspectSchema);
       expect(inspectSchema(fixture)).toEqual({ version: 49, fresh: false });
-      const catalogue = (database: Database.Database) => database.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").all();
-      expect(catalogue(fixture)).toEqual(catalogue(reference));
-      expect(fixture.prepare("SELECT version,name,checksum FROM schema_migrations ORDER BY version").all()).toEqual(reference.prepare("SELECT version,name,checksum FROM schema_migrations ORDER BY version").all());
-    } finally { fixture.close(); reference.close(); }
+      expect(inspectSchema(current)).toEqual({ version: 52, fresh: false });
+      expect(fixture.prepare("SELECT version FROM schema_migrations ORDER BY version").pluck().all()).toEqual(Array.from({ length: 49 }, (_, index) => index + 1));
+    } finally { fixture.close(); current.close(); }
   });
 });

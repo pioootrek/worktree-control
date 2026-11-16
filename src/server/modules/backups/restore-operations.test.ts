@@ -92,7 +92,7 @@ describe("operator restore orchestration", () => {
     const handoff = recoverBackupHandoff(f.database, f.attachments, f.policy)!;
     expect(handoff.operationId).toBe(accepted.operationId);
     expect(()=>new SqliteStateStore(f.database)).toThrow(/security_fence/);
-    resumeFixtureSecurity(f.database);
+    await resumeFixtureSecurity(f.database, "token", { attachmentDirectory: f.attachments });
     const restored = new SqliteStateStore(f.database);
     try {
       finishBackupHandoff(f.database, handoff, restored);
@@ -153,7 +153,7 @@ describe("restore execution mode versus next boot selection", () => {
     await f.backups.close(); f.store.close(); f.execute();
     const handoff = recoverBackupHandoff(f.database, f.attachments, f.policy)!;
     expect(()=>new SqliteStateStore(f.database)).toThrow(/security_fence/);
-    resumeFixtureSecurity(f.database,"open");
+    await resumeFixtureSecurity(f.database, "open", { attachmentDirectory: f.attachments });
     const restored = new SqliteStateStore(f.database);
     try {
       finishBackupHandoff(f.database, handoff, restored);
@@ -175,7 +175,7 @@ describe("restore execution mode versus next boot selection", () => {
     const recovered = recoverBackupHandoff(f.database, f.attachments, f.policy)!;
     expect(recovered.format).toBe(1);
     expect(()=>new SqliteStateStore(f.database)).toThrow(/security_fence/);
-    resumeFixtureSecurity(f.database);
+    await resumeFixtureSecurity(f.database, "token", { attachmentDirectory: f.attachments });
     const restored = new SqliteStateStore(f.database);
     try { finishBackupHandoff(f.database, recovered, restored); expect(new AuthenticationService(restored).mode()).toBe("token"); }
     finally { restored.close(); }

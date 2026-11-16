@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity, resumeFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,7 +77,7 @@ describe("runtime access migration 36", () => {
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=36").get())
         .toEqual({ name: runtimeAccessMigration.name, checksum: runtimeAccessChecksum });
     } finally { db.close(); }
-    const reopened = new SqliteStateStore(f.path);
+    const reopened = openStoreAt49(f.path);
     try {
       const identity = new IdentityService(reopened, undefined, undefined, undefined, undefined, reopened);
       const actor = identity.authenticateBearer(f.generic);
@@ -113,7 +114,7 @@ describe("runtime access migration 36", () => {
     } finally { f.store.close(); }
     const path = join(f.root, "restored.sqlite3");
     restoreControllerBackup(backup, path);
-    resumeFixtureSecurity(path);
+    await resumeFixtureSecurity(path);
     const restored = new SqliteStateStore(path);
     try {
       expect(()=>finishBackupHandoff(path, { authentication: restored.getAuthenticationPolicy() } as unknown as Parameters<typeof finishBackupHandoff>[1], restored)).toThrow(/security_fence/);

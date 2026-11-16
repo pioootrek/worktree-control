@@ -46,7 +46,7 @@ describe("human test attribution schema47",()=>{
       const tables=["schema_migrations","remote_principals","principal_credentials","runtime_human_memberships","reservations","knowledge_history","runtime_credential_scopes","test_run_requesters"];
       const before=tables.map(t=>db.prepare(`SELECT * FROM ${t}`).all());
       expect(()=>initializeSchema(db,false,()=>{throw new Error("rollback47");})).toThrow("rollback47");expect(inspectSchema(db).version).toBe(46);expect(tables.map(t=>db.prepare(`SELECT * FROM ${t}`).all())).toEqual(before);
-      initializeSchema(db,false,inspectSchema);expect(inspectSchema(db).version).toBe(49);
+      initializeSchema(db,false,inspectSchema,{target:49});expect(inspectSchema(db).version).toBe(49);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=46").all()).toEqual(before[0]);
       expect(tables.slice(1).map(t=>db.prepare(`SELECT * FROM ${t}`).all())).toEqual(before.slice(1));
       expect(db.prepare("SELECT * FROM human_test_run_requesters").all()).toEqual([]);
@@ -69,8 +69,8 @@ describe("human test attribution schema47",()=>{
   it("retains typed nonsecret attribution through backup/restore/reopen, without granting provider authority",async()=>{
     const f=fixture();try{
       f.store.saveTestRun(f.run,"key",f.requester);const backup=join(f.root,"backup");await createControllerBackup(f.store,backup,{applicationVersion:"test",attachmentDirectory:join(f.root,"attachments")});f.store.close();
-      const path=join(f.root,"restored.sqlite3");restoreControllerBackup(backup,path);resumeFixtureSecurity(path);const store=new SqliteStateStore(path);try{
-        expect(store.getHumanTestRunRequester(f.run.id)).toEqual(f.requester);expect(store.schemaVersion()).toBe(49);
+      const path=join(f.root,"restored.sqlite3");restoreControllerBackup(backup,path);await resumeFixtureSecurity(path);const store=new SqliteStateStore(path);try{
+        expect(store.getHumanTestRunRequester(f.run.id)).toEqual(f.requester);expect(store.schemaVersion()).toBe(52);
         const identity=new IdentityService(store,undefined,undefined,undefined,undefined,store,undefined,store.runtimeMemberships());
         expect(()=>identity.validateHumanVerificationAuthority(f.requester.authority,f.requester.reference,f.run.projectId)).toThrow();
       }finally{store.close();}

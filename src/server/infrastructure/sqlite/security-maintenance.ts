@@ -34,7 +34,7 @@ export function quarantineAuthority(database: Database.Database, receipt: string
   const old=JSON.parse((database.prepare("SELECT value_json FROM controller_settings WHERE key='authentication'").get() as {value_json:string}).value_json);
   if(!Number.isSafeInteger(old.generation) || old.generation>=Number.MAX_SAFE_INTEGER
     || database.prepare("SELECT 1 FROM authentication_account_policies WHERE generation>=9007199254740991 OR policy_revision>=9007199254740991 LIMIT 1").get()) throw new SecurityFenceError("security_fence_recovery_required");
-  // Provisional step 51: the mapping clock must be able to advance, checked like the
+  // Step 51: the mapping clock must be able to advance, checked like the
   // generation above before anything is written. The steps ran before the acts, so
   // the clock exists here both when this transaction created it and before.
   const mapping = version >= 51 ? planMappingQuarantine(database) : undefined;
@@ -66,16 +66,16 @@ export function quarantineAuthority(database: Database.Database, receipt: string
   `);
   releaseReservations(database, now);
   cancelRemoteWork(database, now);
-  // Provisional step 50: a quarantined installation needs the data upgrade again,
+  // Step 50: a quarantined installation needs the data upgrade again,
   // whatever the marker said, and no applied plan stands for it any more. The
   // acts run after every schema step, so the marker exists here both when this
   // transaction created it and before.
   if (version >= 50) database.prepare("UPDATE upgrade_marker SET state='pending',changed_at=?,plan_hash=NULL WHERE singleton=1").run(now);
-  // Provisional step 51: no restored project mapping stands. Every parent is cleared and
+  // Step 51: no restored project mapping stands. Every parent is cleared and
   // every registration and remote identity gets a mapping version from one advance of
   // the clock; projects (`knowledge_projects`), issued incarnations and the journal stay.
   if (mapping) applyMappingQuarantine(database, mapping);
-  // Provisional step 52: no grant written after an upgrade stands either; the next
+  // Step 52: no grant written after an upgrade stands either; the next
   // upgrade grants `admin` again when its rule holds.
   if (version >= 52) clearAccountGrants(database);
   // Mode is an explicit protected decision, never a restored selection or fallback.
@@ -118,9 +118,9 @@ export type SecurityMaintenanceResult = ReturnType<typeof maintainSqliteSecurity
 const establishSchema=z.object({action:z.literal("establish"),expect:z.string().regex(/^[0-9a-f]{64}$/)}).strict();
 
 /**
- * Offline. `auth fence establish` with a durable pre-establishment backup, for
- * the activation to compose (integration branch: no command or bootstrap path
- * calls it yet). Everything `maintainSqliteSecurityFence` does for establish
+ * Offline. `auth fence establish` with a durable pre-establishment backup, as
+ * the command runs it (`auth fence establish --backup-dir`, composed in
+ * `src/server/bootstrap/security-maintenance.ts`). Everything `maintainSqliteSecurityFence` does for establish
  * happens in the same order and through the same code: both locks and
  * ownership, the status, the `expect` comparison, `handoff.preflight`, the
  * trusted no-op (which takes no backup), `establishmentAllowed` and owner

@@ -16,7 +16,7 @@ export function validateDatabase(database: Database.Database, version: number): 
     const rows = database.prepare("SELECT singleton,installation,epoch FROM security_checkpoint LIMIT 2").all() as Array<{singleton:number;installation:string;epoch:string}>;
     if (rows.length !== 1 || rows[0].singleton !== 1 || !/^[0-9a-f]{64}$/.test(rows[0].installation) || !/^[0-9a-f]{64}$/.test(rows[0].epoch)) fail("security checkpoint");
   }
-  // Provisional step 50: exactly one marker row, a known state and a canonical timestamp.
+  // Step 50: exactly one marker row, a known state and a canonical timestamp.
   // `pending` records no plan; `complete` records the applied plan's hash, or none
   // on a fresh installation (which never needed one). The timestamp must be a real
   // instant: SQLite's parser accepts hour 24 and `%H` prints it back, so the value is
@@ -28,13 +28,13 @@ export function validateDatabase(database: Database.Database, version: number): 
     if (rows.length !== 1 || rows[0].singleton !== 1 || (rows[0].state !== "pending" && rows[0].state !== "complete") || rows[0].canonical !== 1
       || (rows[0].state === "pending" ? plan !== null : plan !== null && !(typeof plan === "string" && /^[0-9a-f]{64}$/.test(plan)))) fail("upgrade marker");
   }
-  // Provisional step 51: the mapping clock, the stamps and parents of registrations
+  // Step 51: the mapping clock, the stamps and parents of registrations
   // and remote identities, and the decision journal (see mapping-structure-migration.ts).
   if (version >= 51) {
     const rule = projectMappingViolation(database);
     if (rule) fail(rule);
   }
-  // Provisional step 52: the shape of every stored grant (see account-grants-migration.ts).
+  // Step 52: the shape of every stored grant (see account-grants-migration.ts).
   // An existing account and project are the foreign-key check's above. Who may hold a
   // role is not checked here: the contract re-validates each grant on every evaluation,
   // so one inconsistent row refuses only itself instead of stopping the installation.

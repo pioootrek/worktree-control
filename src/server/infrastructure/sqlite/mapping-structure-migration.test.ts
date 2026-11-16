@@ -4,9 +4,8 @@ import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, r
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PROVISIONAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
-import { enableProvisionalSchema } from "./provisional-schema-gate";
+import { afterEach, describe, expect, it } from "vitest";
+import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
 import { configureDurability, validateDatabase } from "./database-validation";
@@ -20,7 +19,7 @@ import {
 } from "./mapping-structure-migration";
 import { SECURITY_COVERAGE, schemaTriggersAt, securityTriggersAt, STEP_TRIGGERS } from "./security-coverage";
 import { rewindProjectMapping, rewindUpgradeMarker } from "./fixtures/schema-rewind";
-import { openStoreAt49, RELEASED_SCHEMA_VERSION, schemaAt49 } from "./fixtures/released-schema";
+import { openStoreAt, openStoreAt49, RELEASED_SCHEMA_VERSION, schemaAt49 } from "./fixtures/released-schema";
 import { SqliteStateStore } from "./sqlite-state-store";
 import { RemoteVerificationQueries } from "./remote-verification-queries";
 import { maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
@@ -33,10 +32,7 @@ import { createControllerBackup } from "../../controller-backup";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
 
 const roots: string[] = [];
-// Every test here needs target 51; the switch is restored after each one.
-let restoreGate: () => void;
-beforeEach(() => { restoreGate = enableProvisionalSchema(); });
-afterEach(() => { restoreGate(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const temporary = (prefix = "project-mapping-") => { const root = mkdtempSync(join(tmpdir(), prefix)); roots.push(root); return root; };
 
 const TARGET = PROJECT_MAPPING_VERSION;
@@ -161,13 +157,12 @@ function loosen(database: Database.Database, table: string) {
 }
 const LOOSE_JOURNAL = "CREATE TABLE project_mapping_journal(sequence INTEGER PRIMARY KEY AUTOINCREMENT, subject_kind, subject_id, subject_incarnation, project_id, basis, plan_hash, run_receipt, recorded_at)";
 
-describe("provisional schema step 51: project mapping structure", () => {
+describe("schema step 51: project mapping structure", () => {
   it("pins step 51 and its coverage, and leaves steps 49 and 50 as they were", () => {
-    // Step 52 (C3a) is the highest provisional step; it is pinned in account-grants-migration.test.ts.
-    expect(PROVISIONAL_SCHEMA_VERSION).toBe(52);
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(49);
+    // Step 52 is the supported version; it is pinned in account-grants-migration.test.ts.
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(52);
     expect(projectMappingMigration).toMatchObject({ version: 51, name: "project-mapping-structure" });
-    // Pinned while provisional: a change to the step's text is a visible edit here.
+    // Pinned: a change to the step's text is a visible edit here.
     expect(projectMappingChecksum).toBe("1c0afefd54f82635da94be7361bbe412ec76bbe49ff50a335ed8a248ea50bc85");
     // Steps 49 and 50 keep their pinned checksums (also pinned in upgrade-marker-migration.test.ts).
     expect(securityFenceChecksum).toBe("320f46981c17c44f4d14ee48298bd91f43d01ab78bf4162c607d2118f29486ae");
@@ -206,7 +201,7 @@ CREATE TABLE project_mapping_journal (`)).toBe(true);
     expect(MAX).toBe(9007199254740991);
   });
 
-  it("neither applies nor recognises step 51 at the default target or at 50, and refuses a step-51 database like an unknown newer schema", async () => {
+  it("neither applies nor recognises step 51 at targets 49 or 50, and refuses a step-51 database there like an unknown newer schema", async () => {
     const current = fresh49(), marker = fresh50();
     try {
       for (const database of [current, marker]) {
@@ -218,26 +213,26 @@ CREATE TABLE project_mapping_journal (`)).toBe(true);
     const provisional = fresh51(), unknown = fresh50();
     try {
       unknown.exec(UNKNOWN_51);
-      const refusal = message(() => inspectSchema(unknown));
+      const refusal = message(() => inspectSchema(unknown, 50));
       expect(refusal).toMatch(SCHEMA_REFUSAL);
-      for (const ceiling of [undefined, 49, 50]) {
+      for (const ceiling of [49, 50]) {
         expect(message(() => inspectSchema(unknown, ceiling))).toBe(refusal);
         expect(message(() => inspectSchema(provisional, ceiling))).toBe(refusal);
       }
-      // Initialisation at the default target or at 50 does not recognise it either.
-      expect(message(() => initializeSchema(provisional, false, inspectSchema))).toBe(refusal);
+      // Initialisation at 49 or 50 does not recognise it either.
+      expect(message(() => initializeSchema(provisional, false, at(49), { target: 49 }))).toBe(refusal);
       expect(message(() => initializeSchema(provisional, false, at(50), { target: 50 }))).toBe(refusal);
     } finally { provisional.close(); unknown.close(); }
-    // Ordinary store opening.
+    // A store opened at 50 (the test-side opener: an ordinary owner at that target).
     const provisionalPath = privateDatabase(database => fresh51(database));
     const unknownPath = privateDatabase(database => { fresh50(database); database.exec(UNKNOWN_51); });
-    const opening = message(() => new SqliteStateStore(unknownPath));
+    const opening = message(() => openStoreAt(unknownPath, 50));
     expect(opening).toMatch(SCHEMA_REFUSAL);
-    expect(message(() => new SqliteStateStore(provisionalPath))).toBe(opening);
-    // Offline maintenance and the upgrade, at the default target and at 50.
+    expect(message(() => openStoreAt(provisionalPath, 50))).toBe(opening);
+    // Offline maintenance at 49 and 50, and the upgrade at 50.
     const failure = (operation: () => unknown) => { try { operation(); } catch (error) { const { name, code, message: text } = error as { name: string; code?: string; message: string }; return { name, code, text }; } throw new Error("expected a refusal"); };
     const pathsOf = (database: string) => resolveAppPaths(join(database, "..")) as AppPaths;
-    for (const target of [undefined, 50]) {
+    for (const target of [49, 50]) {
       const inspect = (path: string) => failure(() => maintainSqliteSecurityFence(pathsOf(path), { action: "inspect" }, HANDOFF, target));
       expect(inspect(provisionalPath)).toEqual(inspect(unknownPath));
     }
@@ -247,13 +242,15 @@ CREATE TABLE project_mapping_journal (`)).toBe(true);
     const backup = backupTree(database => fresh51(database), 51);
     const unknownBackup = backupTree(database => { fresh50(database); database.exec(UNKNOWN_51); }, 50);
     const manifestRefusal = "Unsupported or invalid backup manifest (types, paths, versions or limits).";
-    expect(() => parseManifest(backup.manifest)).toThrow(manifestRefusal);
+    expect(() => parseManifest(backup.manifest, 49)).toThrow(manifestRefusal);
     expect(() => parseManifest(backup.manifest, 50)).toThrow(manifestRefusal);
+    // At the supported version (the default) a step-51 manifest is accepted.
+    expect(() => parseManifest(backup.manifest)).not.toThrow();
     const parsed = parseManifest(backup.manifest, TARGET);
     expect(() => validateBackup(backup.root, parsed, false, TARGET)).not.toThrow();
     const snapshotRefusal = message(() => validateSnapshot(unknownBackup.path, parseManifest(unknownBackup.manifest, 50), 50));
     expect(snapshotRefusal).toMatch(SCHEMA_REFUSAL);
-    expect(message(() => validateSnapshot(backup.path, parsed))).toBe(snapshotRefusal);
+    expect(message(() => validateSnapshot(backup.path, parsed, 49))).toBe(snapshotRefusal);
     expect(message(() => validateSnapshot(backup.path, parsed, 50))).toBe(snapshotRefusal);
     expect(message(() => validateBackup(backup.root, parsed, false, 50))).toBe(snapshotRefusal);
   });
@@ -1360,36 +1357,5 @@ describe("the project directory (step 51, unmounted)", () => {
       database.exec("DELETE FROM remote_project_identities WHERE id='remote-0'");
       expect(new ProjectDirectoryQueries(database).projectRemoteIdentities(projectId("project-a"))).toHaveLength(1000);
     } finally { database.close(); }
-  });
-
-  it("cannot be built, nor step 51 reached, while the provisional switch is off", () => {
-    const { database } = directoryFixture();
-    const empty = ordinary();
-    // A plan the quarantine would apply here: the fixture has unstamped rows, so applying it would change them.
-    const plan = planMappingQuarantine(database)!;
-    expect(plan.unstamped).toEqual({ projects: 1, remote_project_identities: 1 });
-    const state = () => ({ catalogue: catalogue(database), mapped: mapped(database), clock: rows(database, "project_mapping_clock"), journal: rows(database, "project_mapping_journal") });
-    const before = state();
-    restoreGate();
-    try {
-      for (const [entry, refusal] of Object.entries({
-        ProjectDirectoryQueries: () => new ProjectDirectoryQueries(database),
-        applyProjectMappingMigration: () => applyProjectMappingMigration(empty),
-        initializeSchema: () => initializeSchema(empty, undefined, undefined, { target: TARGET }),
-        quarantineAuthority: () => quarantineAuthority(database, RECEIPT, "token", TARGET),
-        inspectSchema: () => inspectSchema(database, TARGET),
-        planMappingQuarantine: () => planMappingQuarantine(database),
-        applyMappingQuarantine: () => applyMappingQuarantine(database, plan),
-        projectMappingViolation: () => projectMappingViolation(database),
-      })) expect(message(refusal), entry).toBe("Unsupported schema target.");
-      // The step-51 database itself is refused as an unknown newer schema.
-      expect(message(() => inspectSchema(database))).toMatch(SCHEMA_REFUSAL);
-      expect(empty.prepare("SELECT count(*) FROM sqlite_master").pluck().get()).toBe(0);
-      // Nothing changed: no stamp, no clock advance, no journal row.
-      expect(state()).toEqual(before);
-    } finally {
-      restoreGate = enableProvisionalSchema();
-      database.close(); empty.close();
-    }
   });
 });

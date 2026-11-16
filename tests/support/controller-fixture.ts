@@ -266,6 +266,10 @@ export async function startControllerFixture(projectCount = 3, projectKinds: Fix
         if(before.trusted)throw new Error("Restored fixture unexpectedly trusted old SQLite authority.");
         const receipt=JSON.parse(await fixture.cli(["auth","fence","resume","--expect",before.preflight,"--mode","token"])) as {trusted:boolean;quarantined:boolean};
         if(!receipt.trusted || !receipt.quarantined)throw new Error("Protected fixture quarantine did not complete.");
+        // After a restore: resume, then the explicit upgrade, then credentials.
+        const upgrade=JSON.parse(await fixture.cli(["upgrade","inspect"])) as {state:string;planHash?:string};
+        if(upgrade.state!=="upgrade_needed" || !upgrade.planHash)throw new Error("Resumed fixture does not need the upgrade.");
+        await fixture.cli(["upgrade","apply","--expect",upgrade.planHash,"--backup-dir",join(base,"maintenance-backups")]);
         token=(JSON.parse(await fixture.cli(["auth","token","generate"])) as {token:string}).token;tokenHistory.add(token);fixture.installationToken=token;
         await start();fixture.endpoint=endpoint;fixture.accessUrl=accessUrl;
       }, stop,

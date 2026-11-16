@@ -4,13 +4,12 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveAppPaths, type AppPaths } from "../paths";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../modules/backups";
 import { createFencedAt49 } from "../infrastructure/sqlite/fixtures/released-schema";
 import { maintainSqliteSecurityFence } from "../infrastructure/sqlite/security-maintenance";
 import { securityFenceRoot } from "../infrastructure/sqlite/security-fence";
-import { enableProvisionalSchema } from "../infrastructure/sqlite/provisional-schema-gate";
 import { inspectSchema } from "../infrastructure/sqlite/schema-inspection";
 import { parseManifest, readBoundedJson, validateBackup, BACKUP_LIMITS } from "../infrastructure/sqlite/backup-validation";
 import { upgradePlanPath } from "../infrastructure/sqlite/upgrade-plan";
@@ -21,17 +20,15 @@ vi.mock("node:crypto", async original => ({ ...await original<typeof import("nod
 
 /*
  * The upgrade through its bootstrap composition: the real createControllerBackup
- * writes the pre-upgrade backup into the operator's directory. Every test needs
- * the provisional target 52; the switch is restored after each one. A full
+ * writes the pre-upgrade backup into the operator's directory, at the
+ * supported target 52 (named explicitly, as the composition's tests do). A full
  * upgrade cycle flushes files several times: each such test has an explicit
  * 30 s timeout, since the hosted runner is about twice as slow as a workstation.
  */
 const TARGET = 52;
 const CYCLE = 30_000;
 const roots: string[] = [];
-let restoreGate: () => void;
-beforeEach(() => { restoreGate = enableProvisionalSchema(); });
-afterEach(() => { vi.restoreAllMocks(); restoreGate(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const temporary = () => { const root = mkdtempSync(join(tmpdir(), "bootstrap-upgrade-")); roots.push(root); return root; };
 
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");

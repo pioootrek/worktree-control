@@ -58,12 +58,12 @@ function mapping<Id extends string>(row: MappingRow): StoredMapping<Id> {
 }
 
 /**
- * The project directory of provisional step 51 (integration branch): a typed,
- * read-only view of which project each registration and remote identity
- * belongs to. Not mounted anywhere. It borrows the owner's connection, as the
- * other query modules do, and never owns the database lifecycle. Its
- * construction passes the provisional gate, so it cannot be built while the
- * switch is off.
+ * The project directory of step 51: a typed, read-only view of which project
+ * each registration and remote identity belongs to. Not mounted anywhere: no
+ * production file imports it until the resolver adapter does (a guard test
+ * keeps it so). It borrows the owner's connection, as the other query modules
+ * do, and never owns the database lifecycle. Its construction checks step 51
+ * against the supported version.
  *
  * It returns storage facts only. Unstamped rows (incarnation and mapping
  * version 0, from before step 51 and not yet stamped by an act or a

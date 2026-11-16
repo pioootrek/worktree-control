@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { openProtectedUpgradeFixture } from "./fixtures/protected-security";
+import { establishSecurityFenceWithBackup, maintainSecurityFence } from "@/server/bootstrap/security-maintenance";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
@@ -45,9 +46,8 @@ function fixture(version: 12 | 24 | 26 = 24) {
 function raw(path: string, fn: (db: Database.Database) => void) {
   const db=unmanagedFixtureDatabase(path); try { fn(db); } finally { db.close(); }
 }
-const options = (attachmentDirectory: string, backupDirectory?: string) => ({
-  attachmentDirectory, applicationVersion:"isolated-test", backupBeforeMigration:Boolean(backupDirectory), backupDirectory,
-});
+/** The fixture's establishment (with a pre-establishment backup when a directory is given), then the store at 49. */
+const options = (attachmentDirectory: string, backupDirectory?: string) => ({ attachmentDirectory, applicationVersion:"isolated-test", backupDirectory });
 
 async function crashWalWriter(path: string, removeIndex: boolean, future = false) {
   const worker = fileURLToPath(new URL("./fixtures/wal-crash-worker.ts", import.meta.url));
@@ -116,7 +116,7 @@ describe("SQLite storage safety", () => {
     const before = readFileSync(f.paths.databasePath);
     const walBefore = readFileSync(`${f.paths.databasePath}-wal`);
     expect(() => new SqliteStateStore(f.paths.databasePath)).toThrow(/Unsupported/);
-    await expect(openControllerStore(f.paths.databasePath, options(f.paths.knowledgeAttachmentDirectory))).rejects.toThrow(/Unsupported/);
+    expect(() => openControllerStore(f.paths.databasePath)).toThrow(/Unsupported/);
     await expect(runAuthCommand(["mode", "set", "open"], f.paths, { write: () => {} })).rejects.toThrow(/Unsupported/);
     await expect(runBackupCommand(["create", join(f.root, "backup")], f.paths, "test", () => {})).rejects.toThrow(/Unsupported/);
     expect(readFileSync(f.paths.databasePath)).toEqual(before);
@@ -148,24 +148,27 @@ describe("SQLite storage safety", () => {
     if(f.sha256) expect(lstatSync(join(destination,"attachments",f.sha256.slice(0,2),f.sha256)).mode & 0o777).toBe(0o600);
   });
 
-  it("verifies the old snapshot before migrating and preserves its authentication and attachments", async () => {
+  it("takes a verified pre-establishment snapshot before migrating and preserves its authentication and attachments", async () => {
     const f=fixture(); const target=join(f.root,"backups");
     const store=await openProtectedUpgradeFixture(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory,target));
     try { expect(store.schemaVersion()).toBe(49); expect(store.getProject("kept")?.name).toBe("Kept"); expect(store.getAuthenticationPolicy().mode).toBe("legacy"); } finally { store.close(); }
     const [backup]=readdirSync(target);
-    expect(backup).toMatch(/^pre-migration-v24-/);
+    expect(backup).toMatch(/^pre-establishment-v24-/);
     const snapshot=unmanagedFixtureDatabase(join(target,backup,"state.sqlite3"),{readonly:true});
     try { expect(inspectSchema(snapshot).version).toBe(24); expect(snapshot.prepare("SELECT 1 FROM controller_settings WHERE key='authentication'").get()).toBeUndefined(); } finally { snapshot.close(); }
-    const reopened=await openControllerStore(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory,target)); reopened.close();
+    // The fence is trusted now: establishment is a no-op that takes no second backup.
+    const reopened=await openProtectedUpgradeFixture(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory,target)); reopened.close();
     expect(readdirSync(target)).toHaveLength(1);
   });
 
-  it.each(["destination","attachment"])("required backup failure (%s) leaves schema and data unchanged and releases ownership", async failure => {
+  it.each(["destination","attachment"])("a failed pre-establishment backup (%s) leaves schema and data unchanged and releases ownership", async failure => {
     const f=fixture(); const target=join(f.root,"target");
     if(failure==="destination") writeFileSync(target,"occupied");
     else rmSync(f.paths.knowledgeAttachmentDirectory,{recursive:true});
     const before=readFileSync(f.paths.databasePath);
-    await expect(openControllerStore(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory,target))).rejects.toThrow();
+    const expected=maintainSecurityFence(f.paths,{action:"inspect"}).preflight;
+    await expect(establishSecurityFenceWithBackup(f.paths,{action:"establish",expect:expected},{directory:target,applicationVersion:"isolated-test"}))
+      .rejects.toMatchObject({code:"security_fence_backup_failed"});
     expect(readFileSync(f.paths.databasePath)).toEqual(before);
     expect(existsSync(`${f.paths.databasePath}.owner.lock`)).toBe(false);
     const inspected=new OwnedSqliteDatabase(f.paths.databasePath); expect(inspected.schemaVersion()).toBe(24); inspected.close();
@@ -191,7 +194,7 @@ describe("SQLite storage safety", () => {
     });
     const before=readFileSync(f.paths.databasePath);
     expect(()=>new SqliteStateStore(f.paths.databasePath)).toThrow(/Unsupported|unrecognized/);
-    await expect(openControllerStore(f.paths.databasePath,options(f.paths.knowledgeAttachmentDirectory,join(f.root,"backups")))).rejects.toThrow(/Unsupported|unrecognized/);
+    expect(()=>openControllerStore(f.paths.databasePath)).toThrow(/Unsupported|unrecognized/);
     await expect(runAuthCommand(["mode","set","open"],f.paths,{write:()=>{}})).rejects.toThrow(/Unsupported|unrecognized/);
     await expect(runBackupCommand(["create",join(f.root,"backup")],f.paths,"test",()=>{})).rejects.toThrow(/Unsupported|unrecognized/);
     expect(readFileSync(f.paths.databasePath)).toEqual(before);

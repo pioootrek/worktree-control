@@ -463,8 +463,11 @@ notice. It never moves or copies data. Legacy `WORKTREE_SWITCHER_*` variables
 are still read, with a deprecation warning, when the new name is unset.
 
 The controller opens one database connection, enables foreign keys and WAL,
-uses prepared statements, and runs numbered migrations before accepting
-requests. All schema steps share one immediate transaction with foreign keys
+and uses prepared statements. It creates a fresh database at the supported
+schema. An existing database must already be current: an ordinary opening never
+migrates it (see [Ordinary admission](#ordinary-admission)), and the numbered
+migrations run only in explicit offline maintenance (`auth fence establish` and
+`resume`, `upgrade apply`). All schema steps share one immediate transaction with foreign keys
 off and a foreign-key check before commit. A caller may add data acts to that
 transaction after the steps and before validation. SQLite cannot enable foreign
 keys inside a transaction, so no ON DELETE action runs for the acts: an act
@@ -512,9 +515,12 @@ binary rather than removing evidence to roll back.
 
 Retention runs only after a successful scheduled backup. Budget for the next
 full snapshot as well as retained copies, including recognized protected manual
-and pre-migration copies. The configured count governs scheduled copies, not
-all catalog entries. A failed preflight never deletes old recovery points or
-relaxes the budget. A successful standalone pre-migration copy does not prove
+and maintenance copies (`pre-migration-`, `pre-establishment-` and
+`pre-upgrade-v<n>-<UUID>`). The configured count governs scheduled copies, not
+all catalog entries. Maintenance copies are always protected and never
+retention candidates, even when a ledger record names one; the operator removes
+them. A failed preflight never deletes old recovery points or relaxes the
+budget. A successful standalone maintenance copy does not prove
 that the scheduled catalog has headroom. When capacity prevents progress,
 operator recovery requires an explicit policy or protected-copy decision.
 
@@ -933,6 +939,11 @@ worktree-control [start] [--no-open]
 worktree-control auth status
 worktree-control auth token generate|rotate
 worktree-control auth mode set open|token|better-auth
+worktree-control auth fence inspect
+worktree-control auth fence establish --expect <preflight> --backup-dir <dir>
+worktree-control auth fence resume --expect <preflight> --mode open|token|better-auth
+worktree-control upgrade inspect [--decisions <file>]
+worktree-control upgrade apply --expect <plan hash> --backup-dir <dir>
 worktree-control config path
 worktree-control config mcp
 worktree-control project add <path> [--name <name>] [--port <port>] [--preset auto|node|django|none]
@@ -1032,7 +1043,10 @@ P3b now requires an external checkpoint and protected quarantine receipt before 
 Migration49 adds a fixed SQLite checkpoint and authority-table triggers, preserving
 migrations1..48. The sole core/provider connection publishes a private external
 pending witness from the BEFORE-trigger observer before authority rows change,
-and a confirmed witness after FULL SQLite COMMIT.
+and a confirmed witness after FULL SQLite COMMIT. A process killed between the
+two leaves the witness pending, and the next opening is fenced until
+`auth fence resume`, as after a restore; see
+[unclean stops](authentication.md#external-security-fence-and-protected-resume-p3b).
 Normal confirmed restarts preserve current rights. Supported restore and raw
 DB-only rollback fail closed before provider/listeners, including older schemas.
 The bounded witness binds the canonical database path and installation outside
@@ -1053,46 +1067,45 @@ A5 implements validated account selection/public mounting, explicit agent diagno
 and the transport deny inventory. Independent review and verified live/client
 migration remain release gates. The five historical factor negatives remain visible.
 
-### Provisional upgrade marker, schema step 50 (integration branch only)
+### Upgrade marker, schema step 50 (integration branch only)
 
-This section describes `integration/auth-unification`, not a release. Step 50 is
-provisional until the release candidate and is not activated: the supported
-schema version stays 49, ordinary startup applies and recognises nothing beyond
-it, and a step-50 database is refused like any unknown newer schema.
+This section describes `integration/auth-unification`, not a release. Steps 50
+to 52 are applied by default but may still change until the release candidate;
+a database an unreleased build migrated is disposable.
 
-`PROVISIONAL_SCHEMA_VERSION` (52, see step 52 below) is the highest step the code
-knows.
+`SUPPORTED_SCHEMA_VERSION` is 52: what this release creates, its default schema
+target and recognition ceiling, and the highest step it knows.
 `initializeSchema`, `inspectSchema`, the owned database, offline fence
-maintenance, the quarantine and backup manifest validation take an optional
-target or ceiling that defaults to `SUPPORTED_SCHEMA_VERSION`. Each target and
-ceiling passes through `schemaTarget`. That function refuses any value above
-`SUPPORTED_SCHEMA_VERSION` unless a process-wide switch in
-`provisional-schema-gate.ts` is on. The switch is off by default and only tests
-turn it on, so a target above 49 has no effect in production, whichever alias,
-re-export or wrapper passes it. Activation raises `SUPPORTED_SCHEMA_VERSION`;
-the switch then no longer matters for that step.
+maintenance, the quarantine, the upgrade and backup manifest validation take an
+optional target or ceiling that defaults to it. Each target and ceiling passes
+through `schemaTarget`, which accepts 49 to 52 and refuses 53 and above,
+whichever alias, re-export or wrapper passes the value. The provisional switch
+of earlier integration builds is gone. Explicit lower targets (49, 50, 51)
+remain for the steps themselves and for versioned test fixtures and snapshots.
 
 `schemaTarget` also refuses any value below `SECURITY_FENCE_SCHEMA_VERSION`
 (49, the schema the security fence was introduced at). That constant does not
 move: it is the lowest explicit target or ceiling and the lowest source of the
-explicit upgrade's structural steps. `SUPPORTED_SCHEMA_VERSION` is what this
-release creates by default and its default target and ceiling. Both are 49
-until the activation.
+explicit upgrade's structural steps.
 
-The guard test `provisional-schema.test.ts` checks module imports. No non-test
-script file under `src/` may import the gate module, except
-`migration-registry.ts`, which may only import the read function by name. The
-test recognises static imports (type-only and side-effect imports included),
-`export ... from`, `import x = require()`, `import()` types, and `import()`
-or `require()` calls with a literal specifier. It resolves relative, `@/`,
-absolute and `file:` specifiers to a file. A second rule lists importer and
-module pairs: each listed adapter file may import only the provisional step
-modules it needs, no other file may import one, and no non-test file may import
-the project directory of step 51. The guard does not cover
-non-literal specifiers, files outside `src/`, test files, or files that are not
-scripts. It also does not see code that reaches the switch without importing
-the module. Non-literal specifiers under `src` fail the separate unmounted
-guard, outside its own allow-list.
+The guard test `schema-entry-points.test.ts` (it replaced
+`provisional-schema.test.ts`) checks module imports and openings in every
+non-test script file under `src/`, fixtures included. It confines imports of the
+step modules to listed importer and module pairs: no non-test file imports the
+project directory of step 51, the authority reset is imported only by the
+quarantine and the authority acts, the recovery's predictor only by the
+authority acts, and the exact-text check only by the predictor and both act
+domains. The text `account_grants` appears only in step 52's module, the
+authority acts, the schema recognition and a test fixture, so no mounted code
+reads the new grants. It confines the mounted entry points to their places (see
+[Ordinary admission](#ordinary-admission)) and classifies every opening of the
+database. It recognises static imports (type-only and side-effect imports
+included), `export ... from`, `import x = require()`, `import()` types, and
+`import()` or `require()` calls with a literal specifier, resolved to a file.
+It does not cover non-literal specifiers, files outside `src/`, test files, or
+files that are not scripts. Non-literal specifiers under `src` fail the
+separate unmounted guard of the operations contract, outside its own
+allow-list.
 
 Step 50 adds the single-row `upgrade_marker` table: state `pending` or
 `complete`, the time of its last change, and `plan_hash`, the hash of the
@@ -1104,8 +1117,8 @@ clears the plan hash. Both have the same structure. Whoever can set the marker
 to `complete` skips the data upgrade, so the step adds the three fence triggers
 of step 49 for this table. That coverage is a separate list by version; the
 schema-49 list is unchanged. The step writes its row before those triggers
-exist and writes no fenced table, so it can run in ordinary startup before the
-fence attaches.
+exist and writes no fenced table, so it can run in the creation of a fresh
+database before the fence attaches.
 
 The plan hash is 64 lowercase hexadecimal characters, enforced by the table and
 by validation at 50. SQLite's text `length` and `GLOB` stop at the first NUL
@@ -1123,13 +1136,12 @@ SQLite stores that text unchanged, and the comparison keeps the case and spacing
 inside string literals. Recognition of schema 49 and earlier, including the
 schema-49 triggers, is unchanged.
 
-### Provisional project mapping structure, schema step 51 (integration branch only)
+### Project mapping structure, schema step 51 (integration branch only)
 
 This section describes `integration/auth-unification`, not a release. Step 51 is
-provisional until the release candidate and is not activated. It is applied and
-recognised only with an explicit target of 51 and the provisional switch on,
-exactly like step 50, and a step-51 database is refused like any unknown newer
-schema by default and at ceiling 50.
+applied by the default target and by an explicit target of 51 or more, and may
+still change until the release candidate. A step-51 database is refused like any
+unknown newer schema at ceilings 49 and 50.
 
 In the project mapping, `knowledge_projects` is the project (a `ProjectId`),
 `projects` is the registration of a repository on this machine (a
@@ -1264,19 +1276,22 @@ incarnations, `knowledge_projects` and the journal stay as they are, and the
 quarantine writes no journal row. A clock that cannot advance (missing,
 malformed, behind a stamp, or at its maximum) refuses with
 `security_fence_recovery_required` and rolls back everything, schema steps
-included. At the default target and at 50 the quarantine runs exactly the
-statements it ran before. The explicit offline upgrade lists step 51 among its
-structural steps, and at target 51 its plan carries the project mapping acts.
+included. At target 49 the quarantine runs exactly the statements it ran
+before step 50; target 50 adds only the marker reset. The default target is the
+supported schema 52, so a default resume also runs this mapping quarantine and
+deletes every account grant (step 52). The explicit offline upgrade lists step
+51 among its structural steps, and at target 51 and above its plan carries the
+project mapping acts.
 
-The step's operations pass the provisional gate before they touch a database:
-the migration, the validation rule, the quarantine's plan and its statements.
-The directory's constructor passes it too. Its constants (statement text,
+The step's operations check their step against the supported version before
+they touch a database: the migration, the validation rule, the quarantine's
+plan and its statements. The directory's constructor checks it too. Its constants (statement text,
 trigger lists and checksum) are data and are not gated: the coverage lists and
 the upgrade's step list read them when their modules load.
 
 `project-directory-queries.ts` is a typed, read-only project directory. Nothing
-mounts it, no non-test file imports it, and its construction passes the
-provisional gate. It looks up a
+mounts it and no non-test file imports it (`schema-entry-points.test.ts`
+enforces that). It looks up a
 registration, a remote identity and a project by ID, and the registrations and
 remote identities of a project. It returns storage facts only: the parent
 project or null and both stamps, with unstamped rows returned as 0. Each lookup
@@ -1294,14 +1309,12 @@ The recovery boundary is the quarantine, which re-stamps every row. So anything
 that keeps a version across requests must be emptied or invalidated by the
 quarantine. That is an obligation of the change that adds such a store.
 
-### Provisional grants storage, schema step 52 (integration branch only)
+### Grants storage, schema step 52 (integration branch only)
 
 This section describes `integration/auth-unification`, not a release. Step 52 is
-provisional until the release candidate and is not activated. It is applied and
-recognised only with an explicit target of 52 and the provisional switch on,
-like steps 50 and 51, and a step-52 database is refused like any unknown newer
-schema by default and at ceilings 50 and 51. The code is in
-`account-grants-migration.ts`.
+the supported version: applied by default and by an explicit target of 52, and
+it may still change until the release candidate. A step-52 database is refused
+like any unknown newer schema at ceilings 49 to 51.
 
 Step 52 adds the table `account_grants`: one row per stored role assignment of
 the authorization contract (`StoredGrant`). A row names an account
@@ -1354,8 +1367,8 @@ The table has the three fence triggers of step 49, in a coverage entry for step
 expected triggers stay a function of the schema version. Recognition at ceiling
 52 compares the table's, its two indexes' and its five triggers' `CREATE` text
 byte for byte, with the step's name and checksum. The step is DDL only and
-writes no fenced row, so it is safe in ordinary startup before the fence
-attaches. Its operations pass the provisional gate.
+writes no fenced row, so it is safe in the creation of a fresh database before
+the fence attaches. Its operations check the step against the supported version.
 
 `auth fence resume` at target 52 also deletes every grant in its one
 transaction, so no grant written after an upgrade survives a quarantine; the
@@ -1369,17 +1382,14 @@ unchanged.
 
 This section describes `integration/auth-unification`, not a release. The
 machinery is in `upgrade-plan.ts` and `upgrade-maintenance.ts` under
-`src/server/infrastructure/sqlite/`. Its composition and command runner exist
-but are not mounted (see below), and no command or startup path uses it: every
-entry point needs a schema target of at least 50 and refuses as unsupported,
-before any lock or file, while the provisional switch is off. The
-same refusal guards each upgrade-specific helper that reads or writes a file:
-the plan file's write, read and removal, and the fence's `beginUpgrade`,
-`registerUpgradeObserver` and `upgradeReceipt`. Decoding is not gated: a
+`src/server/infrastructure/sqlite/`. It is mounted as the offline commands
+`upgrade inspect [--decisions <file>]` and `upgrade apply --expect <plan hash>
+--backup-dir <dir>` (see [Composition and commands](#composition-and-commands)).
+Every entry point needs a schema target of at least 50 and at most the
+supported 52, and refuses others as unsupported before any lock or file. A
 format-2 witness once written is read, verified and carried forward by ordinary
-fenced writes with the switch on or off. The project mapping acts and the
-authority acts are described below; a later pull request registers the
-commands.
+fenced writes. The project mapping acts and the authority acts are described
+below.
 
 An installation's database is in one of four states. The fence decides trust
 exactly as `SecurityFence.preflight` does. A confirmed witness that carries an
@@ -1393,8 +1403,8 @@ schema as unrecognised before the state is read.
 | State | Recognised by | Operator's next step |
 | --- | --- | --- |
 | Current | trusted fence, marker `complete`, schema at the target | nothing |
-| Upgrade needed | trusted fence, and marker absent (schema 49), marker `pending`, or schema below the target | `upgrade inspect`, then `upgrade apply --expect <plan hash>` |
-| Pre-fence | no fence, establishment allowed | `auth fence establish`, then upgrade |
+| Upgrade needed | trusted fence, and marker absent (schema 49), marker `pending`, or schema below the target | `upgrade inspect`, then `upgrade apply --expect <plan hash> --backup-dir <dir>` |
+| Pre-fence | no fence, establishment allowed | `auth fence establish --backup-dir <dir>`, then upgrade |
 | Fenced | anything else: a pending, mismatched or missing witness on fenced data, or an unacknowledged restore | `auth fence resume`, then upgrade |
 
 Both commands take both singleton locks as the fence maintenance does, but take
@@ -1570,9 +1580,8 @@ and the stops listed below. Messages carry no secrets, paths or file contents;
 a refusal about rows names them in its `details` (IDs only, bounded).
 
 The contract also defines `upgrade_required` (next step `upgrade inspect`,
-state "upgrade needed"). Only an ordinary-admission check raises it, and that
-check is not called yet: the activation will run it at every ordinary opening
-of the store.
+state "upgrade needed"). Only the ordinary admission check raises it, at every
+ordinary opening of the store; see [Ordinary admission](#ordinary-admission).
 
 The witness gains format 2: format 1 plus a required `upgrade` field (receipt,
 plan hash and start time). Apply writes it, and ordinary fenced writes carry it
@@ -1583,41 +1592,151 @@ record as recovery required instead of misreading it. An upgrade never writes
 `receipt` or `recoveredAt`. They keep the last establish or resume, and
 `securityRecoveryBoundary` returns the same value before and after an upgrade.
 
-#### Composition and command runner (not mounted)
+#### Composition and commands
 
 `src/server/bootstrap/upgrade-maintenance.ts` composes the SQLite functions:
 `inspectUpgrade(paths, decisions?, target?)` and
 `applyUpgrade(paths, { expect }, { directory, applicationVersion }, target?)`.
 The pre-upgrade backup of step 5 is the real `createControllerBackup`, writing
 into `<directory>/pre-upgrade-v<source schema>-<UUID>` with the installation's
-Knowledge attachments, beside the existing `pre-migration-v…` convention.
+Knowledge attachments. Its name follows the `pre-migration-v…` copies that
+released versions take at start; this build takes none at start.
 `src/server/bootstrap/maintenance-backup.ts` holds this one backup
 composition, which establishment with a backup shares. The run's target is
 the backup's schema ceiling (`createControllerBackup`'s optional
-`schemaCeiling`), so a source above the supported schema, such as a step-52
-database whose marker a resume set to `pending`, can be backed up. Without
-the option every backup keeps the supported ceiling. Omitted, `target` is the
-supported schema, where the upgrade refuses as unsupported.
+`schemaCeiling`), so the backup recognises exactly the schemas the run
+recognises; a test run at a lower target cannot back up a newer source.
+Without the option every backup keeps the supported ceiling. Omitted, `target`
+is the supported schema 52: the default upgrade is the one the commands run,
+and a step-52 database whose marker a resume set to `pending` is its ordinary
+source.
 
-`src/cli/upgrade.ts` holds the runner of the future `upgrade inspect
-[--decisions <file>]` and `upgrade apply --expect <plan hash> --backup-dir
-<dir>` commands, with `upgradeErrorBody`, which maps a thrown error to a JSON
-body without library text, paths or input values. The decisions file is read
-before any lock: a regular file (no symbolic link), at most 8 MiB (the plan's
-own bound), UTF-8 JSON without duplicate keys; anything else is
-`upgrade_invalid_input`. Inspect prints the status, the plan hash, the
-normalised decisions, the operator's lines and the review, never the plan
-itself. No command registers the runner yet, and `provisional-schema.test.ts`
-refuses any import of the composition other than the runner's, any import of
-the runner, and any use of the establishment and upgrade entry points outside
-their definitions and compositions. The activation registers the commands and
-removes that rule.
+`src/cli/upgrade.ts` holds the runner of the `upgrade inspect [--decisions
+<file>]` and `upgrade apply --expect <plan hash> --backup-dir <dir>` commands,
+with `upgradeErrorBody`, which maps a thrown error to a JSON body without
+library text, paths or input values. The CLI entry registers it before the
+generic start parsing (which would otherwise reject `--backup-dir`), passes the
+arguments starting with `upgrade` and the package version, and prints
+`upgradeErrorBody` on stderr with exit code 1 on failure. The commands run
+offline only and do not pass the ordinary admission check: they are how a
+database becomes current. The decisions file is read before any lock: a regular
+file (no symbolic link), at most 8 MiB (the plan's own bound), UTF-8 JSON without
+duplicate keys, with the mapping keys `links`, `bindings` and `isolate`;
+anything else is `upgrade_invalid_input`. Inspect prints the status, the plan
+hash, the normalised decisions, the operator's lines and the review, never the
+plan itself. Only the runner imports the composition (and a test fixture), and
+only the CLI entry imports the runner (`schema-entry-points.test.ts`).
+
+### Ordinary admission
+
+This section describes `integration/auth-unification`, not a release. Every
+ordinary opening of the store admits only a current database. The check is
+`assertOrdinaryAdmission` (`ordinary-admission.ts`). Its one caller is the
+constructor of `OwnedSqliteDatabase` opened with `ordinary: true`, after
+ownership inspected the database read-only (schema recognised at the ceiling,
+`validateDatabase` at its version) and before the constructor returns, so
+before anything can enable writes, migrate, attach the fence or copy the
+database. `SqliteStateStore` opens its own owner that way and refuses any owner
+that was not admitted. A refusal closes the read-only connection and releases
+the lock.
+
+The check reads, in this order:
+
+1. The fence, by `SecurityFence.inspect`. Its refusals
+   (`security_fence_establishment_required`, `security_fence_recovery_required`)
+   win: a rolled-back, restored or pending database goes to recovery, never to
+   the upgrade. A fresh, initialising database the fence accepts is admitted.
+2. The schema version must equal the target (the supported 52) and the upgrade
+   marker must be `complete`; otherwise `UpgradeError("upgrade_required",
+   "upgrade inspect", false, "upgrade_needed")`. A schema-52 database without a
+   marker row is corrupt and gets `validateDatabase`'s refusal, which ownership
+   gave already.
+
+Ordinary openings (application access) and maintenance openings (which must
+keep working on a database that needs the upgrade):
+
+| Opening | Class |
+| --- | --- |
+| Controller start (`openControllerStore`), service install's pre-bootstrap (`openCurrentControllerStore`) | ordinary |
+| Offline `auth` status, token and mode; `auth provider`; `identity`; `knowledge execute-import`; `project` and `doctor`; `config mcp`; `remote-verification` provision, revoke-token and reconcile; `backup export-project` and `import-project`; the sandbox (fresh) | ordinary, through `SqliteStateStore` |
+| `remote-verification inspect` (`openRemoteRecoveryInspection`) | ordinary, inspection-only owner |
+| `auth fence inspect`, `establish`, `resume` | maintenance |
+| `upgrade inspect`, `apply` | maintenance |
+| Offline `backup create`, snapshot verification, restore and restore staging, remote rebind | maintenance |
+
+`schema-entry-points.test.ts` lists every construction of `SqliteStateStore`
+and `OwnedSqliteDatabase`, every direct `better-sqlite3` open and every call of
+`acquireDatabaseOwnership` under `src/` with this classification, and fails on a
+new or changed one until it is classified. Production stores never receive an
+owner from outside; only test fixtures open an owner at an explicit lower
+target for the store (`openStoreAt` in `fixtures/released-schema.ts`).
+
+An existing database is never migrated at an ordinary opening. An admitted
+one is at its target with a complete marker, so the store's schema transaction
+applies no step to it: every recorded step returns at once, and only the
+bootstrap's idempotent statements run (`CREATE TABLE` and `CREATE INDEX` with
+`IF NOT EXISTS`, and `INSERT OR IGNORE` of migration 1). They write no row a
+fence trigger covers and need no fence function, and they restore a bootstrap
+index a current database lost, such as the partial unique index
+`test_runs_actor_idempotency`, which neither schema recognition nor
+`validateDatabase` requires. A fresh database is created at its target with the
+marker `complete`; the creation's initialization marker is removed only after the fence published its
+witness, and "empty" is still read from the actual tables inside the schema
+transaction.
+
+The order of the controller start, before and after:
+
+| Step | Before | After |
+| --- | --- | --- |
+| 1 | state-directory lock | state-directory lock (and the deprecation notice of `--backup-before-migration`) |
+| 2 | restore handoff replay | restore handoff replay (unchanged) |
+| 3 | ordinary ownership: lock, restore recovery, mode normalisation, read-only inspection | the same |
+| 4 | `--backup-before-migration` copy of an older schema | the admission check (read-only) |
+| 5 | fence inspection | — (inside the check) |
+| 6 | writable reopen, durability pragmas, migrations | writable reopen, durability pragmas, the schema transaction: creation when fresh, otherwise only the idempotent bootstrap |
+| 7 | initialization marker removed, fence attached | fence attached, then the initialization marker removed |
+| 8 | token bootstrap, session recovery, listeners | the same |
+
+The check adds one marker read to an ordinary start. The schema transaction
+of a current database does what it did before: no step, the idempotent
+bootstrap and the validation.
+
+On a refusal the database file, a non-empty WAL, the witness, an upgrade plan
+and the restore evidence are byte-identical. The opening may have created the
+state-directory and database-owner lock files, an empty WAL and a shared-memory
+file (a read-only SQLite open of a WAL database), and ordinary ownership may have
+narrowed the file modes of the database and its sidecars to `0600`. Two steps
+run before the check, as they did before: a restore the operator requested
+whose replacement was interrupted is completed by ordinary ownership (the check
+then applies to the restored database), and the controller start's restore
+handoff replay executes a pending handoff or records an interrupted, never
+executed one as `interrupted`. Nothing else is written.
+
+Every CLI family prints the refusal as the body of `upgradeErrorBody` (`code`,
+`error`, `nextStep`, `state`) on stderr with exit code 1, the controller start
+and the service executable included; command-specific translation passes it
+through (the provider administration path no longer turns it into
+`provider_failed`). The fence codes keep their own messages. A refused start
+opens no listener, admin socket, dashboard or MCP endpoint; no upgrade operation
+is reachable through them.
+
+`--backup-before-migration` is accepted for installed service definitions but
+takes no copy: start prints one fixed notice that backups are now taken by
+`auth fence establish --backup-dir` and `upgrade apply --backup-dir`.
+`--backup-dir` keeps its scheduling meaning. `service install` on a stopped
+installation that needs the upgrade, establishment or recovery fails with that
+refusal before it issues a token or changes a service definition; `--print`
+opens nothing. One exception is deliberate: with a restore handoff pending, the
+pre-bootstrap leaves the database to the controller and does not open it, so
+the installation proceeds as before, issues no token, and writes and starts
+the service. The service's start completes the restore and is then refused
+with `security_fence_recovery_required` until `auth fence resume` and the
+upgrade.
 
 ### Project mapping acts (integration branch only)
 
-This section describes `integration/auth-unification`, not a release. Nothing
-here is activated: the supported schema stays 49, every entry point passes the
-provisional gate, and no command is registered. Mapping needs target 51. The
+This section describes `integration/auth-unification`, not a release. The acts
+run through the mounted `upgrade` commands. Mapping needs target 51 or more. The
 code is in `mapping-upgrade-acts.ts` (the proposal pass, the review and the act
 kinds), `upgrade-contract.ts` (errors, canonical JSON, limits and the domain
 interface) and `upgrade-plan.ts` (the registry, the plan, its validation and
@@ -1966,10 +2085,9 @@ per displayed name.
 
 ### Authority acts (integration branch only)
 
-This section describes `integration/auth-unification`, not a release. Nothing
-here is activated: the supported schema stays 49, every entry point passes the
-provisional gate, and no command is registered. The authority domain needs
-target 52. The code is in `authority-upgrade-acts.ts` (the pass, the review and
+This section describes `integration/auth-unification`, not a release. The acts
+run through the mounted `upgrade` commands. The authority domain needs target
+52, the supported version. The code is in `authority-upgrade-acts.ts` (the pass, the review and
 the act kinds) and `authority-reset.ts` (the reset statements it shares with
 the quarantine), under `src/server/infrastructure/sqlite/`.
 
@@ -2042,7 +2160,7 @@ project. It samples the clock at its start and again at each pruning.
 
 The upgrade adds a read-only predictor, `test-run-recovery-prediction.ts`,
 imported only by `authority-upgrade-acts.ts` (the import guard of
-`provisional-schema.test.ts` enforces that). It never writes and the recovery
+`schema-entry-points.test.ts` enforces that). It never writes and the recovery
 does not call it. It carries its own copies of the recovery's rules, so they
 exist twice; a differential test runs the real recovery on a copy of a rich
 fixture and compares every table the recovery writes with the prediction made
@@ -2175,16 +2293,19 @@ when its rule still holds. At targets 50 and 51 the domain does not apply.
 
 ### Pre-establishment backup (integration branch only)
 
-`establishSqliteSecurityFence` runs `auth fence establish` with an injected
-backup function, which the upgrade's backup also uses. The bootstrap
-composition `establishSecurityFenceWithBackup` (in
-`src/server/bootstrap/security-maintenance.ts`) passes the handoff of
+`auth fence establish --expect <hash> --backup-dir <dir>` runs
+`establishSqliteSecurityFence` through the bootstrap composition
+`establishSecurityFenceWithBackup` (in
+`src/server/bootstrap/security-maintenance.ts`), with the handoff of
 `maintainSecurityFence` and the shared backup composition, writing
-`<directory>/pre-establishment-v<source schema>-<UUID>`. Nothing outside tests
-calls it yet: `auth fence establish` still takes no backup, and the activation
-adds that option. It shares the one implementation of
+`<directory>/pre-establishment-v<source schema>-<UUID>`. `--backup-dir` is
+required for establish and refused for `inspect` and `resume`: one non-blank,
+NUL-free value, made absolute. Only the fence command calls the composition
+(`schema-entry-points.test.ts`). It shares the one implementation of
 `maintainSqliteSecurityFence`, which keeps its synchronous signature and
-behaviour. The order is:
+behaviour for inspect and resume. At the supported target a non-fresh source
+reaches schema 52 with the upgrade marker `pending`. Every fence result carries
+`nextStep`, which is `upgrade inspect` once the fence is trusted. The order is:
 
 1. Both locks and ownership, the status, the `--expect` comparison, the
    handoff preflight, the trusted no-op (which takes no backup),

@@ -57,7 +57,7 @@ describe("human configuration schema48 and atomic ledger", () => {
       const before = tables.map(t => db.prepare(`SELECT * FROM ${t}`).all());
       expect(() => initializeSchema(db, false, () => { throw new Error("rollback48"); })).toThrow("rollback48");
       expect(inspectSchema(db).version).toBe(47); expect(tables.map(t => db.prepare(`SELECT * FROM ${t}`).all())).toEqual(before);
-      initializeSchema(db, false, inspectSchema); expect(inspectSchema(db).version).toBe(49);
+      initializeSchema(db, false, inspectSchema, { target: 49 }); expect(inspectSchema(db).version).toBe(49);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=47").all()).toEqual(before[0]);
       expect(tables.slice(1).map(t => db.prepare(`SELECT * FROM ${t}`).all())).toEqual(before.slice(1));
       expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=48").get()).toEqual({ name: humanConfigurationMigration.name, checksum: humanConfigurationChecksum });
@@ -101,7 +101,7 @@ describe("human configuration schema48 and atomic ledger", () => {
       expect(reopened.getProjectConfigurationRevision(f.project.id)).toBe(1);
       reopened.close();
       const restored = join(f.root, "restored.sqlite3"); restoreControllerBackup(backup, restored);
-      resumeFixtureSecurity(restored);
+      await resumeFixtureSecurity(restored);
       reopened = new SqliteStateStore(restored);
       expect(()=>reopened!.beginHumanConfiguration(f.intent)).toThrow();
       const evidence=unmanagedFixtureDatabase(restored,{readonly:true});

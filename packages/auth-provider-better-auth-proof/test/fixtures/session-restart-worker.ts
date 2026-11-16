@@ -15,6 +15,9 @@ import { composeIsolatedBrowserAuthentication } from "@/server/bootstrap/authent
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
 import { acquireControllerLock, type ControllerLock } from "@/server/controller-lock";
 import { openControllerStore } from "@/server/controller-storage";
+import { establishSecurityFenceWithBackup, maintainSecurityFence } from "@/server/bootstrap/security-maintenance";
+import { applyUpgrade, inspectUpgrade } from "@/server/bootstrap/upgrade-maintenance";
+import { resolveAppPaths } from "@/server/paths";
 import type { ControlService } from "@/server/control-service";
 import type { DirectoryBrowser } from "@/server/directory-browser";
 import { EventStream } from "@/server/events";
@@ -26,7 +29,7 @@ import { IdentityService } from "@/server/modules/identity";
 /** Everything the parent chooses, and nothing secret: secrets stay in the private file. */
 interface Boot {
   root: string;
-  mode: "owner" | "seed" | "seed-v40" | "challenger" | "restore";
+  mode: "owner" | "seed" | "seed-v40" | "challenger" | "restore" | "maintain";
   nonce: string;
   clockOffsetMs: number;
   unreleasedSessions: number;
@@ -35,6 +38,8 @@ interface Boot {
   cut?: Cut;
   fault?: "poison";
   backup?: string;
+  /** `maintain` only: establish the fence of a pre-fence database, or resume a restored one; the upgrade follows either. */
+  maintenance?: "establish" | "resume";
   provider?: string;
 }
 type Cut =
@@ -145,9 +150,30 @@ function seedSchema40(): void {
   send({ type: "done", mode: boot.mode });
 }
 
+/** Restores the snapshot offline, then reports its rows through one read-only connection, closed before exit. */
 function restore(): void {
   restoreControllerBackup(boot.backup!, databasePath, attachmentDirectory);
-  send({ type: "done", mode: boot.mode });
+  const reader = new Database(databasePath, { readonly: true, fileMustExist: true });
+  try { raw = reader; send({ type: "done", mode: boot.mode, snapshot: snapshot() }); } finally { reader.close(); raw = undefined; }
+}
+
+/**
+ * The operator's offline maintenance, composed as the commands compose it: `auth fence establish
+ * --backup-dir` (pre-establishment backup) or `auth fence resume --mode open` (the mode the seed chose),
+ * then `upgrade inspect` and `upgrade apply --backup-dir` (pre-upgrade backup). Holds no lock of its own.
+ */
+async function maintain(): Promise<void> {
+  const paths = { ...resolveAppPaths(join(boot.root, "data"), join(boot.root, "state")), knowledgeAttachmentDirectory: attachmentDirectory };
+  const backup = { directory: boot.backup!, applicationVersion: "0.0.0-session-restart" };
+  const status = maintainSecurityFence(paths, { action: "inspect" });
+  const fence = boot.maintenance === "establish"
+    ? await establishSecurityFenceWithBackup(paths, { action: "establish", expect: status.preflight }, backup)
+    : { ...maintainSecurityFence(paths, { action: "resume", expect: status.preflight, mode: "open" }), backup: null };
+  const inspection = inspectUpgrade(paths);
+  if (inspection.state !== "upgrade_needed" || !inspection.planHash) throw new Error(`Maintenance left state ${inspection.state}, not upgrade needed.`);
+  const applied = await applyUpgrade(paths, { expect: inspection.planHash }, backup);
+  send({ type: "done", mode: boot.mode, before: { code: status.code, schemaVersion: status.schemaVersion }, fence: { trusted: fence.trusted, backup: fence.backup },
+    upgrade: { state: applied.state, schemaVersion: applied.schemaVersion, backup: applied.backup } });
 }
 
 async function owner(): Promise<void> {
@@ -155,10 +181,22 @@ async function owner(): Promise<void> {
   const lock: ControllerLock = acquireControllerLock(controllerLockPath);
   // A killed listener leaves its socket file. Only this owner may replace it, before anyone can connect.
   rmSync(socketPath, { force: true });
-  const store: SqliteStateStore = boot.fault === "poison"
-    ? new SqliteStateStore(databasePath, undefined, { rollback: () => { throw new Error("Fixture rollback failure."); } })
-    : await openControllerStore(databasePath, { backupBeforeMigration: boot.backup !== undefined, backupDirectory: boot.backup,
-      applicationVersion: "0.0.0-session-restart", attachmentDirectory });
+  let store: SqliteStateStore;
+  try {
+    store = boot.fault === "poison"
+      ? new SqliteStateStore(databasePath, undefined, { rollback: () => { throw new Error("Fixture rollback failure."); } })
+      // The controller's ordinary opening: it admits only a current database and migrates nothing.
+      : openControllerStore(databasePath);
+  } catch (error) {
+    // The ordinary admission refused before anything was written; no store, no recovery, no listener.
+    const code = (error as { code?: unknown }).code;
+    if (typeof code !== "string") throw error;
+    // Where the refusal came from, for a failure report: the top frames of the stack, no values.
+    const where = String((error as { stack?: unknown }).stack ?? "").split("\n").slice(1, 9).map(line => line.trim()).join(" | ");
+    send({ type: "refused-opening", code, where, listening: existsSync(socketPath) });
+    lock.release();
+    return;
+  }
   const seeding = boot.mode === "seed", identity = new IdentityService(store, undefined, undefined, undefined, undefined, store);
   const ownerSession = seeding ? identity.bootstrapOwnerSession() : null;
   store.requireAdmission();
@@ -235,5 +273,10 @@ async function owner(): Promise<void> {
   send({ type: "ready", socketPath, invalidations: events.invalidations });
 }
 
-const modes = { challenger, "seed-v40": seedSchema40, restore, owner, seed: owner };
-Promise.resolve().then(() => modes[boot.mode]()).then(() => undefined, () => { send({ type: "failed", mode: boot.mode }); process.exitCode = 1; });
+const modes = { challenger, "seed-v40": seedSchema40, restore, maintain, owner, seed: owner };
+Promise.resolve().then(() => modes[boot.mode]()).then(() => undefined, (error: unknown) => {
+  // The parent reports the reason of a failed process: the error's name, code and message only, bounded.
+  const { name, code, message } = (error ?? {}) as { name?: unknown; code?: unknown; message?: unknown };
+  const reason = `${String(name)}${typeof code === "string" ? ` (${code})` : ""}: ${String(message)}`.slice(0, 1000);
+  send({ type: "failed", mode: boot.mode, reason }); process.exitCode = 1;
+});

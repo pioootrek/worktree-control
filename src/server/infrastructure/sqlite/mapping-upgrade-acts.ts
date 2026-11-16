@@ -10,8 +10,8 @@ import {
 import { unreadableTexts, type TextColumns } from "./stored-text";
 
 /**
- * The project-mapping acts of the explicit offline upgrade (integration branch,
- * provisional, not registered anywhere outside the upgrade): one proposal pass
+ * The project-mapping acts of the explicit offline upgrade (not registered
+ * anywhere outside the upgrade): one proposal pass
  * that decides, from the database and the operator's decisions, which project
  * every registration (`projects`) and every remote identity
  * (`remote_project_identities`) belongs to, and three act kinds that carry

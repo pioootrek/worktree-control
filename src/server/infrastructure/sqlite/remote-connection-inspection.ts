@@ -1,27 +1,28 @@
 import { SecurityFence } from "./security-fence";
 import { ExclusiveSqliteConnection } from "./exclusive-connection";
-import Database from "better-sqlite3";
 import { IdentityService } from "@/server/modules/identity";
-import { acquireDatabaseOwnership } from "./owned-database";
+import { OwnedSqliteDatabase } from "./owned-database";
 import { IdentityQueries } from "./identity-queries";
 import { RemoteConnectionQueries } from "./remote-connection-queries";
-import { inspectSchema, SUPPORTED_SCHEMA_VERSION } from "./schema-inspection";
 
 /** Inspection authenticates without updating last-used timestamps or running migrations. */
 class InspectionIdentityQueries extends IdentityQueries {
   override recordCredentialUsed(): void {}
 }
+/**
+ * The read-only remote recovery inspection: an ordinary opening, so the
+ * admission check runs (fence first, then the version and the upgrade marker)
+ * before anything reads a row; inspection-only ownership refuses an
+ * unfinished restore instead of recovering it. Nothing is written.
+ */
 export function openRemoteRecoveryInspection(path: string) {
-  const ownership = acquireDatabaseOwnership(path, { inspectOnly: true });
-  let database: Database.Database | undefined;
+  const owner = new OwnedSqliteDatabase(path, false, undefined, { inspectOnly: true, ordinary: true });
   try {
-    database = new Database(ownership.path, { readonly: true, fileMustExist: true });
-    if (inspectSchema(database).version !== SUPPORTED_SCHEMA_VERSION) throw new Error("recovery_schema_upgrade_required");
-    const core=new ExclusiveSqliteConnection(database,{},SecurityFence.attach(ownership.path,database,false)).core;
+    const core=new ExclusiveSqliteConnection(owner.database,{},SecurityFence.attach(owner.canonicalPath,owner.database,false)).core;
     return {
       identity: new IdentityService(new InspectionIdentityQueries(core)),
       connection: new RemoteConnectionQueries(core),
-      close() { database!.close(); ownership.lock.release(); },
+      close() { owner.close(); },
     };
-  } catch (error) { try { database?.close(); } finally { ownership.lock.release(); } throw error; }
+  } catch (error) { owner.close(); throw error; }
 }

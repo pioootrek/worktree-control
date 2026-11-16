@@ -19,12 +19,13 @@ import {
 import { readUpgradeMarker, UPGRADE_NEXT_STEP, upgradeState, type UpgradeMarkerState } from "./upgrade-state";
 
 /**
- * The explicit offline upgrade (integration branch, provisional, not registered
- * or composed anywhere): `inspect` writes the plan the operator reads, `apply
- * --expect <plan hash>` executes exactly that plan. The protocol, its states and
- * its failure table are in `docs/architecture.md`. Every entry point refuses as
- * unsupported before any lock or file unless the schema target is at least 50,
- * which only the provisional switch allows.
+ * The explicit offline upgrade: `upgrade inspect` writes the plan the operator
+ * reads, `upgrade apply --expect <plan hash>` executes exactly that plan. Only
+ * the composition in `src/server/bootstrap/upgrade-maintenance.ts` calls it,
+ * for those CLI commands. The protocol, its states and its failure table are
+ * in `docs/architecture.md`. Every entry point refuses as unsupported before
+ * any lock or file unless the schema target is at least 50 and at most the
+ * supported version.
  *
  * Both commands take ownership inspection-only: an unfinished restore is
  * refused, never recovered, and no file mode is normalised. `apply` switches to

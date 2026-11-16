@@ -3,10 +3,10 @@ import type Database from "better-sqlite3";
 import { schemaTarget } from "./migration-registry";
 
 /**
- * Provisional step 52 (integration branch): the storage of the new grants. It
- * is applied and recognised only with an explicit schema target of 52 and the
- * provisional switch on; the supported version stays 49, and this step may
- * still change until the release candidate.
+ * Step 52: the storage of the new grants, applied by the default target (the
+ * supported version) and by an explicit target of 52. It may still change
+ * until the release candidate; a database migrated by an unreleased build is
+ * disposable.
  *
  * One row is one stored role assignment (`StoredGrant` of the operations
  * contract): an account (`remote_principals.id`), one of the six roles, a scope
@@ -133,7 +133,7 @@ export const accountGrantsChecksum = createHash("sha256")
  * `schema_migrations`, which is not fenced, gets one).
  */
 export function applyAccountGrantsMigration(database: Database.Database): void {
-  // A direct call passes the provisional gate too, not only initializeSchema's target.
+  // A direct call checks the step against the supported version, as initializeSchema's target does.
   schemaTarget(ACCOUNT_GRANTS_VERSION);
   if (database.prepare("SELECT 1 FROM schema_migrations WHERE version=52").get()) return;
   for (const statement of statements) database.exec(statement);
@@ -148,7 +148,7 @@ export function applyAccountGrantsMigration(database: Database.Database): void {
  * are not checked (see the module comment).
  */
 export function accountGrantsViolation(database: Database.Database): string | null {
-  // Reads the step-52 table: passes the provisional gate first, like every operation of the step.
+  // Reads the step-52 table: checks the step against the supported version first, like every operation of the step.
   schemaTarget(ACCOUNT_GRANTS_VERSION);
   const not = (column: string) => `NOT ifnull(${idCheck(column)},0)`;
   if (database.prepare(`SELECT 1 FROM account_grants WHERE rowid<=0 OR ${not("account_id")}
@@ -163,8 +163,8 @@ export function accountGrantsViolation(database: Database.Database): string | nu
 /**
  * The quarantine's step-52 statement, inside its transaction: every grant is
  * deleted, so no grant written after the upgrade survives `auth fence resume`;
- * the next upgrade grants `admin` again when its rule holds. Passes the
- * provisional gate before it prepares any statement.
+ * the next upgrade grants `admin` again when its rule holds. Checks the step
+ * against the supported version before it prepares any statement.
  */
 export function clearAccountGrants(database: Database.Database): void {
   schemaTarget(ACCOUNT_GRANTS_VERSION);

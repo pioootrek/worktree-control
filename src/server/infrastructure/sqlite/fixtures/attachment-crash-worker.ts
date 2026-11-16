@@ -7,7 +7,7 @@ import { IdentityService } from "../../../modules/identity";
 import { KnowledgeAttachmentService, KnowledgeService, executeHubImport, calculateHubImportPlanHash, exportKnowledgeProject, importKnowledgeProject, type HubImportPlan } from "../../../modules/knowledge";
 
 const [root, operation, point] = process.argv.slice(2), database = join(root, "state.sqlite3"), attachments = join(root, "attachments");
-const owned = new OwnedSqliteDatabase(database, true), store = new SqliteStateStore(database, owned);
+const owned = new OwnedSqliteDatabase(database, true, undefined, { ordinary: true }), store = new SqliteStateStore(database, owned);
 const identity = new IdentityService(store), token = identity.bootstrapOwnerSession().token, owner = identity.authenticateBearer(token);
 const project = identity.createKnowledgeProject({ name: "Original" }, owner);
 identity.setKnowledgeGrant({ principalId: owner.principalId, projectId: project.id, permissions: ["knowledge:read", "knowledge:write", "knowledge:export", "attachments:read", "attachments:write"] }, owner);

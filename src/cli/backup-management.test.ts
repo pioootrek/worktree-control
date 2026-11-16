@@ -12,6 +12,7 @@ import { resolveAppPaths } from "@/server/paths";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { runAuthCommand } from "./auth-management";
 import { runBackupCommand } from "./backup-management";
+import { runUpgradeCommand } from "./upgrade";
 const roots:string[]=[]; afterEach(()=>roots.splice(0).forEach(root=>rmSync(root,{recursive:true,force:true})));
 it("creates and restores a controller backup through the offline owner CLI seam",async()=>{
   const root=mkdtempSync(join(tmpdir(),"backup-cli-")); roots.push(root); const paths=resolveAppPaths(join(root,"data"),join(root,"state"));
@@ -24,7 +25,13 @@ it("creates and restores a controller backup through the offline owner CLI seam"
   await runAuthCommand(["fence","inspect"],paths,{write:line=>lines.push(line)});
   const status=JSON.parse(lines.pop()!) as {trusted:boolean;preflight:string};expect(status.trusted).toBe(false);
   await runAuthCommand(["fence","resume","--expect",status.preflight,"--mode","token"],paths,{write:line=>lines.push(line)});
-  expect(JSON.parse(lines.pop()!)).toMatchObject({trusted:true,quarantined:true});
+  expect(JSON.parse(lines.pop()!)).toMatchObject({trusted:true,quarantined:true,nextStep:"upgrade inspect"});
+  // After a restore: resume, then the explicit upgrade, before any ordinary opening.
+  expect(()=>new SqliteStateStore(paths.databasePath)).toThrowError(expect.objectContaining({code:"upgrade_required"}));
+  await runUpgradeCommand(["upgrade","inspect"],paths,line=>lines.push(line),{applicationVersion:"test"});
+  const inspection=JSON.parse(lines.pop()!) as {state:string;planHash:string};expect(inspection.state).toBe("upgrade_needed");
+  await runUpgradeCommand(["upgrade","apply","--expect",inspection.planHash,"--backup-dir",join(root,"maintenance")],paths,line=>lines.push(line),{applicationVersion:"test"});
+  expect(JSON.parse(lines.pop()!)).toMatchObject({state:"current",planHash:inspection.planHash});
   const restored=new SqliteStateStore(paths.databasePath); expect(restored.listProjects()[0]?.name).toBe("Kept"); restored.close();
 });
 it("exports and imports a logical project in open mode without token variables and requires a credential in token mode",async()=>{

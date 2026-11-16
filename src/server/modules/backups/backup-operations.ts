@@ -5,7 +5,7 @@ import { existsSync, lstatSync, rmSync, statfsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import type { BackupOperation, BackupOverview } from "@/shared/contracts/backups";
-import { backupKeySchema, backupLimitSchema } from "@/shared/contracts/backups";
+import { backupKeySchema, backupLimitSchema, isMaintenanceBackupId } from "@/shared/contracts/backups";
 import type { AuthenticatedPrincipal } from "@/server/modules/identity";
 import { createControllerBackup } from "@/server/controller-backup";
 import { privateDirectory, syncDirectory } from "@/server/private-storage";
@@ -123,7 +123,7 @@ export class BackupOperations {
       if (!record) return { ...copy, protected: true };
       try { if (record.manifestHash !== recordHash(this.catalog.manifest(copy.id))) return { ...copy, verification: "failed" as const, protected: true }; }
       catch { return { ...copy, verification: "failed" as const, protected: true }; }
-      return { ...copy, verification: "verified" as const, protected: !record.scheduled || protectedIds.has(copy.id) };
+      return { ...copy, verification: "verified" as const, protected: isMaintenanceBackupId(copy.id) || !record.scheduled || protectedIds.has(copy.id) };
     });
     return { policy: { ...policy, destinationConfigured: Boolean(directory) }, schedule: { nextAt: this.ledger.nextAt === null ? null : new Date(this.ledger.nextAt).toISOString(), lastOperation: this.lastScheduled(), error: this.ledger.scheduleError, ...(this.ledger.scheduleLimit ? { limit: { ...this.ledger.scheduleLimit } } : {}), retention: this.ledger.retention }, maintenance: this.deps.maintenance(), copies, operations: this.ledger.operations.slice(-50).reverse().map(publicOperation) };
   }
@@ -266,7 +266,8 @@ export class BackupOperations {
     const protectedIds = this.protectedIds();
     const records = this.ledger.operations.filter(value => value.scheduled && value.state === "succeeded").sort((a,b) => b.createdAt.localeCompare(a.createdAt));
     for (const [index, operation] of records.entries()) {
-      if (protectedIds.has(operation.backupId) || this.catalog.verifyingIds.has(operation.backupId) || !this.policy.directory || operation.destination !== join(this.policy.directory, operation.backupId) || !existsSync(operation.destination)) continue;
+      // A maintenance backup is never a retention candidate, whatever a ledger record says.
+      if (isMaintenanceBackupId(operation.backupId) || protectedIds.has(operation.backupId) || this.catalog.verifyingIds.has(operation.backupId) || !this.policy.directory || operation.destination !== join(this.policy.directory, operation.backupId) || !existsSync(operation.destination)) continue;
       if (index < this.policy.retainCount && Date.parse(operation.createdAt) >= this.now() - this.policy.retainDays * 86400 * 1000) continue;
       const stat = lstatSync(operation.destination);
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw new BackupError("backup_invalid");

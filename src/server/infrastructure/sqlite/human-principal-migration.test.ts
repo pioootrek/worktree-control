@@ -48,7 +48,7 @@ describe("ordinary human principal migration 42", () => {
       const keys = db.prepare("PRAGMA foreign_key_list(knowledge_project_grants)").all();
       expect(() => initializeSchema(db, false, () => { throw Error("after rebuild"); })).toThrow("after rebuild");
       expect(inspectSchema(db).version).toBe(41); expect(kept(db)).toEqual(before);
-      initializeSchema(db, false, inspectSchema);
+      initializeSchema(db, false, inspectSchema, { target: 49 });
       expect(inspectSchema(db).version).toBe(49); expect(kept(db)).toEqual(before);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version<=41 ORDER BY version").all()).toEqual(registry);
       expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=42").get()).toEqual({ name: humanPrincipalMigration.name, checksum: humanPrincipalChecksum });
@@ -67,11 +67,11 @@ describe("ordinary human principal migration 42", () => {
     try { await old.backup(path); } finally { old.close(); }
     chmodSync(path, 0o600);
     const backups = join(root, "backups");
-    const store = await openProtectedUpgradeFixture(path, { backupBeforeMigration: true, backupDirectory: backups,
+    const store = await openProtectedUpgradeFixture(path, { backupDirectory: backups,
       applicationVersion: "human-upgrade-test", attachmentDirectory: join(root, "attachments") });
     try { expect(store.schemaVersion()).toBe(49); expect(store.getPrincipal("owner")).toEqual({ id: "owner", kind: "owner", status: "active" }); }
     finally { await store.closeAfterDrain(); }
-    const names = readdirSync(backups); expect(names).toHaveLength(1); expect(names[0]).toMatch(/^pre-migration-v41-/);
+    const names = readdirSync(backups); expect(names).toHaveLength(1); expect(names[0]).toMatch(/^pre-establishment-v41-/);
     const backup = join(backups, names[0]);
     expect(JSON.parse(readFileSync(join(backup, "manifest.json"), "utf8")).database.schemaVersion).toBe(41);
     for (const [file, version] of [[path, 49], [join(backup, "state.sqlite3"), 41]] as const) {
@@ -115,7 +115,7 @@ describe("ordinary human principal migration 42", () => {
     const root = mkdtempSync(join(tmpdir(), "human-migration-")); roots.push(root);
     const path = join(root, "data", "state.sqlite3"), store = new SqliteStateStore(path);
     const human = new HumanAccountService(store.humanAccounts(), "local-cli").create();
-    expect(store.schemaVersion()).toBe(49); expect(store.authenticationProviderStorage().storageRevision).toBe(3);
+    expect(store.schemaVersion()).toBe(52); expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     const storage = store.authenticationProviderStorage(), connection = storage.createProviderConnection();
     await storage.borrow(async () => {
       connection.prepare("INSERT INTO authentication_ba_user(id,name,email,emailVerified,createdAt,updatedAt) VALUES('s','Fixture','fixture@invalid.test',0,'2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z')").run([]);
@@ -127,7 +127,7 @@ describe("ordinary human principal migration 42", () => {
     const reopened = new SqliteStateStore(path);
     expect(reopened.getPrincipal(human.id)).toEqual(human); await reopened.closeAfterDrain();
     const restoredPath = join(root, "restored", "state.sqlite3"); restoreControllerBackup(target, restoredPath);
-    resumeFixtureSecurity(restoredPath);
+    await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
     try {
       expect(restored.getPrincipal(human.id)).toEqual(human);

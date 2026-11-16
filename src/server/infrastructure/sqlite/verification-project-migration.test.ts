@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity } from "./fixtures/protected-security";
+import { openStoreAt49 } from "./fixtures/released-schema";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,7 +52,7 @@ describe("verification projects migration 30", () => {
     const before = contents(beforeDb);
     const indexes = beforeDb.prepare("SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name").all(); beforeDb.close();
     establishFixtureSecurity(f.path);
-    const owned = new OwnedSqliteDatabase(f.path); const store = new SqliteStateStore(f.path, owned);
+    const owned = new OwnedSqliteDatabase(f.path, false, 49, { ordinary: true }); const store = new SqliteStateStore(f.path, owned);
     try {
       // Later migrations add only NULL Godot Web configuration and unbound (0) reservation and test-run markers.
       expect(contents(owned.database)).toEqual({ ...before, test_runs: (before.test_runs as object[]).map(row => ({ ...row, provider_bound: 0 })), reservations: (before.reservations as object[]).map(row => ({ ...row, provider_bound: 0 })), projects: (before.projects as object[]).map(row => ({ ...row, godot_web_json: null })) });
@@ -66,7 +67,7 @@ describe("verification projects migration 30", () => {
       store.saveTestRun({ ...run, id: "godot", projectId: project.id, adapter: "godot", presetId: "godot:check" });
       expect(store.getTestRun("godot")?.adapter).toBe("godot");
     } finally { store.close(); }
-    const reopened = new SqliteStateStore(f.path);
+    const reopened = openStoreAt49(f.path);
     expect(reopened.getTestRun("django")?.logs).toEqual(["kept output"]);
     expect(reopened.getTestRun("godot")?.adapter).toBe("godot"); reopened.close();
   });
@@ -81,6 +82,6 @@ describe("verification projects migration 30", () => {
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     db.close();
     establishFixtureSecurity(f.path);
-    new SqliteStateStore(f.path).close();
+    openStoreAt49(f.path).close();
   });
 });

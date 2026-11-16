@@ -8,6 +8,7 @@ import {
   executeAuthenticationCommand,
 } from "../server/modules/authentication";
 import { SqliteStateStore } from "../server/sqlite-store";
+import { UpgradeError } from "../server/infrastructure/sqlite";
 import type { Readable } from "node:stream";
 import { createAuthenticationAdministration, retainAuthenticationOwnership, type AuthenticationAdministrationOptions } from "../server/bootstrap/authentication-administration";
 import { ProviderAdminError, providerAdminFailure } from "../server/modules/authentication";
@@ -17,6 +18,8 @@ import { isProviderCommandArgs, providerCommandFromArgs } from "./auth-provider-
 export interface AuthCommandDependencies {
   write?: (line: string) => void;
   input?: Readable;
+  /** The version recorded in a pre-establishment backup's manifest (default: this package's). */
+  applicationVersion?: string;
   /** Trusted composition seam for finite lifecycle tests; never parsed from user input. */
   provider?: Pick<AuthenticationAdministrationOptions, "loadProvider" | "onInvalidation" | "drainTimeoutMs">;
 }
@@ -33,7 +36,7 @@ export async function runAuthCommand(
   paths: AppPaths,
   dependencies: AuthCommandDependencies = {},
 ): Promise<void> {
-  if (args[0] === "fence") return runSecurityFenceCommand(args, paths, dependencies.write ?? console.log);
+  if (args[0] === "fence") return runSecurityFenceCommand(args, paths, dependencies.write ?? console.log, dependencies.applicationVersion);
   if (isProviderCommandArgs(args)) return runProviderCommand(args, paths, dependencies);
   const write = dependencies.write ?? console.log;
   const request = authenticationCommandFromArgs(args);
@@ -90,7 +93,8 @@ async function runProviderCommand(args: string[], paths: AppPaths, dependencies:
   }
   let store: SqliteStateStore;
   try { store = new SqliteStateStore(paths.databasePath); }
-  catch (error) { lock.release(); throw providerAdminFailure(error); }
+  // The admission's upgrade_required keeps its own body; fence refusals keep their codes through providerAdminFailure.
+  catch (error) { lock.release(); throw error instanceof UpgradeError ? error : providerAdminFailure(error); }
   let administration: ReturnType<typeof createAuthenticationAdministration> | undefined;
   let result: unknown, effectFailure: unknown;
   try {
