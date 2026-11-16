@@ -1320,6 +1320,10 @@ port and never reauthorizes old pending work.
 Neutral fixed errors distinguish `security_fence_establishment_required`,
 `security_fence_recovery_required`, `security_fence_pending` and
 `security_fence_preflight_changed`. A running owner returns `security_fence_owner_running`. Status and errors expose no credential material.
+On the integration branch, establishment with a pre-establishment backup adds
+`security_fence_backup_failed` for a failed backup (nothing was changed;
+inspect, then establish again). No released command takes that backup, so no
+command returns this code yet.
 Tests cover raw/supported rollback, native provider recovery, corrupt/missing
 witnesses, filesystem synchronization faults, SQL rollback, idle rechecks and
 real child-process crashes. See the historical implementation reference for

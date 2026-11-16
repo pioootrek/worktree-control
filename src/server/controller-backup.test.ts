@@ -1,11 +1,17 @@
 import { resumeFixtureSecurity } from "./infrastructure/sqlite/fixtures/protected-security";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SqliteStateStore } from "./sqlite-store";
 import { OwnedSqliteDatabase } from "./infrastructure/sqlite";
 import { createControllerBackup, restoreControllerBackup } from "./controller-backup";
+import Database from "better-sqlite3";
+import { enableProvisionalSchema } from "./infrastructure/sqlite/provisional-schema-gate";
+import { initializeSchema } from "./infrastructure/sqlite/migrations";
+import { inspectSchema } from "./infrastructure/sqlite/schema-inspection";
+import { configureDurability } from "./infrastructure/sqlite/database-validation";
+import { parseManifest, validateBackup } from "./infrastructure/sqlite/backup-validation";
 
 const cleanups: Array<() => void> = []; afterEach(() => cleanups.splice(0).reverse().forEach(fn => fn()));
 function root() { const value=mkdtempSync(join(tmpdir(),"controller-backup-")); cleanups.push(()=>rmSync(value,{recursive:true,force:true})); return value; }
@@ -71,4 +77,26 @@ describe("controller backup", () => {
     const manifestPath=join(backupPath,"manifest.json"); const source=readFileSync(manifestPath,"utf8"); writeFileSync(manifestPath,source.replace(/"sha256":\s*"[a-f0-9]+"/, '"sha256":"'+"0".repeat(64)+'"'));
     expect(()=>restoreControllerBackup(backupPath,databasePath)).toThrow(/integrity/i);
   });
+
+  it("refuses a snapshot above the supported schema without schemaCeiling, and accepts it at the ceiling it names", async () => {
+    // Schema 52 is provisional: the switch is on only for this test, so the default ceiling stays the supported 49.
+    const restoreGate = enableProvisionalSchema(); cleanups.push(restoreGate);
+    const directory=root(), databasePath=join(directory,"state.sqlite3");
+    const source=new Database(databasePath); cleanups.push(()=>source.close());
+    chmodSync(databasePath,0o600); configureDurability(source);
+    initializeSchema(source,true,current=>{inspectSchema(current,52);},{target:52});
+    const snapshots={backup:async(destination:string)=>{await source.backup(destination);}};
+    const options={applicationVersion:"test-version",attachmentDirectory:join(directory,"attachments")};
+    // Without the option: refused at the snapshot's inspection, and the staging tree is removed.
+    await expect(createControllerBackup(snapshots,join(directory,"default"),options)).rejects.toThrow();
+    expect(readdirSync(directory).filter(name=>name.includes("default"))).toEqual([]);
+    // At 52 it is accepted and validates at that ceiling only.
+    const manifest=await createControllerBackup(snapshots,join(directory,"provisional"),{...options,schemaCeiling:52});
+    expect(manifest).toMatchObject({formatVersion:1,database:{file:"state.sqlite3",schemaVersion:52}});
+    expect(()=>validateBackup(join(directory,"provisional"),parseManifest(manifest,52),true,52)).not.toThrow();
+    expect(()=>parseManifest(manifest)).toThrow(/Unsupported or invalid backup manifest/);
+    // A supported-schema source is unaffected by naming the ceiling.
+    const supported=new SqliteStateStore(join(directory,"supported.sqlite3")); cleanups.push(()=>supported.close());
+    expect(await createControllerBackup(supported,join(directory,"supported"),{...options,schemaCeiling:52})).toMatchObject({database:{schemaVersion:49}});
+  }, 30_000);
 });

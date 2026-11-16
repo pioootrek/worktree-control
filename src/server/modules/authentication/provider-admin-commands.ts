@@ -42,6 +42,7 @@ const messages = {
   security_fence_recovery_required: "Protected offline security recovery is required; use auth fence inspect.",
   security_fence_pending: "Security checkpoint publication is unconfirmed; use protected offline auth fence inspect.",
   security_fence_preflight_changed: "Security preflight changed; inspect again before explicit recovery.",
+  security_fence_backup_failed: "The pre-establishment backup failed; nothing was changed. Run auth fence inspect, then establish again.",
   invalid_input: "Invalid protected provider administration input.",
   recovery_unavailable: "The loaded authentication provider does not support explicit factor recovery.",
   provider_unavailable: "The authentication provider is unavailable.",

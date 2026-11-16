@@ -33,7 +33,8 @@ export type ControllerBackupManifest = z.infer<typeof backupManifestSchema>;
 export function regularFile(path: string, privateMode = false, allowHardlinks = false): number {
   const info = lstatSync(path);
   if (!info.isFile() || (!allowHardlinks && info.nlink !== 1) || (privateMode && ((info.mode & 0o077) || (process.getuid && info.uid !== process.getuid())))) throw new Error("Backup requires regular files without aliases and private staging permissions.");
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  // O_NONBLOCK: a FIFO swapped in after lstat opens at once and fails the check below; no effect on regular files.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const opened = fstatSync(fd);
     if (!opened.isFile() || (!allowHardlinks && opened.nlink !== 1) || opened.dev !== info.dev || opened.ino !== info.ino) throw new Error("Backup file identity changed.");

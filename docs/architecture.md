@@ -1362,9 +1362,10 @@ unchanged.
 
 This section describes `integration/auth-unification`, not a release. The
 machinery is in `upgrade-plan.ts` and `upgrade-maintenance.ts` under
-`src/server/infrastructure/sqlite/`. No command, composition or startup path
-uses it: every entry point needs a schema target of at least 50 and refuses as
-unsupported, before any lock or file, while the provisional switch is off. The
+`src/server/infrastructure/sqlite/`. Its composition and command runner exist
+but are not mounted (see below), and no command or startup path uses it: every
+entry point needs a schema target of at least 50 and refuses as unsupported,
+before any lock or file, while the provisional switch is off. The
 same refusal guards each upgrade-specific helper that reads or writes a file:
 the plan file's write, read and removal, and the fence's `beginUpgrade`,
 `registerUpgradeObserver` and `upgradeReceipt`. Decoding is not gated: a
@@ -1569,6 +1570,36 @@ hash and compare as before. A binary that knows only format 1 refuses a format-2
 record as recovery required instead of misreading it. An upgrade never writes
 `receipt` or `recoveredAt`. They keep the last establish or resume, and
 `securityRecoveryBoundary` returns the same value before and after an upgrade.
+
+#### Composition and command runner (not mounted)
+
+`src/server/bootstrap/upgrade-maintenance.ts` composes the SQLite functions:
+`inspectUpgrade(paths, decisions?, target?)` and
+`applyUpgrade(paths, { expect }, { directory, applicationVersion }, target?)`.
+The pre-upgrade backup of step 5 is the real `createControllerBackup`, writing
+into `<directory>/pre-upgrade-v<source schema>-<UUID>` with the installation's
+Knowledge attachments, beside the existing `pre-migration-v…` convention.
+`src/server/bootstrap/maintenance-backup.ts` holds this one backup
+composition, which establishment with a backup shares. The run's target is
+the backup's schema ceiling (`createControllerBackup`'s optional
+`schemaCeiling`), so a source above the supported schema, such as a step-52
+database whose marker a resume set to `pending`, can be backed up. Without
+the option every backup keeps the supported ceiling. Omitted, `target` is the
+supported schema, where the upgrade refuses as unsupported.
+
+`src/cli/upgrade.ts` holds the runner of the future `upgrade inspect
+[--decisions <file>]` and `upgrade apply --expect <plan hash> --backup-dir
+<dir>` commands, with `upgradeErrorBody`, which maps a thrown error to a JSON
+body without library text, paths or input values. The decisions file is read
+before any lock: a regular file (no symbolic link), at most 8 MiB (the plan's
+own bound), UTF-8 JSON without duplicate keys; anything else is
+`upgrade_invalid_input`. Inspect prints the status, the plan hash, the
+normalised decisions, the operator's lines and the review, never the plan
+itself. No command registers the runner yet, and `provisional-schema.test.ts`
+refuses any import of the composition other than the runner's, any import of
+the runner, and any use of the establishment and upgrade entry points outside
+their definitions and compositions. The activation registers the commands and
+removes that rule.
 
 ### Project mapping acts (integration branch only)
 
@@ -2133,9 +2164,13 @@ when its rule still holds. At targets 50 and 51 the domain does not apply.
 ### Pre-establishment backup (integration branch only)
 
 `establishSqliteSecurityFence` runs `auth fence establish` with an injected
-backup function, which the upgrade's backup also uses. No command or bootstrap
-path calls it yet: `auth fence establish` still takes no backup, and the
-activation composes it. It shares the one implementation of
+backup function, which the upgrade's backup also uses. The bootstrap
+composition `establishSecurityFenceWithBackup` (in
+`src/server/bootstrap/security-maintenance.ts`) passes the handoff of
+`maintainSecurityFence` and the shared backup composition, writing
+`<directory>/pre-establishment-v<source schema>-<UUID>`. Nothing outside tests
+calls it yet: `auth fence establish` still takes no backup, and the activation
+adds that option. It shares the one implementation of
 `maintainSqliteSecurityFence`, which keeps its synchronous signature and
 behaviour. The order is:
 
@@ -2156,8 +2191,9 @@ behaviour. The order is:
 4. The pending witness, the migration and the receipts, as without a backup.
 
 A backup that fails, does not validate or is not this run's is refused as
-`SecurityFenceBackupError`. Its code is `security_fence_establishment_required`,
-the state the database is still in, and its message names the backup. A moved
+`SecurityFenceBackupError` with its own code, `security_fence_backup_failed`;
+`auth fence inspect` still reports the database as
+`security_fence_establishment_required`. Only this path throws the code. A moved
 preflight after the backup is `security_fence_preflight_changed`. In both cases
 the database file and its WAL are unchanged, no witness is written, and
 establish can run again. A failure after the pending witness leaves the backup

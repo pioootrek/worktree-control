@@ -11,7 +11,7 @@ import { prepareOwnedRestore, recoverOwnedRestore, type RestoreActor } from "./i
 export type { ControllerBackupManifest } from "./infrastructure/sqlite";
 interface BackupSource { backup(destination: string, options?: { progress: () => number }): Promise<void>; schemaVersion?(): number }
 
-export async function createControllerBackup(source: BackupSource, destination: string, options: {applicationVersion:string;attachmentDirectory:string;clock?:()=>string;maxBytes?:number;deadline?:number;now?:()=>number}): Promise<ControllerBackupManifest> {
+export async function createControllerBackup(source: BackupSource, destination: string, options: {applicationVersion:string;attachmentDirectory:string;clock?:()=>string;maxBytes?:number;deadline?:number;now?:()=>number;schemaCeiling?:number}): Promise<ControllerBackupManifest> {
   const check = (bytes = 0) => {
     if ((options.now ?? Date.now)() > (options.deadline ?? Infinity) || bytes > (options.maxBytes ?? Infinity)) throw new Error("Backup execution limit exceeded.");
   };
@@ -32,7 +32,7 @@ export async function createControllerBackup(source: BackupSource, destination: 
     let schemaVersion: number;
     try {
       if (snapshot.pragma("journal_mode = DELETE", { simple: true }) !== "delete") throw new Error("Backup snapshot could not become self-contained.");
-      schemaVersion = inspectSchema(snapshot).version;
+      schemaVersion = inspectSchema(snapshot, options.schemaCeiling).version;
       required = snapshotAttachments(snapshot);
     } finally { snapshot.close(); }
     check(lstatSync(databaseFile).size + required.reduce((sum, item) => sum + item.size, 0));
@@ -43,9 +43,9 @@ export async function createControllerBackup(source: BackupSource, destination: 
       return {file,size,sha256};
     });
     const manifest: ControllerBackupManifest={formatVersion:1,applicationVersion:options.applicationVersion,createdAt:(options.clock??(()=>new Date().toISOString()))(),database:{file:"state.sqlite3",size:lstatSync(databaseFile).size,sha256:hashFile(databaseFile).sha256,schemaVersion},attachments};
-    parseManifest(manifest);
+    parseManifest(manifest, options.schemaCeiling);
     durableJson(join(staging,"manifest.json"), manifest);
-    validateBackup(staging, manifest, true); syncTree(staging);
+    validateBackup(staging, manifest, true, options.schemaCeiling); syncTree(staging);
     check(); renameSync(staging,destination); syncDirectory(dirname(destination)); return manifest;
   } catch(error) { rmSync(staging,{recursive:true,force:true}); throw error; }
 }
