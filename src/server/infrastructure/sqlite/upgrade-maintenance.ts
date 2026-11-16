@@ -76,14 +76,23 @@ export interface UpgradeApplyResult {
 const NEXT: Readonly<Record<UpgradeState, UpgradeNextStep>> = { current: "none", upgrade_needed: "upgrade apply", pre_fence: "auth fence establish", fenced: "auth fence resume" };
 const applyCommandSchema = z.object({ expect: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
 
-/** The four states, from the fence's own verdict and the marker (read-only). */
+/**
+ * The four states, from the fence's own verdict, the marker and the schema
+ * version (read-only). `current` needs all three: a trusted fence, a
+ * `complete` marker and the requested target reached. A trusted database
+ * below the target is `upgrade_needed` whatever its marker says, so a
+ * completed step-50 database still plans and runs the steps up to 51. A
+ * database above the target never gets here: the ownership's schema ceiling is
+ * the target, and it refuses a newer schema as unrecognised before any state
+ * is read.
+ */
 function recognize(path: string, database: Database.Database, schemaVersion: number, target: number): UpgradeStatus {
   const fence = SecurityFence.preflight(path, database, schemaVersion);
   const row = schemaVersion >= 50 ? database.prepare("SELECT state,plan_hash FROM upgrade_marker WHERE singleton=1").get() as { state: "pending" | "complete"; plan_hash: string | null } : undefined;
   const marker = row?.state ?? "absent", appliedPlan = row?.state === "complete" ? row.plan_hash : null;
   // A confirmed witness with an earlier recovery receipt is trusted like any
   // other: `SecurityFence.preflight` decides trust, and nothing here refines it.
-  const state: UpgradeState = fence.trusted ? (marker === "complete" ? "current" : "upgrade_needed") : fence.establishmentAllowed ? "pre_fence" : "fenced";
+  const state: UpgradeState = fence.trusted ? (marker === "complete" && schemaVersion === target ? "current" : "upgrade_needed") : fence.establishmentAllowed ? "pre_fence" : "fenced";
   return { state, nextStep: NEXT[state], schemaVersion, target, preflight: fence.preflight, marker, appliedPlan };
 }
 function checkpoint(database: Database.Database): { installation: string; epoch: string } {
@@ -182,7 +191,8 @@ function witnessUnchanged(path: string, database: Database.Database, source: num
 /**
  * Offline. Executes exactly the plan named by `expect`, in the protocol's order:
  * both locks; state `upgrade_needed` (or "already applied" for the plan the
- * `complete` marker records); owner continuity; the plan, its hash, binding,
+ * `complete` marker records, only when the database is at the target);
+ * owner continuity; the plan, its hash, binding,
  * base and steps; this run's validated backup and the base again; the pending
  * witness with the upgrade receipt; the reopened database proven to be the
  * inspected one; one schema transaction (steps, acts, marker, audit event);

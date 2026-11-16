@@ -321,6 +321,11 @@ describe("provisional schema step 50: upgrade marker", () => {
     ["an impossible date", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-02-30T00:00:00.000Z'")],
     ["a non-date", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='yesterday'")],
     ["a numeric timestamp", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at=2461000")],
+    // SQLite's parser accepts hour 24 and prints it back; the Julian-day rule refuses it.
+    ["hour 24", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-11-15T24:30:00.000Z'")],
+    ["hour 24 at midnight", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-11-15T24:00:00.000Z'")],
+    ["minute 60", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-11-15T23:60:00.000Z'")],
+    ["second 60", (db: Database.Database) => db.exec("UPDATE upgrade_marker SET changed_at='2026-11-15T23:59:60.000Z'")],
   ])("refuses a marker with %s in validation at 50 only", (_name, mutate) => {
     // The no-op observer lets the fixture write through the marker's triggers.
     const database = unmanagedFixtureDatabase(":memory:");

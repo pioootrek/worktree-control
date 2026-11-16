@@ -22,12 +22,16 @@ import { schemaTarget } from "./migration-registry";
  * - `incarnation`: the clock value of the row's creation, never changed after
  *   it is stamped; 0 means the row predates the step and is not stamped yet.
  *   Deleting a row and creating another with the same ID gives a new, larger
- *   incarnation, so a stamp is never repeated for one ID.
+ *   incarnation, so a stamp is never repeated for one ID. Non-zero
+ *   incarnations are unique within each table, enforced when one is written.
  * - `mapping_version`: the clock value of the row's creation or of its last
  *   mapping change (parent set or cleared); 0 means not stamped yet.
  *
  * Within one linear history of the database the clock only advances, so the
- * stamps it issues are unique (incarnations) and increasing. A restore of an
+ * values it issues are increasing. A stamp is a value the clock has issued, not
+ * necessarily a fresh one: the guards let a mapping version be set to the
+ * clock's current value, which another row may already carry, and an unstamped
+ * row's incarnation to any issued value no other row of its table holds. A restore of an
  * older database rewinds the clock with everything else and it may then issue
  * values it issued before; the quarantine (`auth fence resume`) is the recovery
  * boundary, and it re-stamps every row.
@@ -69,15 +73,29 @@ const idCheck = (column: string) => `typeof(${column})='text' AND length(CAST(${
  * removed registration.
  *
  * Append-only by trigger: UPDATE and DELETE are refused, and so is an INSERT
- * whose sequence already exists, which is what every replacing form (`INSERT
- * OR REPLACE`, `REPLACE INTO`, an upsert) needs, whatever `recursive_triggers`
- * says; the primary key is the only unique key. What remains possible: an
- * INSERT with an explicit sequence above the last one (a gap, which moves
- * `sqlite_sequence` on). These guards hold against application defects, not
- * against a raw rewrite of the file, `DROP TRIGGER`, a write to
- * `sqlite_sequence` or a restore of an older database. `sequence` is an order
- * of records, not a version: it can be rewound by a restore like everything
- * else.
+ * with an explicit sequence that is not above every existing one. That covers
+ * every replacing form (`INSERT OR REPLACE`, `REPLACE INTO`, an upsert),
+ * whatever `recursive_triggers` says (the primary key is the only unique key),
+ * and an insert into an earlier hole, so sequence order is append order: the
+ * later acts read a subject's latest record by the largest sequence. In a
+ * BEFORE INSERT trigger an omitted or NULL sequence reads as -1, which the
+ * guard lets through to AUTOINCREMENT; an explicit -1 then fails the CHECK.
+ * What remains possible: an explicit sequence above the last one (a gap, which
+ * moves `sqlite_sequence` on); AUTOINCREMENT then continues above it. An
+ * INSERT must also name an incarnation the clock has issued (at most its
+ * current value; a non-integer is left to the CHECK).
+ *
+ * `recorded_at` is canonical UTC with milliseconds, as `toISOString` writes
+ * it, and a real instant: formatting the value's own Julian day must give the
+ * value back. The plain `strftime(..., recorded_at)` comparison is not enough,
+ * because SQLite's parser accepts hour 24 and `%H` prints it back; the Julian
+ * day normalises it to the next day, so it differs.
+ *
+ * These guards hold against application defects, not against a raw rewrite of
+ * the file, `DROP TRIGGER`, a write to `sqlite_sequence` (raising it leaves a
+ * gap; AUTOINCREMENT never issues a value at or below the largest existing
+ * sequence) or a restore of an older database. `sequence` is an order of
+ * records, not a version: it can be rewound by a restore like everything else.
  */
 const journalTable = `CREATE TABLE project_mapping_journal (
   sequence INTEGER PRIMARY KEY AUTOINCREMENT CHECK(sequence>0),
@@ -88,7 +106,7 @@ const journalTable = `CREATE TABLE project_mapping_journal (
   basis TEXT NOT NULL CHECK(basis IN ('created_project','accepted_link','accepted_binding','journal_reuse')),
   plan_hash TEXT NOT NULL CHECK(typeof(plan_hash)='text' AND length(plan_hash)=64 AND length(CAST(plan_hash AS BLOB))=64 AND NOT plan_hash GLOB '*[^0-9a-f]*'),
   run_receipt TEXT NOT NULL CHECK(typeof(run_receipt)='text' AND length(CAST(run_receipt AS BLOB))=36 AND run_receipt GLOB '${UUID_GLOB}'),
-  recorded_at TEXT NOT NULL CHECK(typeof(recorded_at)='text' AND recorded_at IS strftime('%Y-%m-%dT%H:%M:%fZ',recorded_at)),
+  recorded_at TEXT NOT NULL CHECK(typeof(recorded_at)='text' AND recorded_at IS strftime('%Y-%m-%dT%H:%M:%fZ',julianday(recorded_at))),
   CHECK(basis IN ('created_project','journal_reuse') OR (basis='accepted_link' AND subject_kind='registration') OR (basis='accepted_binding' AND subject_kind='remote_identity'))
 )`;
 /** The lookups of the later acts: a subject's records in order, and a project's records by basis. */
@@ -126,10 +144,21 @@ const CLOCK = "(SELECT value FROM project_mapping_clock WHERE singleton=1)";
  * - `stamp`: after an INSERT, advances the clock and stamps both columns of
  *   the new row with the new value. It refuses at an exhausted clock, never
  *   wraps, and checks that the stamp landed. `changes` and `lastInsertRowid`
- *   of the INSERT are its own: a trigger's statements count in neither.
+ *   of the INSERT are its own: a trigger's statements count in neither. Each
+ *   row of a multi-row INSERT gets its own advance. The postcondition cannot
+ *   fail through the genuine schema (no constraint the stamp could break is
+ *   skippable by a conflict clause, and recognition refuses any other trigger
+ *   in the file); a connection's TEMP trigger, which the file does not hold,
+ *   can skip or undo the stamp, and then it refuses.
  * - `incarnation`: an incarnation changes only from 0 to a value issued by the
  *   clock (at most its current value), together with a mapping version no
- *   smaller than it.
+ *   smaller than it, and only to a value no other row of the table holds. Each
+ *   row's BEFORE trigger sees the rows its statement has already changed, so
+ *   one statement that gives several rows the same value fails as a whole. A
+ *   unique index would not do: under `UPDATE OR REPLACE` it deletes the row
+ *   that holds the value. The lookup scans the table (there is no index on
+ *   `incarnation`); it runs once per stamped row, which is bounded by the
+ *   registrations and identities of one machine.
  * - `version`: a changed mapping version must be larger than before and equal
  *   to the clock's current value (a fresh stamp); a changed parent requires a
  *   larger mapping version; an unstamped row keeps mapping version 0 unless the
@@ -138,12 +167,13 @@ const CLOCK = "(SELECT value FROM project_mapping_clock WHERE singleton=1)";
  *
  * The clock: its one row is written before these triggers exist; afterwards it
  * only advances, and no row is inserted or deleted. The journal: append-only
- * (see its table).
+ * in sequence order, and bounded by the clock (see its table).
  */
 const mappedTriggers = (table: MappedTable) => [
   { name: `project_mapping_${table}_unstamped_insert`, sql: `CREATE TRIGGER project_mapping_${table}_unstamped_insert BEFORE INSERT ON ${table} WHEN NEW.incarnation IS NOT 0 OR NEW.mapping_version IS NOT 0 BEGIN SELECT RAISE(ABORT,'project mapping stamps are issued only by the mapping clock'); END` },
   { name: `project_mapping_${table}_stamp`, sql: `CREATE TRIGGER project_mapping_${table}_stamp AFTER INSERT ON ${table} WHEN NEW.incarnation=0 BEGIN SELECT RAISE(ABORT,'project mapping clock exhausted') WHERE NOT ifnull(${CLOCK}<${MAX},0); UPDATE project_mapping_clock SET value=value+1 WHERE singleton=1; UPDATE ${table} SET incarnation=${CLOCK},mapping_version=${CLOCK} WHERE rowid=NEW.rowid; SELECT RAISE(ABORT,'project mapping stamp failed') WHERE (SELECT incarnation FROM ${table} WHERE rowid=NEW.rowid) IS NOT ${CLOCK}; END` },
-  { name: `project_mapping_${table}_incarnation`, sql: `CREATE TRIGGER project_mapping_${table}_incarnation BEFORE UPDATE ON ${table} WHEN NEW.incarnation IS NOT OLD.incarnation AND NOT ifnull(OLD.incarnation=0 AND NEW.incarnation>0 AND NEW.incarnation<=${CLOCK} AND NEW.mapping_version>=NEW.incarnation,0) BEGIN SELECT RAISE(ABORT,'project mapping incarnation is immutable'); END` },
+  // The row being changed still holds 0 when the second check runs, so it never finds itself.
+  { name: `project_mapping_${table}_incarnation`, sql: `CREATE TRIGGER project_mapping_${table}_incarnation BEFORE UPDATE ON ${table} WHEN NEW.incarnation IS NOT OLD.incarnation BEGIN SELECT RAISE(ABORT,'project mapping incarnation is immutable') WHERE NOT ifnull(OLD.incarnation=0 AND NEW.incarnation>0 AND NEW.incarnation<=${CLOCK} AND NEW.mapping_version>=NEW.incarnation,0); SELECT RAISE(ABORT,'project mapping incarnation is already issued') WHERE EXISTS(SELECT 1 FROM ${table} WHERE incarnation=NEW.incarnation); END` },
   { name: `project_mapping_${table}_version`, sql: `CREATE TRIGGER project_mapping_${table}_version BEFORE UPDATE ON ${table} WHEN (NEW.mapping_version IS NOT OLD.mapping_version AND NOT ifnull(NEW.mapping_version>OLD.mapping_version AND NEW.mapping_version=${CLOCK},0)) OR (NEW.parent_project_id IS NOT OLD.parent_project_id AND NOT ifnull(NEW.mapping_version>OLD.mapping_version,0)) OR (NEW.incarnation IS OLD.incarnation AND OLD.incarnation=0 AND NEW.mapping_version IS NOT 0) BEGIN SELECT RAISE(ABORT,'project mapping version must advance with the clock'); END` },
 ];
 export const projectMappingTriggers: ReadonlyArray<{ name: string; sql: string }> = [
@@ -151,7 +181,7 @@ export const projectMappingTriggers: ReadonlyArray<{ name: string; sql: string }
   { name: "project_mapping_clock_advance", sql: "CREATE TRIGGER project_mapping_clock_advance BEFORE UPDATE ON project_mapping_clock WHEN NOT ifnull(NEW.singleton=OLD.singleton AND NEW.value>OLD.value,0) BEGIN SELECT RAISE(ABORT,'project mapping clock only advances'); END" },
   { name: "project_mapping_clock_insert", sql: "CREATE TRIGGER project_mapping_clock_insert BEFORE INSERT ON project_mapping_clock BEGIN SELECT RAISE(ABORT,'project mapping clock has one row'); END" },
   { name: "project_mapping_clock_delete", sql: "CREATE TRIGGER project_mapping_clock_delete BEFORE DELETE ON project_mapping_clock BEGIN SELECT RAISE(ABORT,'project mapping clock has one row'); END" },
-  { name: "project_mapping_journal_insert", sql: "CREATE TRIGGER project_mapping_journal_insert BEFORE INSERT ON project_mapping_journal WHEN EXISTS(SELECT 1 FROM project_mapping_journal WHERE sequence=NEW.sequence) BEGIN SELECT RAISE(ABORT,'project mapping journal is append-only'); END" },
+  { name: "project_mapping_journal_insert", sql: `CREATE TRIGGER project_mapping_journal_insert BEFORE INSERT ON project_mapping_journal BEGIN SELECT RAISE(ABORT,'project mapping journal is append-only') WHERE NEW.sequence IS NOT -1 AND NEW.sequence<=ifnull((SELECT max(sequence) FROM project_mapping_journal),0); SELECT RAISE(ABORT,'project mapping journal records only issued incarnations') WHERE typeof(NEW.subject_incarnation)='integer' AND NOT ifnull(NEW.subject_incarnation<=${CLOCK},0); END` },
   { name: "project_mapping_journal_update", sql: "CREATE TRIGGER project_mapping_journal_update BEFORE UPDATE ON project_mapping_journal BEGIN SELECT RAISE(ABORT,'project mapping journal is append-only'); END" },
   { name: "project_mapping_journal_delete", sql: "CREATE TRIGGER project_mapping_journal_delete BEFORE DELETE ON project_mapping_journal BEGIN SELECT RAISE(ABORT,'project mapping journal is append-only'); END" },
 ];
@@ -189,6 +219,8 @@ export function applyProjectMappingMigration(database: Database.Database): void 
  * database breaks, or null.
  */
 export function projectMappingViolation(database: Database.Database): string | null {
+  // Reads step-51 tables: passes the provisional gate first, like every operation of the step.
+  schemaTarget(PROJECT_MAPPING_VERSION);
   const clock = database.prepare("SELECT singleton,value,typeof(value) AS type FROM project_mapping_clock LIMIT 2").all() as Array<{ singleton: unknown; value: unknown; type: string }>;
   if (clock.length !== 1 || clock[0].singleton !== 1 || clock[0].type !== "integer" || !Number.isSafeInteger(clock[0].value) || (clock[0].value as number) < 0) return "project mapping clock";
   const value = clock[0].value as number;
@@ -213,7 +245,7 @@ export function projectMappingViolation(database: Database.Database): string | n
       OR typeof(subject_incarnation)<>'integer' OR subject_incarnation<1 OR subject_incarnation>?
       OR typeof(plan_hash)<>'text' OR length(plan_hash)<>64 OR length(CAST(plan_hash AS BLOB))<>64 OR plan_hash GLOB '*[^0-9a-f]*'
       OR typeof(run_receipt)<>'text' OR length(CAST(run_receipt AS BLOB))<>36 OR NOT run_receipt GLOB '${UUID_GLOB}'
-      OR typeof(recorded_at)<>'text' OR recorded_at IS NOT strftime('%Y-%m-%dT%H:%M:%fZ',recorded_at) LIMIT 1`).get(value)) return "project mapping journal";
+      OR typeof(recorded_at)<>'text' OR recorded_at IS NOT strftime('%Y-%m-%dT%H:%M:%fZ',julianday(recorded_at)) LIMIT 1`).get(value)) return "project mapping journal";
   return null;
 }
 
@@ -223,7 +255,8 @@ export interface MappingQuarantine { readonly base: number; readonly final: numb
 /**
  * Reads what the quarantine of `auth fence resume` will stamp, or null when
  * the clock cannot advance: it is missing, malformed, behind a stamp, or would
- * pass {@link MAPPING_CLOCK_MAX}. Writes nothing.
+ * pass {@link MAPPING_CLOCK_MAX}. Writes nothing. Passes the provisional gate
+ * before it reads anything.
  *
  * Every row ends with mapping version `final`, the clock's new value. A row not
  * stamped yet also gets an incarnation of its own, from `base + 1` up, so no
@@ -231,6 +264,7 @@ export interface MappingQuarantine { readonly base: number; readonly final: numb
  * rows, and by one when there are none.
  */
 export function planMappingQuarantine(database: Database.Database): MappingQuarantine | null {
+  schemaTarget(PROJECT_MAPPING_VERSION);
   const clock = database.prepare("SELECT value,typeof(value) AS type FROM project_mapping_clock WHERE singleton=1").all() as Array<{ value: unknown; type: string }>;
   if (clock.length !== 1 || clock[0].type !== "integer" || !Number.isSafeInteger(clock[0].value) || (clock[0].value as number) < 0) return null;
   const base = clock[0].value as number;
@@ -250,9 +284,12 @@ export function planMappingQuarantine(database: Database.Database): MappingQuara
  * clock to `final`; stamp every unstamped row (its own incarnation, version
  * `final`); clear every parent and set every other row's version to `final`.
  * Incarnations already issued, `knowledge_projects` and the journal stay as
- * they are. The guard triggers permit exactly this.
+ * they are. The guard triggers permit exactly this: the new incarnations are
+ * distinct and above every issued one. Passes the provisional gate before it
+ * prepares any statement.
  */
 export function applyMappingQuarantine(database: Database.Database, plan: MappingQuarantine): void {
+  schemaTarget(PROJECT_MAPPING_VERSION);
   database.prepare("UPDATE project_mapping_clock SET value=? WHERE singleton=1").run(plan.final);
   let offset = plan.base;
   for (const table of MAPPED_TABLES) {

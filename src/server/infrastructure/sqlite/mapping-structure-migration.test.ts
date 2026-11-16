@@ -1,5 +1,6 @@
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -8,14 +9,14 @@ import { PROVISIONAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSION } from "./migratio
 import { enableProvisionalSchema } from "./provisional-schema-gate";
 import { initializeSchema } from "./migrations";
 import { inspectSchema } from "./schema-inspection";
-import { validateDatabase } from "./database-validation";
+import { configureDurability, validateDatabase } from "./database-validation";
 import { hashFile, parseManifest, validateBackup, validateSnapshot } from "./backup-validation";
 import { SECURITY_TABLES, securityFenceChecksum, securityTriggers } from "./security-fence-migration";
 import { UPGRADE_MARKER_SECURITY_TABLES, upgradeMarkerChecksum, upgradeMarkerTriggers } from "./upgrade-marker-migration";
 import {
-  applyProjectMappingMigration, MAPPED_TABLES, MAPPING_CLOCK_MAX, PROJECT_MAPPING_COLUMN_DEFINITIONS, PROJECT_MAPPING_COLUMN_SUFFIX,
-  PROJECT_MAPPING_SECURITY_TABLES, PROJECT_MAPPING_VERSION, projectMappingChecksum, projectMappingFenceTriggers, projectMappingMigration,
-  projectMappingTriggers, projectMappingViolation,
+  applyMappingQuarantine, applyProjectMappingMigration, MAPPED_TABLES, MAPPING_CLOCK_MAX, planMappingQuarantine, PROJECT_MAPPING_COLUMN_DEFINITIONS,
+  PROJECT_MAPPING_COLUMN_SUFFIX, PROJECT_MAPPING_SECURITY_TABLES, PROJECT_MAPPING_VERSION, projectMappingChecksum, projectMappingFenceTriggers,
+  projectMappingMigration, projectMappingTriggers, projectMappingViolation,
 } from "./mapping-structure-migration";
 import { SECURITY_COVERAGE, schemaTriggersAt, securityTriggersAt, STEP_TRIGGERS } from "./security-coverage";
 import { rewindProjectMapping, rewindUpgradeMarker } from "./fixtures/schema-rewind";
@@ -24,7 +25,8 @@ import { RemoteVerificationQueries } from "./remote-verification-queries";
 import { maintainSqliteSecurityFence, quarantineAuthority } from "./security-maintenance";
 import { rebuildTable } from "./verification-project-migration";
 import { ProjectDirectoryQueries, type ProjectId, type RegistrationId, type RemoteIdentityId } from "./project-directory-queries";
-import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup } from "./upgrade-maintenance";
+import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup, type UpgradeBackupSource } from "./upgrade-maintenance";
+import { SecurityFence } from "./security-fence";
 import { resolveAppPaths, type AppPaths } from "../../paths";
 import { createControllerBackup } from "../../controller-backup";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
@@ -37,6 +39,7 @@ afterEach(() => { restoreGate(); for (const root of roots.splice(0)) rmSync(root
 const temporary = (prefix = "project-mapping-") => { const root = mkdtempSync(join(tmpdir(), prefix)); roots.push(root); return root; };
 
 const TARGET = PROJECT_MAPPING_VERSION;
+type MappedTableName = typeof MAPPED_TABLES[number];
 const MAX = MAPPING_CLOCK_MAX;
 /** A connection without `worktree_security_pending`, as in ordinary startup before the fence attaches. */
 const ordinary = (path = ":memory:") => new Database(path);
@@ -163,7 +166,7 @@ describe("provisional schema step 51: project mapping structure", () => {
     expect(SUPPORTED_SCHEMA_VERSION).toBe(49);
     expect(projectMappingMigration).toMatchObject({ version: 51, name: "project-mapping-structure" });
     // Pinned while provisional: a change to the step's text is a visible edit here.
-    expect(projectMappingChecksum).toBe("4e4db7be143639fb1ba18d65415be3a8d0d6a34861e0723d7707bc3a7d01f049");
+    expect(projectMappingChecksum).toBe("1c0afefd54f82635da94be7361bbe412ec76bbe49ff50a335ed8a248ea50bc85");
     // Steps 49 and 50 keep their pinned checksums (also pinned in upgrade-marker-migration.test.ts).
     expect(securityFenceChecksum).toBe("320f46981c17c44f4d14ee48298bd91f43d01ab78bf4162c607d2118f29486ae");
     expect(upgradeMarkerChecksum).toBe("d720c5eef040ff328401426cc18fefb560a6be7460cc355a789f169d5d07315c");
@@ -282,7 +285,8 @@ CREATE TABLE project_mapping_journal (`)).toBe(true);
         // The fence triggers of steps 49 and 50 are unchanged, byte for byte.
         for (const trigger of [...securityTriggers, ...upgradeMarkerTriggers]) expect(database.prepare("SELECT sql FROM sqlite_master WHERE name=?").pluck().get(trigger.name)).toBe(trigger.sql);
         // The fence covers the clock, the journal and the new columns: every write reaches the missing observer.
-        // (Each statement passes step 51's own guards, which fire before the older fence triggers.)
+        // (The fence trigger is compiled into each statement, so the missing function fails it when it is
+        // prepared, before any of step 51's own guards runs.)
         for (const statement of ["UPDATE project_mapping_clock SET value=value+1",
           "INSERT INTO remote_project_identities(id,name,source_remote,status) VALUES('remote-new','n','origin','active')",
           `INSERT INTO project_mapping_journal(subject_kind,subject_id,subject_incarnation,project_id,basis,plan_hash,run_receipt,recorded_at) VALUES('registration','r',1,'p','created_project','${PLAN}','${RECEIPT}','${AT}')`]) {
@@ -546,6 +550,9 @@ describe("step 51 guard triggers", () => {
         ["an uppercase plan hash", { plan: PLAN.toUpperCase() }], ["a plan hash with NUL", { plan: `${PLAN}\0` }], ["an uppercase receipt", { receipt: "0000000A-0000-4000-8000-00000000000B" }],
         ["a receipt without dashes", { receipt: RECEIPT.replaceAll("-", "0").slice(0, 36) }], ["a time without milliseconds", { at: "2026-11-15T00:00:00Z" }],
         ["an impossible date", { at: "2026-02-30T00:00:00.000Z" }], ["a numeric time", { at: 2461000 }],
+        ["hour 24", { at: "2026-11-15T24:30:00.000Z" }], ["hour 24 at midnight", { at: "2026-11-15T24:00:00.000Z" }],
+        ["minute 60", { at: "2026-11-15T23:60:00.000Z" }], ["second 60", { at: "2026-11-15T23:59:60.000Z" }],
+        ["29 February of a common year", { at: "2026-02-29T00:00:00.000Z" }], ["an offset", { at: "2026-11-15T00:00:00.000+00:00" }],
       ] as const) expect(() => journal(database, row as Parameters<typeof journal>[1]), name).toThrow(/CHECK constraint failed/);
       // Every legal combination is accepted.
       for (const [kind, basis] of [["registration", "created_project"], ["registration", "accepted_link"], ["registration", "journal_reuse"],
@@ -553,6 +560,9 @@ describe("step 51 guard triggers", () => {
         expect(() => journal(database, { kind, basis }), `${kind} ${basis}`).not.toThrow();
       }
       expect(() => journal(database, { id: "r".repeat(160) })).not.toThrow();
+      // Every time the application writes (`toISOString`) is accepted, at the ends of the range too.
+      for (const at of [new Date().toISOString(), "1970-01-01T00:00:00.000Z", "2024-02-29T23:59:59.999Z", "0000-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z",
+        new Date(Date.UTC(2026, 10, 15, 23, 59, 59, 999)).toISOString()]) expect(() => journal(database, { at }), at).not.toThrow();
     } finally { database.close(); }
   });
 
@@ -573,6 +583,222 @@ describe("step 51 guard triggers", () => {
       expect(clock(database)).toBe(MAX);
       expect(() => validateDatabase(database, 51)).not.toThrow();
     } finally { database.close(); }
+  });
+});
+
+describe("step 51 guards on multi-row, replacing and stamping statements", () => {
+  const ISSUED = "project mapping incarnation is already issued", UNISSUED = "project mapping journal records only issued incarnations";
+  const ADVANCE = "project mapping version must advance with the clock", EXHAUSTED = "project mapping clock exhausted";
+  const STAMP_FAILED = "project mapping stamp failed", APPEND_ONLY = "project mapping journal is append-only";
+  const CLOCK = "(SELECT value FROM project_mapping_clock WHERE singleton=1)";
+  const tick = (database: Database.Database) => { database.prepare(`UPDATE project_mapping_clock SET value=value+1 WHERE singleton=1`).run(); };
+  /** One INSERT ... SELECT of several rows, in the order of `ids`; registrations get ports from `port` up. */
+  const many = (database: Database.Database, table: string, ids: string[], conflict = "", port = 7000) => table === "projects"
+    ? database.prepare(`INSERT ${conflict}INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at) SELECT value,'m','/code/'||value,?+key,'node','[]','/',45000,'x','x' FROM json_each(?) ORDER BY key`).run(port, JSON.stringify(ids))
+    : database.prepare(`INSERT ${conflict}INTO remote_project_identities(id,name,source_remote,status) SELECT value,'m','origin','active' FROM json_each(?) ORDER BY key`).run(JSON.stringify(ids));
+  const pairs = (database: Database.Database, table: string) => stamps(database, table).map(row => [row.id, row.incarnation, row.version]);
+  /** Two unstamped rows in each mapped table, written before the step on the genuine schema, then migrated to 51. */
+  const legacyRows = () => {
+    const database = observed();
+    fresh50(database);
+    const store = registrations(database);
+    const ids: Record<MappedTableName, string[]> = { projects: [registration(store, "legacy-a").id, registration(store, "legacy-b").id], remote_project_identities: ["remote-legacy-a", "remote-legacy-b"] };
+    for (const id of ids.remote_project_identities) identity(database, id);
+    to51(database);
+    return { database, ids };
+  };
+
+  it.each(MAPPED_TABLES)("refuses giving one incarnation to two unstamped rows of %s, in one statement or one at a time, under every conflict clause", table => {
+    const { database, ids } = legacyRows();
+    const other = MAPPED_TABLES.find(name => name !== table)!;
+    try {
+      expect(pairs(database, table)).toEqual(ids[table].map(id => [id, 0, 0]));
+      // The review's two statements: one advance, then one UPDATE that gives every unstamped row the clock's value.
+      // Each row's BEFORE trigger sees the rows the statement already changed, so the second row fails it, and the statement fails whole.
+      tick(database);
+      for (const conflict of ["", "OR REPLACE ", "OR IGNORE ", "OR FAIL "]) {
+        expect(message(() => database.exec(`UPDATE ${conflict}${table} SET incarnation=${CLOCK},mapping_version=${CLOCK} WHERE incarnation=0`)), conflict).toBe(ISSUED);
+        expect(pairs(database, table), conflict).toEqual(ids[table].map(id => [id, 0, 0]));
+      }
+      expect(clock(database)).toBe(1);
+      // Legitimate stamping, one row at a time with its own advance; the second row cannot take the first one's value,
+      // and UPDATE OR REPLACE does not delete the row that holds it.
+      const stampRow = (id: string, value = CLOCK, conflict = "") => database.prepare(`UPDATE ${conflict}${table} SET incarnation=${value},mapping_version=${CLOCK} WHERE id=?`).run(id);
+      expect(stampRow(ids[table][0]).changes).toBe(1);
+      for (const conflict of ["", "OR REPLACE "]) expect(message(() => stampRow(ids[table][1], "1", conflict)), conflict).toBe(ISSUED);
+      tick(database);
+      expect(message(() => stampRow(ids[table][1], "1", "OR REPLACE "))).toBe(ISSUED);
+      expect(stampRow(ids[table][1]).changes).toBe(1);
+      expect(pairs(database, table)).toEqual([[ids[table][0], 1, 1], [ids[table][1], 2, 2]]);
+      // Uniqueness is per table: a row of the other table may hold an issued value a row of this one holds.
+      database.prepare(`UPDATE ${other} SET incarnation=1,mapping_version=${CLOCK} WHERE id=?`).run(ids[other][0]);
+      expect(stampOf(database, other, ids[other][0])).toMatchObject({ incarnation: 1, version: 2 });
+      // A row created now still gets its own stamp through the same guard.
+      many(database, table, ["new-row"]);
+      expect(stampOf(database, table, "new-row")).toMatchObject({ incarnation: 3, version: 3 });
+      expect(() => validateDatabase(database, 51)).not.toThrow();
+    } finally { database.close(); }
+  });
+
+  it("still lets the quarantine give each remaining unstamped row an incarnation of its own", () => {
+    const { database, ids } = legacyRows();
+    try {
+      tick(database);
+      database.prepare(`UPDATE projects SET incarnation=${CLOCK},mapping_version=${CLOCK} WHERE id=?`).run(ids.projects[0]);
+      quarantine(database);
+      expect(clock(database)).toBe(4);
+      expect(pairs(database, "projects")).toEqual([[ids.projects[0], 1, 4], [ids.projects[1], 2, 4]]);
+      expect(pairs(database, "remote_project_identities")).toEqual([[ids.remote_project_identities[0], 3, 4], [ids.remote_project_identities[1], 4, 4]]);
+      expect(() => validateDatabase(database, 51)).not.toThrow();
+    } finally { database.close(); }
+  });
+
+  it("refuses a journal row whose incarnation the clock has not issued", () => {
+    const database = fresh51(observed());
+    try {
+      expect(clock(database)).toBe(0);
+      for (const conflict of ["", "OR IGNORE ", "OR REPLACE "]) {
+        expect(message(() => database.prepare(JOURNAL.replace("INSERT ", `INSERT ${conflict}`)).run("registration", "registration-a", 1, "project-a", "created_project", PLAN, RECEIPT, AT)), conflict).toBe(UNISSUED);
+      }
+      registration(registrations(database));
+      expect(clock(database)).toBe(1);
+      expect(() => journal(database, { incarnation: 1 })).not.toThrow();
+      for (const incarnation of [2, MAX]) expect(message(() => journal(database, { incarnation })), String(incarnation)).toBe(UNISSUED);
+      // A non-integer is left to the CHECK.
+      expect(() => journal(database, { incarnation: "one" })).toThrow(/CHECK constraint failed/);
+      // Without the clock row (removed past its own guard) no incarnation is issued.
+      database.exec("DROP TRIGGER project_mapping_clock_delete; DELETE FROM project_mapping_clock");
+      expect(message(() => journal(database, { incarnation: 1 }))).toBe(UNISSUED);
+      expect(rows(database, "project_mapping_journal")).toHaveLength(1);
+    } finally { database.close(); }
+  });
+
+  it.each(["OFF", "ON"])("keeps journal sequence order equal to append order, recursive_triggers %s", recursive => {
+    const database = fresh51(observed());
+    try {
+      database.pragma(`recursive_triggers=${recursive}`);
+      registration(registrations(database));
+      const insert = (sequence: number | null | undefined) => sequence === undefined
+        ? journal(database)
+        : database.prepare(`INSERT INTO project_mapping_journal(sequence,subject_kind,subject_id,subject_incarnation,project_id,basis,plan_hash,run_receipt,recorded_at) VALUES(?,'registration','registration-a',1,'project-a','created_project','${PLAN}','${RECEIPT}','${AT}')`).run(sequence);
+      expect(insert(undefined).lastInsertRowid).toBe(1);
+      // An explicit sequence above the last leaves a gap; one at or below it (an earlier gap, an existing one, 0) is refused.
+      expect(insert(10).lastInsertRowid).toBe(10);
+      for (const sequence of [5, 2, 10, 1, 0]) expect(message(() => insert(sequence)), String(sequence)).toBe(APPEND_ONLY);
+      expect(message(() => insert(-1))).toMatch(/CHECK constraint failed: sequence>0/);
+      // An omitted or NULL sequence is AUTOINCREMENT's, above the gap.
+      expect(insert(null).lastInsertRowid).toBe(11);
+      expect(insert(undefined).lastInsertRowid).toBe(12);
+      // sqlite_sequence is not protected: lowering it changes nothing, raising it leaves a gap, and order still holds.
+      database.exec("UPDATE sqlite_sequence SET seq=1 WHERE name='project_mapping_journal'");
+      expect(insert(undefined).lastInsertRowid).toBe(13);
+      database.exec("UPDATE sqlite_sequence SET seq=100 WHERE name='project_mapping_journal'");
+      expect(insert(undefined).lastInsertRowid).toBe(101);
+      expect(message(() => insert(50))).toBe(APPEND_ONLY);
+      expect(database.prepare("SELECT sequence FROM project_mapping_journal ORDER BY rowid").pluck().all()).toEqual([1, 10, 11, 12, 13, 101]);
+      expect(() => validateDatabase(database, 51)).not.toThrow();
+    } finally { database.close(); }
+  });
+
+  it.each(MAPPED_TABLES)("stamps each row of a multi-row INSERT ... SELECT on %s with its own successive clock value", table => {
+    const database = fresh51(observed());
+    try {
+      registration(registrations(database));
+      const result = many(database, table, ["m-1", "m-2", "m-3"]);
+      expect(result.changes).toBe(3);
+      expect(clock(database)).toBe(4);
+      expect(pairs(database, table).filter(([id]) => String(id).startsWith("m-"))).toEqual([["m-1", 2, 2], ["m-2", 3, 3], ["m-3", 4, 4]]);
+      expect(() => validateDatabase(database, 51)).not.toThrow();
+    } finally { database.close(); }
+  });
+
+  it.each(["OFF", "ON"])("gives a replaced row a fresh, larger incarnation on the primary key and each unique column, recursive_triggers %s", recursive => {
+    const database = fresh51(observed());
+    try {
+      database.pragma(`recursive_triggers=${recursive}`);
+      many(database, "projects", ["p-1", "p-2", "p-3"]);
+      many(database, "remote_project_identities", ["r-1"]);
+      const replace = (form: string, id: string, path: string, port: number) => database.prepare(`${form} INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
+        VALUES(?,'r',?,?,'node','[]','/',45000,'x','x')`).run(id, path, port);
+      const issued: number[] = [1, 2, 3, 4];
+      const step = (run: () => { changes: number }, projects: Array<[string, number, number]>) => {
+        expect(run().changes).toBe(1);
+        expect(pairs(database, "projects")).toEqual(projects);
+        const fresh = clock(database);
+        expect(fresh).toBe(issued.length + 1);
+        issued.push(fresh);
+      };
+      // The primary key: p-1 again.
+      step(() => replace("INSERT OR REPLACE", "p-1", "/code/new-1", 7101), [["p-2", 2, 2], ["p-3", 3, 3], ["p-1", 5, 5]]);
+      // repository_path: q-2 takes p-2's path.
+      step(() => replace("REPLACE", "q-2", "/code/p-2", 7102), [["p-3", 3, 3], ["p-1", 5, 5], ["q-2", 6, 6]]);
+      // port: q-3 takes p-3's port.
+      step(() => replace("INSERT OR REPLACE", "q-3", "/code/q-3", 7002), [["p-1", 5, 5], ["q-2", 6, 6], ["q-3", 7, 7]]);
+      // Two rows at once: q-2's path and p-1's port.
+      step(() => replace("INSERT OR REPLACE", "q-4", "/code/q-2", 7101), [["q-3", 7, 7], ["q-4", 8, 8]]);
+      // The remote identity's primary key.
+      expect(database.prepare("INSERT OR REPLACE INTO remote_project_identities(id,name,source_remote,status) VALUES('r-1','again','origin','active')").run().changes).toBe(1);
+      expect(pairs(database, "remote_project_identities")).toEqual([["r-1", 9, 9]]);
+      expect(clock(database)).toBe(9);
+      // No stamp was reused or lost: every advance was used once.
+      expect(new Set(issued).size).toBe(issued.length);
+      expect(() => validateDatabase(database, 51)).not.toThrow();
+    } finally { database.close(); }
+  });
+
+  it.each(MAPPED_TABLES.flatMap(table => ["", "OR IGNORE ", "OR REPLACE "].map(conflict => [table, conflict] as const)))("rolls back a whole multi-row INSERT on %s %swhen the clock is exhausted on a later row", (table, conflict) => {
+    const database = fresh51(observed());
+    try {
+      database.prepare("UPDATE project_mapping_clock SET value=? WHERE singleton=1").run(MAX - 2);
+      expect(message(() => many(database, table, ["x-1", "x-2", "x-3"], conflict))).toBe(EXHAUSTED);
+      // The first two rows and their two advances are gone with the statement.
+      expect(rows(database, table)).toEqual([]);
+      expect(clock(database)).toBe(MAX - 2);
+      expect(many(database, table, ["x-1", "x-2"], conflict).changes).toBe(2);
+      expect(pairs(database, table)).toEqual([["x-1", MAX - 1, MAX - 1], ["x-2", MAX, MAX]]);
+    } finally { database.close(); }
+  });
+
+  it.each(MAPPED_TABLES)("rolls back the earlier rows of a multi-row mapping UPDATE on %s when a later row fails a guard", table => {
+    const database = fresh51(observed());
+    try {
+      knowledgeProject(database, "project-a");
+      many(database, table, ["u-1", "u-2", "u-3"]);
+      tick(database);
+      const before = stamps(database, table);
+      // SQLite visits a full-table UPDATE in rowid order: u-1 and u-2 pass, then u-3 brings a version that is not the clock's.
+      expect(message(() => database.exec(`UPDATE ${table} SET parent_project_id='project-a',mapping_version=CASE id WHEN 'u-3' THEN 99 ELSE ${CLOCK} END`))).toBe(ADVANCE);
+      expect(stamps(database, table)).toEqual(before);
+      // Likewise an incarnation guard on the last row, and the clock's own value given twice.
+      database.exec("DROP TRIGGER project_mapping_" + table + "_unstamped_insert; DROP TRIGGER project_mapping_" + table + "_stamp");
+      many(database, table, ["v-1", "v-2"], "", 7100);
+      for (const trigger of tableTriggers(table).filter(trigger => /_(unstamped_insert|stamp)$/.test(trigger.name))) database.exec(trigger.sql);
+      tick(database);
+      const unstamped = stamps(database, table);
+      expect(message(() => database.exec(`UPDATE ${table} SET incarnation=CASE id WHEN 'v-2' THEN 999 ELSE ${CLOCK} END,mapping_version=${CLOCK} WHERE incarnation=0`))).toBe("project mapping incarnation is immutable");
+      expect(stamps(database, table)).toEqual(unstamped);
+      // The same statement passes when every row passes.
+      database.exec(`UPDATE ${table} SET parent_project_id='project-a',mapping_version=${CLOCK} WHERE incarnation<>0`);
+      expect(stamps(database, table).filter(row => row.incarnation !== 0).map(row => [row.parent, row.version])).toEqual([["project-a", 5], ["project-a", 5], ["project-a", 5]]);
+    } finally { database.close(); }
+  });
+
+  // The stamp trigger's postcondition cannot fail through the file's own schema: the stamp's UPDATE can break no
+  // constraint a conflict clause could skip (the clock is below its maximum, the CHECK bounds hold, no unique key
+  // covers the stamps), and recognition refuses any other trigger in the file. A connection's TEMP trigger is not
+  // in the file and recognition does not see it; it can skip the stamp or remove the row, and then the INSERT fails.
+  it.each(MAPPED_TABLES)("refuses with 'stamp failed' on %s when a connection's TEMP trigger skips or undoes the stamp", table => {
+    for (const temporaryTrigger of [`CREATE TEMP TRIGGER skip_stamp BEFORE UPDATE ON main.${table} BEGIN SELECT RAISE(IGNORE); END`,
+      `CREATE TEMP TRIGGER undo_insert AFTER INSERT ON main.${table} BEGIN DELETE FROM main.${table} WHERE rowid=NEW.rowid; END`]) {
+      const database = fresh51(observed());
+      try {
+        database.exec(temporaryTrigger);
+        expect(inspectSchema(database, TARGET)).toEqual({ version: 51, fresh: false });
+        for (const conflict of ["", "OR IGNORE ", "OR REPLACE "]) expect(message(() => many(database, table, ["t-1"], conflict)), `${temporaryTrigger} ${conflict}`).toBe(STAMP_FAILED);
+        expect(rows(database, table)).toEqual([]);
+        expect(clock(database)).toBe(0);
+      } finally { database.close(); }
+    }
   });
 });
 
@@ -781,6 +1007,8 @@ describe("step 51 validation", () => {
       ["a plan hash stored as a BLOB", valid.replace(`'${PLAN}'`, `CAST('${PLAN}' AS BLOB)`)], ["a malformed receipt", valid.replace(RECEIPT, "not-a-uuid")],
       ["an uppercase receipt", valid.replace(RECEIPT, RECEIPT.replace("4000", "4ABC"))], ["a time without milliseconds", valid.replace(AT, "2026-11-15T00:00:00Z")],
       ["an impossible date", valid.replace(AT, "2026-02-30T00:00:00.000Z")], ["a numeric time", valid.replace(`'${AT}'`, "2461000")],
+      ["hour 24", valid.replace(AT, "2026-11-15T24:30:00.000Z")], ["minute 60", valid.replace(AT, "2026-11-15T23:60:00.000Z")],
+      ["second 60", valid.replace(AT, "2026-11-15T23:59:60.000Z")],
     ];
     for (const [name, values] of cases) {
       const { database } = populated();
@@ -972,6 +1200,80 @@ describe("step 51 in the explicit offline upgrade", () => {
       for (const table of MAPPED_TABLES) for (const row of stamps(database, table)) expect(row).toMatchObject({ parent: null, incarnation: 0, version: 0 });
     });
   });
+
+  /** A step-50 snapshot through the Backup API, in the layout `createControllerBackup` writes (which recognises nothing above 49). */
+  async function stepBackup(source: UpgradeBackupSource, destination: string, schemaVersion: number) {
+    mkdirSync(destination, { mode: 0o700 }); mkdirSync(join(destination, "attachments"), { mode: 0o700 });
+    const file = join(destination, "state.sqlite3");
+    closeSync(openSync(file, "wx", 0o600)); await source.backup(file); chmodSync(file, 0o600);
+    const snapshot = new Database(file, { fileMustExist: true });
+    try { snapshot.pragma("journal_mode = DELETE"); } finally { snapshot.close(); }
+    const manifest = { formatVersion: 1, applicationVersion: "test", createdAt: new Date().toISOString(), database: { file: "state.sqlite3", ...hashFile(file), schemaVersion }, attachments: [] };
+    writeFileSync(join(destination, "manifest.json"), JSON.stringify(manifest), { mode: 0o600 });
+    return { root: destination, manifest };
+  }
+  const anyBackup = (paths: AppPaths): UpgradeBackup => async (source, context) => {
+    const destination = join(paths.dataDirectory, "..", `backup-${randomUUID()}`);
+    if (context.schemaVersion <= SUPPORTED_SCHEMA_VERSION) {
+      return { root: destination, manifest: await createControllerBackup(source, destination, { applicationVersion: "test", attachmentDirectory: paths.knowledgeAttachmentDirectory }) };
+    }
+    return stepBackup(source, destination, context.schemaVersion);
+  };
+  /** A fresh installation initialised at step 50: marker complete without a plan hash, witness confirmed. */
+  function freshComplete50() {
+    const paths = resolveAppPaths(join(temporary(), "data")); mkdirSync(paths.dataDirectory, { mode: 0o700 });
+    const database = new Database(paths.databasePath);
+    try {
+      chmodSync(paths.databasePath, 0o600); configureDurability(database);
+      initializeSchema(database, true, at(50), { target: 50 });
+      SecurityFence.attach(join(realpathSync(paths.dataDirectory), "state.sqlite3"), database, true);
+    } finally { database.close(); }
+    return paths;
+  }
+  const readOnly = <T,>(paths: AppPaths, operation: (database: Database.Database) => T) => { const database = unmanagedFixtureDatabase(paths.databasePath, { readonly: true }); try { return operation(database); } finally { database.close(); } };
+  const upgradeFailure = async (operation: () => Promise<unknown> | unknown) => {
+    try { await operation(); } catch (error) { const { name, code, state } = error as { name: string; code: string; state?: string }; return { name, code, state }; }
+    throw new Error("expected a refusal");
+  };
+
+  it.each([["fresh-complete", false], ["upgraded-complete", true]] as const)("upgrades a %s step-50 database to 51, and answers 'already applied' only at the target the plan was applied for", async (_name, upgraded) => {
+    let paths: AppPaths, applied50: string | null = null;
+    if (upgraded) {
+      paths = installation();
+      applied50 = inspectSqliteUpgrade(paths, 50).planHash!;
+      expect(await applySqliteUpgrade(paths, { expect: applied50 }, anyBackup(paths), 50)).toMatchObject({ state: "current", alreadyApplied: false, schemaVersion: 50 });
+    } else paths = freshComplete50();
+    // At 50 it is current, and a repeated apply of its own plan is already applied.
+    expect(inspectSqliteUpgrade(paths, 50)).toMatchObject({ state: "current", schemaVersion: 50, target: 50, marker: "complete", appliedPlan: applied50 });
+    if (applied50) expect(await applySqliteUpgrade(paths, { expect: applied50 }, anyBackup(paths), 50)).toMatchObject({ state: "current", alreadyApplied: true, planHash: applied50, schemaVersion: 50 });
+    // At 51 the complete marker does not make it current: its schema is below the target. The plan lists step 51 only.
+    const inspection = inspectSqliteUpgrade(paths, TARGET);
+    expect(inspection).toMatchObject({ state: "upgrade_needed", nextStep: "upgrade apply", schemaVersion: 50, target: 51, marker: "complete", appliedPlan: applied50 });
+    expect(inspection.plan).toMatchObject({ source: 50, target: 51, acts: [] });
+    expect(inspection.plan?.steps).toEqual([{ version: 51, name: projectMappingMigration.name, checksum: projectMappingChecksum }]);
+    expect(inspection.planHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(inspection.planHash).not.toBe(applied50);
+    // The earlier target-50 plan's hash (or, for a fresh installation, any other) is a plan mismatch, never "already applied".
+    const stale = applied50 ?? "a".repeat(64);
+    expect(await upgradeFailure(() => applySqliteUpgrade(paths, { expect: stale }, anyBackup(paths), TARGET))).toEqual({ name: "UpgradeError", code: "upgrade_plan_mismatch", state: undefined });
+    const result = await applySqliteUpgrade(paths, { expect: inspection.planHash! }, anyBackup(paths), TARGET);
+    expect(result).toMatchObject({ state: "current", alreadyApplied: false, planHash: inspection.planHash, receipt: expect.any(String), planRemoved: true, schemaVersion: 51 });
+    readOnly(paths, database => {
+      expect(inspectSchema(database, TARGET)).toEqual({ version: 51, fresh: false });
+      expect(() => validateDatabase(database, 51)).not.toThrow();
+      expect(database.prepare("SELECT state,plan_hash FROM upgrade_marker").get()).toEqual({ state: "complete", plan_hash: inspection.planHash });
+      expect(clock(database)).toBe(0);
+      for (const table of MAPPED_TABLES) for (const row of stamps(database, table)) expect(row).toMatchObject({ parent: null, incarnation: 0, version: 0 });
+    });
+    // Now current at 51: its own plan is already applied, the stale one is the wrong state.
+    expect(inspectSqliteUpgrade(paths, TARGET)).toMatchObject({ state: "current", schemaVersion: 51, target: 51, marker: "complete", appliedPlan: inspection.planHash });
+    expect(await applySqliteUpgrade(paths, { expect: inspection.planHash! }, anyBackup(paths), TARGET)).toEqual({
+      state: "current", alreadyApplied: true, planHash: inspection.planHash, receipt: null, backup: null, planRemoved: true, schemaVersion: 51 });
+    expect(await upgradeFailure(() => applySqliteUpgrade(paths, { expect: stale }, anyBackup(paths), TARGET))).toEqual({ name: "UpgradeError", code: "upgrade_wrong_state", state: "current" });
+    // Above the target (51 at 50) the ceiling refuses it before any state is read.
+    expect(() => inspectSqliteUpgrade(paths, 50)).toThrow(SCHEMA_REFUSAL);
+    await expect(applySqliteUpgrade(paths, { expect: inspection.planHash! }, anyBackup(paths), 50)).rejects.toThrow(SCHEMA_REFUSAL);
+  });
 });
 
 describe("the project directory (step 51, unmounted)", () => {
@@ -1055,6 +1357,11 @@ describe("the project directory (step 51, unmounted)", () => {
   it("cannot be built, nor step 51 reached, while the provisional switch is off", () => {
     const { database } = directoryFixture();
     const empty = ordinary();
+    // A plan the quarantine would apply here: the fixture has unstamped rows, so applying it would change them.
+    const plan = planMappingQuarantine(database)!;
+    expect(plan.unstamped).toEqual({ projects: 1, remote_project_identities: 1 });
+    const state = () => ({ catalogue: catalogue(database), mapped: mapped(database), clock: rows(database, "project_mapping_clock"), journal: rows(database, "project_mapping_journal") });
+    const before = state();
     restoreGate();
     try {
       for (const [entry, refusal] of Object.entries({
@@ -1063,10 +1370,15 @@ describe("the project directory (step 51, unmounted)", () => {
         initializeSchema: () => initializeSchema(empty, undefined, undefined, { target: TARGET }),
         quarantineAuthority: () => quarantineAuthority(database, RECEIPT, "token", TARGET),
         inspectSchema: () => inspectSchema(database, TARGET),
+        planMappingQuarantine: () => planMappingQuarantine(database),
+        applyMappingQuarantine: () => applyMappingQuarantine(database, plan),
+        projectMappingViolation: () => projectMappingViolation(database),
       })) expect(message(refusal), entry).toBe("Unsupported schema target.");
       // The step-51 database itself is refused as an unknown newer schema.
       expect(message(() => inspectSchema(database))).toMatch(SCHEMA_REFUSAL);
       expect(empty.prepare("SELECT count(*) FROM sqlite_master").pluck().get()).toBe(0);
+      // Nothing changed: no stamp, no clock advance, no journal row.
+      expect(state()).toEqual(before);
     } finally {
       restoreGate = enableProvisionalSchema();
       database.close(); empty.close();
