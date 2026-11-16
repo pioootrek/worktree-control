@@ -1357,7 +1357,7 @@ describe("project mapping: the protections, isolated", () => {
       // After the structural steps, just before the in-transaction proposal reads: the accepted link's time moves.
       if (!changed && this.inTransaction && source.startsWith("SELECT id,name,NULL AS status,parent_project_id AS parent")) {
         changed = true;
-        prepare.call(this, "UPDATE knowledge_project_runtime_links SET linked_at='2025-04-01T10:00:00.000Z'").run();
+        prepare.call(this, "UPDATE knowledge_project_runtime_links SET linked_at=?").run("2025-04-01T10:00:00.000Z");
       }
       if (source.startsWith("SELECT 1 FROM knowledge_projects WHERE id=? UNION ALL")) acted = true;
       return prepare.call(this, source);
