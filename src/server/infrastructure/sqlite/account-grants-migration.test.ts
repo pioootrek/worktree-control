@@ -341,9 +341,11 @@ describe("step 52 grant table guards", () => {
   it("refuses malformed values: a time that is not a canonical real instant, untyped or unbounded IDs, a project on the wrong scope", () => {
     const database = withGrants();
     try {
-      for (const time of ["2026-11-15T24:00:00.000Z", "2026-11-15T00:00:00Z", "2026-11-15 00:00:00.000", "2026-02-30T00:00:00.000Z", "2026-11-15T00:00:00.000+00:00", "", "now"]) {
+      for (const time of ["2026-11-15T24:00:00.000Z", "2026-11-15T00:00:00Z", "2026-11-15 00:00:00.000", "2026-02-30T00:00:00.000Z", "2026-11-15T00:00:00.000+00:00", ""]) {
         expect(() => database.prepare(INSERT).run("owner", "admin", "installation", null, time), time).toThrow(/CHECK constraint failed/);
       }
+      // 'now' makes the Julian-day comparison non-deterministic, which SQLite refuses inside a CHECK.
+      expect(() => database.prepare(INSERT).run("owner", "admin", "installation", null, "now")).toThrow("non-deterministic use of julianday() in a CHECK constraint");
       expect(() => database.exec("INSERT INTO account_grants VALUES('owner','admin','installation',NULL,1)")).toThrow(/CHECK constraint failed/);
       expect(() => database.exec(`INSERT INTO account_grants VALUES(CAST('owner' AS BLOB),'admin','installation',NULL,'${AT}')`)).toThrow(/CHECK constraint failed/);
       expect(() => database.exec(`INSERT INTO account_grants VALUES('owner',CAST('admin' AS BLOB),'installation',NULL,'${AT}')`)).toThrow(/CHECK constraint failed/);
@@ -472,7 +474,9 @@ describe("step 52 validation", () => {
       database.pragma("foreign_keys = OFF");
       raw(database, sql);
       expect(accountGrantsViolation(database)).toBe("account grant shape");
-      expect(() => validateDatabase(database, TARGET)).toThrow(/application invariant failed \(account grant shape\)|foreign key check failed/);
+      // `PRAGMA integrity_check` verifies CHECK constraints too, so validation refuses such a row before
+      // its own rule (or the foreign-key check) is reached: the rule is defence in depth behind the table.
+      expect(() => validateDatabase(database, TARGET)).toThrow(/integrity check failed|application invariant failed \(account grant shape\)|foreign key check failed/);
     } finally { database.close(); }
   });
 

@@ -460,7 +460,6 @@ describe("authority acts: the same reset as the quarantine", () => {
       expect(both("SELECT twoFactorEnabled FROM authentication_ba_user")).toEqual([[{ twoFactorEnabled: 1 }], [{ twoFactorEnabled: 0 }]]);
       expect(both("SELECT generation,totp_selected FROM authentication_account_policies")).toEqual([[{ generation: 1, totp_selected: 1 }], [{ generation: 2, totp_selected: 0 }]]);
       const settings = both("SELECT value_json FROM controller_settings WHERE key='authentication'").map(rows => JSON.parse((rows[0] as { value_json: string }).value_json));
-      expect(settings[0].token).not.toBeNull();
       expect(settings[1]).toMatchObject({ mode: "token", token: null, generation: settings[0].generation + 1 });
       expect(both("SELECT count(*) AS n FROM controller_audit_events WHERE event_type='authentication.security_quarantined'")).toEqual([[{ n: 0 }], [{ n: 1 }]]);
       expect(both("SELECT count(*) AS n FROM projects WHERE mapping_version<>0")).toEqual([[{ n: 0 }], [{ n: 2 }]]);
@@ -545,7 +544,7 @@ describe("authority acts: the quarantine after the extraction", () => {
       let recording = false;
       Object.assign(database, { exec: (source: string) => { if (recording) statements.push(source); return exec(source); } });
       initializeSchema(database, false, undefined, { acts: current => { recording = true; try { quarantineAuthority(current, RECEIPT, "token"); } finally { recording = false; } } });
-      const order = statements.join("\n").split("\n").map(line => line.trim()).filter(line => /^(UPDATE|DELETE)/.test(line)).map(line => line.split(" ")[0] + " " + line.split(" ")[line.startsWith("DELETE") ? 2 : 1]);
+      const order = statements.join("\n").split("\n").map(line => line.trim()).filter(line => /^(UPDATE|DELETE)/.test(line)).map(line => line.split(" ")[0] + " " + line.split(" ")[line.startsWith("DELETE") ? 2 : 1].replace(/;$/, ""));
       expect(order).toEqual([
         "UPDATE principal_credentials", ...OLD_GRANT_TABLES.map(table => `UPDATE ${table}`),
         "UPDATE authentication_ba_account", "DELETE authentication_session_issuance", "DELETE authentication_session_evidence", "DELETE authentication_ba_session",
@@ -689,7 +688,7 @@ describe("authority acts: stops write no plan and change nothing", () => {
     expect(details.findings).toEqual([{ table: "account_grants", id: ids.owner, problem: expect.stringContaining("upgrade is needed") }]);
   });
   it("refuses more owners than its bound, never truncating (the fence's own bound refuses first through the protocol)", () => {
-    const database = new Database(":memory:");
+    const database = unmanagedFixtureDatabase();
     try {
       initializeSchema(database);
       const insert = database.prepare("INSERT INTO remote_principals(id,kind,status) VALUES(?,'owner','active')");

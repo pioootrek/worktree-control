@@ -1338,6 +1338,9 @@ evaluation, so an inconsistent row refuses only itself instead of making the
 installation unstartable. Validation at 52 checks the table's shape rules
 again: role, scope consistency, project presence, typed IDs, canonical time
 and no duplicate; an existing account and project are the foreign-key check's.
+SQLite's `integrity_check`, which validation runs first, already refuses a row
+that breaks a `CHECK`, so the shape rule is defence in depth; the duplicate rule
+is the only one no `CHECK` states.
 
 The table has the three fence triggers of step 49, in a coverage entry for step
 52, and its two guard triggers in the list of the step's other triggers, so the
