@@ -51,7 +51,7 @@ describe.sequential("released fence unclean-stop investigation (no production ch
           expect(changed.length === 0).toBe(beforeCommit);
           const opened = await child("open", root);
           const inside = ["before-row", "after-commit"].includes(edge);
-          expect(opened.code).toBe(inside ? 23 : 0);
+          expect(opened.code).toBe(inside ? 1 : 0);
           expect(opened.stderr).toBe("");
           if (inside) expect(opened.records[0].code).toBe("security_fence_recovery_required");
           record("FENCE_CASE", { operation, edge, kill: killed.signal, opening: opened, database: beforeCommit ? "before" : "after", changed });

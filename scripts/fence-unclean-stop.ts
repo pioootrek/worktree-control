@@ -88,9 +88,9 @@ const emit = (value: unknown) => fs.writeSync(1, JSON.stringify(value) + "\n");
 if (mode === "snapshot") { emit(snapshot()); process.exit(0); }
 if (mode === "open") {
   try { const store = await openControllerStore(databasePath, { backupBeforeMigration: false, applicationVersion: "investigation", attachmentDirectory: join(root, "attachments") }); store.close(); emit({ opened: true }); }
-  catch (error) { emit({ opened: false, code: (error as {code?: string}).code, message: (error as Error).message }); process.exitCode = 23; }
+  catch (error) { emit({ opened: false, code: (error as {code?: string}).code, message: (error as Error).message }); process.exitCode = 1; }
 } else if (mode === "recover") {
-  const before = snapshot(), paths = { ...resolveAppPaths(join(root, "data")), databasePath };
+  const before = snapshot(), paths = { ...resolveAppPaths(join(root, "data"), join(root, "state"), { environment: {} }), databasePath };
   let preflight = "";
   runSecurityFenceCommand(["fence", "inspect"], paths, line => { preflight = JSON.parse(line).preflight; emit({ inspect: JSON.parse(line) }); });
   runSecurityFenceCommand(["fence", "resume", "--expect", preflight, "--mode", "token"], paths, line => emit({ resume: JSON.parse(line) }));
@@ -202,7 +202,7 @@ if (mode === "open") {
       case "agent-test": store.saveTestRun(run, "agent-test-key", { principalId: owner.principalId, credentialId: owner.credential.id, projectId: project.id, sessionOwner: run.actor, reservationId: null, leaseTokenHash: null }); break;
       case "runtime-credential": store.issueScopedCredential({ id: "scoped", principalId: "agent", kind: "agent_token", label: "fixture", tokenPrefix: "fixture", verifierHash: "a".repeat(64), status: "active", expiresAt: null, createdAt: now, revokedAt: null, lastUsedAt: null }, [{ credentialId: "scoped", projectId: project.id, actions: ["projects:read"], createdAt: now }], "local-cli"); break;
       case "membership": store.runtimeMemberships().saveRuntimeMembership({ principalId: "human", scope: { kind: "runtime-project", id: project.id }, role: "reader", permissions: ["projects:read"], expectedRevision: 1 }, "local-cli", now); break;
-      case "factor-reset": protection().resetLocalFactors("subject"); break;
+      case "factor-reset": (store as unknown as { database: import("better-sqlite3").Database }).database.transaction(() => protection().resetLocalFactors("subject"))(); break;
       case "passkey-stage": protection().insertStaged({ credential: "credential", nativeId: "passkey", capability: "capability", subject: "subject", handle: "handle", fingerprint: "fingerprint", generation: 1, policyRevision: 1, sessionId: "session", originalDeadline: deadline, deadline: Date.now() + 600_000 }); break;
       case "provider-sign-in": { const response = await client!.signIn(undefined, "human@fixture.invalid"); if (response.status !== 200) throw new Error(`sign-in status ${response.status}: ${await response.text()}`); break; }
       default: throw new Error(`Unknown operation: ${operation}`);
