@@ -61,6 +61,7 @@ const { resolveAppPaths } = await import("../src/server/paths");
 const { legacySourceEvidence } = await import("../src/server/test-source-attribution");
 const { createControllerShutdown } = await import("../src/server/bootstrap/controller-shutdown");
 const { acquireControllerLock } = await import("../src/server/controller-lock");
+const { openControllerStore } = await import("../src/server/controller-storage");
 const Database = require("better-sqlite3") as typeof import("better-sqlite3");
 function snapshot() {
   const db = new Database(databasePath, { readonly: true, fileMustExist: true });
@@ -86,7 +87,7 @@ function snapshot() {
 const emit = (value: unknown) => fs.writeSync(1, JSON.stringify(value) + "\n");
 if (mode === "snapshot") { emit(snapshot()); process.exit(0); }
 if (mode === "open") {
-  try { const store = new SqliteStateStore(databasePath); store.close(); emit({ opened: true }); }
+  try { const store = await openControllerStore(databasePath, { backupBeforeMigration: false, applicationVersion: "investigation", attachmentDirectory: join(root, "attachments") }); store.close(); emit({ opened: true }); }
   catch (error) { emit({ opened: false, code: (error as {code?: string}).code, message: (error as Error).message }); process.exitCode = 23; }
 } else if (mode === "recover") {
   const before = snapshot(), paths = { ...resolveAppPaths(join(root, "data")), databasePath };
@@ -97,9 +98,10 @@ if (mode === "open") {
 } else if (mode === "write" || mode === "measure") {
   const store = new SqliteStateStore(databasePath);
   const project = store.addProject({ name: "Synthetic", repositoryPath: root, port: 3901, executable: "node", args: [] });
-  const identity = new IdentityService(store), owner = identity.bootstrapOwnerSession();
+  const identity = new IdentityService(store, undefined, undefined, undefined, undefined, store), owner = identity.bootstrapOwnerSession();
   const installation = new AuthenticationService(store).generateToken("local-cli").token;
   store.savePrincipal({ id: "agent", kind: "agent", status: "active" }, "local-cli");
+  store.savePrincipal({ id: "worker-principal", kind: "worker", status: "active" }, "local-cli");
   store.humanAccounts().createHumanPrincipal({ id: "human", kind: "human", status: "active" }, "local-cli");
   const now = new Date().toISOString(), deadline = new Date(Date.now() + 3600_000).toISOString();
   const a: HumanRuntimeAuthority = { principalId: "human", sessionKey: "a".repeat(64), evidenceKey: "b".repeat(64), generation: 1,
@@ -108,7 +110,7 @@ if (mode === "open") {
   store.saveKnowledgeProject(kp, "local-cli");
   store.saveKnowledgeProjectGrant({ principalId: "agent", projectId: kp.id, permissions: ["knowledge:read"], revokedAt: null }, "local-cli");
   store.saveKnowledgeRoleBinding({ principalId: "agent", projectId: kp.id, role: "reader", revision: 1, updatedAt: now, revokedAt: null }, 0, "local-cli");
-  store.saveRemoteWorker({ id: "worker", principalId: "agent", name: "Synthetic", status: "active", lastContactAt: null }, "local-cli");
+  store.saveRemoteWorker({ id: "worker", principalId: "worker-principal", name: "Synthetic", status: "active", lastContactAt: null }, "local-cli");
   store.saveRemoteProjectIdentity({ id: "remote", name: "Synthetic", sourceRemote: "https://fixture.invalid/repo", status: "active" }, "local-cli");
   store.saveRemotePrincipalProjectGrant({ principalId: "agent", projectId: "remote", permissions: ["submit"], revokedAt: null }, "local-cli");
   store.saveRemoteWorkerProjectGrant({ workerId: "worker", projectId: "remote", localProjectId: project.id, presetIds: ["node:test"], revokedAt: null }, "local-cli");
@@ -142,12 +144,24 @@ if (mode === "open") {
     environmentMode: "clean", environmentProfile: "unit", inheritedServerProfile: null, environmentVariableNames: [], source: legacySourceEvidence() };
   let reservationId = "";
   if (["renew", "release", "expiry"].includes(operation)) {
-    reservationId = store.acquireReservation({ projectId: project.id, worktreePath: root, kind: "agent", owner: "fixture", ttlSeconds: 60, maximumLifetimeSeconds: 3600, leaseTokenHash: "c".repeat(64) }).id;
+    reservationId = store.acquireReservation({ projectId: project.id, worktreePath: root, kind: "agent", owner: "fixture", ttlSeconds: 60, maximumLifetimeSeconds: 3600, leaseTokenHash: "c".repeat(64), idempotencyKey: "claim-key" }).id;
     if (operation === "expiry") await sql(`UPDATE reservations SET expires_at='2000-01-01T00:00:00.000Z' WHERE id='${reservationId}'`);
   }
   if (["human-claim", "human-renew", "human-release"].includes(operation)) store.humanRuntime().begin(a, project.id, "key", "c".repeat(64));
   if (["human-renew", "human-release"].includes(operation)) reservationId = store.humanRuntime().claim(a, { projectId: project.id, worktreePath: root, reason: "fixture", key: "key", fingerprint: "c".repeat(64), ttlSeconds: 60 }).id;
   if (operation === "test-persist" || mode === "measure") store.saveTestRun(run);
+  const request = { id: "request", projectId: "remote", workerId: "worker", requestedBy: "agent", commitSha: "a".repeat(40), presetId: "node:test", idempotencyKey: "remote-key", phase: "pending" as const, createdAt: now, updatedAt: now };
+  const attempt = { id: "remote-attempt", requestId: "request", workerId: "worker", sequence: 1, phase: "assigned" as const, version: 1, localRunId: null, executedCommitSha: null, failureKind: null, errorCode: null, acceptedAt: now, lastReportedAt: now, finishedAt: null };
+  if (["remote-assign", "remote-cancel", "remote-report"].includes(operation)) store.createOrReplayRemoteVerificationRequest(request);
+  if (operation === "remote-report") store.createOrReplayRemoteVerificationAttempt(attempt);
+  let proof: Awaited<ReturnType<typeof import("../packages/auth-provider-better-auth-proof/test/fixture").loadProof>> | undefined;
+  let client: import("../packages/auth-provider-better-auth-proof/test/fixture").Client | undefined;
+  if (operation === "provider-sign-in") {
+    const fixture = await import("../packages/auth-provider-better-auth-proof/test/fixture");
+    proof = await fixture.loadProof(store);
+    await proof.runtime.provisionLocal({ principalId: "human", email: "human@fixture.invalid", name: "Synthetic", password: fixture.OWNER_PASSWORD, actor: "local-cli" });
+    client = new fixture.Client(proof.runtime);
+  }
   fs.writeFileSync(join(root, "before.json"), JSON.stringify(snapshot()));
   const protection = () => new AuthenticationProtectionQueries((store as unknown as { database: import("better-sqlite3").Database }).database, "better-auth");
   async function write(iteration = 0) {
@@ -174,6 +188,23 @@ if (mode === "open") {
       case "factor-budget": protection().charge("totp", "subject", 1, 2); break;
       case "factor-receipt": protection().finishReceipt("attempt", "failed", null); break;
       case "installation-token": new AuthenticationService(store).rotateToken("local-cli"); break;
+      case "remote-submit": store.createOrReplayRemoteVerificationRequest(request); break;
+      case "remote-assign": store.createOrReplayRemoteVerificationAttempt(attempt); break;
+      case "remote-cancel": store.remoteConnection.requestCancellation(request.id, now); break;
+      case "remote-report": store.remoteConnection.saveReport({ attemptId: attempt.id, sequence: 1, phase: "running", localRunId: "synthetic-run", logs: [] }); break;
+      case "worker-receipt": store.remoteConnection.accept({ assignment: { requestId: "request", attemptId: attempt.id, workerId: "worker", projectId: "remote", presetId: "node:test", commitSha: request.commitSha }, localRunId: "synthetic-run", reports: [], acknowledgedSequence: 0, cancellationRequested: false }); break;
+      case "human-test": {
+        const actor = "human:test:human";
+        store.saveTestRun({ ...run, actor }, "human-test-key", { kind: "human", projectId: project.id, sessionOwner: actor, authority: a,
+          reference: { principalId: a.principalId, sessionKey: a.sessionKey, evidenceKey: a.evidenceKey, generation: a.generation, deadline, nativeSessionId: "session" }, reservationId: null, fingerprint: "c".repeat(64) });
+        break;
+      }
+      case "agent-test": store.saveTestRun(run, "agent-test-key", { principalId: owner.principalId, credentialId: owner.credential.id, projectId: project.id, sessionOwner: run.actor, reservationId: null, leaseTokenHash: null }); break;
+      case "runtime-credential": store.issueScopedCredential({ id: "scoped", principalId: "agent", kind: "agent_token", label: "fixture", tokenPrefix: "fixture", verifierHash: "a".repeat(64), status: "active", expiresAt: null, createdAt: now, revokedAt: null, lastUsedAt: null }, [{ credentialId: "scoped", projectId: project.id, actions: ["projects:read"], createdAt: now }], "local-cli"); break;
+      case "membership": store.runtimeMemberships().saveRuntimeMembership({ principalId: "human", scope: { kind: "runtime-project", id: project.id }, role: "reader", permissions: ["projects:read"], expectedRevision: 1 }, "local-cli", now); break;
+      case "factor-reset": protection().resetLocalFactors("subject"); break;
+      case "passkey-stage": protection().insertStaged({ credential: "credential", nativeId: "passkey", capability: "capability", subject: "subject", handle: "handle", fingerprint: "fingerprint", generation: 1, policyRevision: 1, sessionId: "session", originalDeadline: deadline, deadline: Date.now() + 600_000 }); break;
+      case "provider-sign-in": { const response = await client!.signIn(undefined, "human@fixture.invalid"); if (response.status !== 200) throw new Error(`sign-in status ${response.status}: ${await response.text()}`); break; }
       default: throw new Error(`Unknown operation: ${operation}`);
     }
   }
@@ -183,7 +214,7 @@ if (mode === "open") {
   const closer = { close() {} };
   const shutdown = createControllerShutdown({ service: { closeAdmission() {}, shutdown: () => store.closeAfterDrain() },
     stopping() {}, userSchedules: undefined, backups: closer, remoteVerification: null, mcp: null,
-    controller: closer, adminSocket: closer, removeServiceAccess() {}, controllerLock });
+    controller: closer, adminSocket: closer, authenticationProvider: proof?.runtime, removeServiceAccess() {}, controllerLock });
   process.once("SIGTERM", () => { void shutdown().then(() => { emit({ graceful: true }); process.exit(0); }, error => { throw error; }); });
   armed = true;
   if (mode === "measure") {

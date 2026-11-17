@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const operations = ["bearer", "test-persist", "claim", "renew", "release", "expiry", "human-intent", "human-claim", "human-renew", "human-release", "settings", "project", "knowledge-project", "grant", "worker-contact", "vault", "provider-session-storage", "session-issuance", "factor-step", "factor-budget", "factor-receipt", "installation-token"];
+const operations = ["bearer", "test-persist", "claim", "renew", "release", "expiry", "human-intent", "human-claim", "human-renew", "human-release", "settings", "project", "knowledge-project", "grant", "worker-contact", "vault", "provider-session-storage", "session-issuance", "factor-step", "factor-budget", "factor-receipt", "installation-token", "remote-submit", "remote-assign", "remote-cancel", "remote-report", "worker-receipt", "human-test", "agent-test", "runtime-credential", "membership", "factor-reset", "passkey-stage", "provider-sign-in"];
+const evidence: unknown[] = [];
+function record(kind: string, value: unknown) {
+  evidence.push({ kind, value });
+  const path = join(tmpdir(), "fence-investigation-evidence.json");
+  writeFileSync(path, JSON.stringify(evidence, null, 2));
+  console.log(kind, JSON.stringify(value));
+  console.log("FENCE_EVIDENCE", path);
+}
 const helper = resolve("scripts/fence-unclean-stop.ts");
 async function child(...args: string[]) {
   const process = spawn(globalThis.process.execPath, ["--import", "tsx", helper, ...args], { stdio: ["ignore", "pipe", "pipe"] });
@@ -46,7 +54,7 @@ describe.sequential("released fence unclean-stop investigation (no production ch
           expect(opened.code).toBe(inside ? 23 : 0);
           expect(opened.stderr).toBe("");
           if (inside) expect(opened.records[0].code).toBe("security_fence_recovery_required");
-          console.log("FENCE_CASE", JSON.stringify({ operation, edge, kill: killed.signal, opening: opened, database: beforeCommit ? "before" : "after", changed }));
+          record("FENCE_CASE", { operation, edge, kill: killed.signal, opening: opened, database: beforeCommit ? "before" : "after", changed });
           if (operation === "bearer" && edge === "after-commit") {
             const recovered = await child("recover", root);
             expect(recovered.code, JSON.stringify(recovered)).toBe(0);
@@ -55,7 +63,7 @@ describe.sequential("released fence unclean-stop investigation (no production ch
             expect(recovery.after.authority.credentials.active).toBe(0);
             expect(recovery.after.authority.passwords.passwords).toBe(0);
             expect(recovery.after.tables.authentication_ba_session.count).toBe(0);
-            console.log("FENCE_RECOVERY", JSON.stringify(recovered.records));
+            record("FENCE_RECOVERY", recovered.records);
             expect((await child("open", root)).code).toBe(0);
           }
         } finally { rmSync(root, { recursive: true, force: true }); }
@@ -70,11 +78,11 @@ describe.sequential("released fence unclean-stop investigation (no production ch
           expect(stopped.records.some(r => r.graceful)).toBe(true);
           const opened = await child("open", root);
           expect(opened.code).toBe(0);
-          console.log("FENCE_TERM", JSON.stringify({ operation, edge, stopped, opened }));
+          record("FENCE_TERM", { operation, edge, stopped, opened });
         } finally { rmSync(root, { recursive: true, force: true }); }
       }
     }
-  }, 240_000);
+  }, 600_000);
   it("measures 200 post-warmup windows for bearer authentication and test-run persistence", async () => {
     for (const operation of ["bearer", "test-persist"]) {
       const root = fixture();
@@ -84,7 +92,7 @@ describe.sequential("released fence unclean-stop investigation (no production ch
         const measurement = result.records.find(r => r.measurement);
         expect(measurement?.publication.n).toBe(200);
         expect(measurement?.visible.n).toBe(200);
-        console.log("FENCE_MEASURE", JSON.stringify(measurement));
+        record("FENCE_MEASURE", measurement);
       } finally { rmSync(root, { recursive: true, force: true }); }
     }
   }, 60_000);
