@@ -146,9 +146,12 @@ describe("SQLite resolver: projects", () => {
    * directories are not production paths.
    */
   it("finds no production path that deletes, replaces or renames a knowledge project", () => {
+    // The table name, optionally schema-qualified (`main.`, `"main".`, `[main].`) and quoted in any SQLite style.
+    const table = String.raw`(?:["\x60\[]?\w+["\x60\]]?\s*\.\s*)?["\x60\[]?knowledge_projects\b["\x60\]]?`;
     const patterns = [
-      /DELETE\s+FROM\s+["`]?knowledge_projects\b/i, /REPLACE\s+INTO\s+["`]?knowledge_projects\b/i, /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?["`]?knowledge_projects\b/i,
-      /ALTER\s+TABLE\s+["`]?knowledge_projects["`]?\s+RENAME/i, /UPDATE\s+(?:OR\s+\w+\s+)?["`]?knowledge_projects["`]?\s+SET\s+(?:(?!WHERE)[^;])*\bid\s*=/i,
+      new RegExp(String.raw`DELETE\s+FROM\s+${table}`, "i"), new RegExp(String.raw`REPLACE\s+INTO\s+${table}`, "i"),
+      new RegExp(String.raw`DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?${table}`, "i"), new RegExp(String.raw`ALTER\s+TABLE\s+${table}\s+RENAME`, "i"),
+      new RegExp(String.raw`UPDATE\s+(?:OR\s+\w+\s+)?${table}\s+SET\s+(?:(?!WHERE)[^;])*\bid\s*=`, "i"),
     ];
     const files: string[] = [];
     const walk = (directory: string) => {
@@ -163,10 +166,48 @@ describe("SQLite resolver: projects", () => {
     expect(hits.filter(file => !file.split("/").includes("fixtures"))).toEqual([]);
     // The scan sees the fixture that does delete projects (a crash-test worker), so it reads what it should.
     expect(hits).toContain("src/server/infrastructure/sqlite/fixtures/attachment-crash-worker.ts");
-    // The patterns would catch each form.
+    // The patterns would catch each form, schema-qualified and quoted ones included.
     for (const text of ["DELETE FROM knowledge_projects WHERE id=?", "INSERT OR REPLACE INTO knowledge_projects VALUES(1)", "UPDATE knowledge_projects SET id=? WHERE id=?",
-      "ALTER TABLE knowledge_projects RENAME TO old", "DROP TABLE IF EXISTS knowledge_projects"]) expect(patterns.some(pattern => pattern.test(text)), text).toBe(true);
+      "ALTER TABLE knowledge_projects RENAME TO old", "DROP TABLE IF EXISTS knowledge_projects", "DELETE FROM main.knowledge_projects WHERE id=?",
+      'DELETE FROM "main"."knowledge_projects"', "DELETE FROM [knowledge_projects]", "REPLACE INTO main . `knowledge_projects` VALUES(1)",
+      "DROP TABLE IF EXISTS temp.knowledge_projects", 'ALTER TABLE "knowledge_projects" RENAME TO old', "UPDATE OR IGNORE main.knowledge_projects SET id=?"]) {
+      expect(patterns.some(pattern => pattern.test(text)), text).toBe(true);
+    }
     expect(patterns.some(pattern => pattern.test("UPDATE knowledge_projects SET name = ?, status = ? WHERE id = ?"))).toBe(false);
+  });
+
+  /**
+   * A form the patterns above miss (a dynamically built table name, a new SQL
+   * spelling) can only appear in a file that names the table. The production
+   * files that do are pinned, so a new one needs a reviewer to confirm it
+   * neither deletes nor recreates a project before it joins this list.
+   */
+  it("pins the production files that name the knowledge projects table", () => {
+    const files: string[] = [];
+    const walk = (directory: string) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) { if (entry.name !== "fixtures") walk(path); }
+        else if ([".ts", ".tsx", ".mts", ".js", ".mjs", ".sql"].includes(extname(entry.name)) && !/\.test\.[cm]?[jt]sx?$/.test(entry.name)
+          && /knowledge_projects\b/.test(readFileSync(path, "utf8"))) files.push(relative(process.cwd(), path).split(sep).join("/"));
+      }
+    };
+    walk(join(process.cwd(), "src"));
+    expect(files.sort()).toEqual([
+      "src/server/infrastructure/sqlite/account-grants-migration.ts",
+      "src/server/infrastructure/sqlite/identity-queries.ts",
+      "src/server/infrastructure/sqlite/knowledge-queries.ts",
+      "src/server/infrastructure/sqlite/knowledge-role-migration.ts",
+      "src/server/infrastructure/sqlite/mapping-structure-migration.ts",
+      "src/server/infrastructure/sqlite/mapping-upgrade-acts.ts",
+      "src/server/infrastructure/sqlite/migrations.ts",
+      "src/server/infrastructure/sqlite/project-directory-queries.ts",
+      "src/server/infrastructure/sqlite/schema-inspection.ts",
+      "src/server/infrastructure/sqlite/security-fence-migration.ts",
+      "src/server/infrastructure/sqlite/security-maintenance.ts",
+      "src/server/infrastructure/sqlite/sqlite-state-store.ts",
+      "src/server/modules/operations/adapters/sqlite-resolver.ts",
+    ]);
   });
 });
 
@@ -208,6 +249,10 @@ describe("SQLite resolver: namespaces and refusals", () => {
     for (const bad of [{ ...row, id: "other" }, { ...row, incarnation: -1 }, { ...row, mappingVersion: 1.5 }, { ...row, mappingVersion: 2 }, { ...row, projectId: "" },
       { ...row, projectId: "../x" }, { ...row, projectId: undefined }, "row"]) {
       expect(() => with_({ registration: () => bad }).resolve(registration("reg")), JSON.stringify(bad)).toThrowError(internal("invalid_stored_registration"));
+    }
+    // A stored ID outside the registration ID grammar is refused even when it matches the request exactly.
+    for (const id of ["../reg", "-reg", "reg/x", "a".repeat(161)]) {
+      expect(() => with_({ registration: () => ({ ...row, id }) }).resolve(registration(id)), id).toThrowError(internal("invalid_stored_registration"));
     }
     for (const stamps of [{ incarnation: 0, mappingVersion: 0 }, { incarnation: 0, mappingVersion: 4 }, { incarnation: 3, mappingVersion: 0 }]) {
       expect(() => with_({ registration: () => ({ ...row, ...stamps }) }).resolve(registration("reg")), JSON.stringify(stamps)).toThrowError(internal("registration_unstamped"));

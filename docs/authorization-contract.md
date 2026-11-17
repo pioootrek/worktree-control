@@ -357,7 +357,9 @@ or mounts them yet.
   test pins that. Archived projects resolve and are listed, because archiving
   changes no mapping. `listProjects` refuses more than 1000 projects.
 
-Versions are unique within one linear history of the database. A restore
+A version is never reused for the same reference within one linear history of
+the database. Versions are not unique across references: every project has
+version 1, and a registration may share a value with another. A restore
 rewinds the mapping clock, and the quarantine is the recovery boundary for
 anything that retains versions.
 

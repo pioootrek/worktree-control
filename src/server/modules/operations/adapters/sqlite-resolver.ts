@@ -1,4 +1,4 @@
-import { projectId, type ProjectId } from "@/shared/contracts/operations";
+import { projectId, registrationId, type ProjectId } from "@/shared/contracts/operations";
 import { OperationError } from "../errors";
 import type { ResolvedResource, ResourceRef } from "../requirements";
 import type { ResourceResolver } from "../resolver";
@@ -52,6 +52,11 @@ function read<T>(lookup: () => T, reason: string): T {
   try { answer = lookup(); } catch { throw new OperationError("internal", reason); }
   if (isThenable(answer)) { absorb(answer); throw new OperationError("internal", "resolver_not_synchronous"); }
   return answer;
+}
+
+/** Whether a stored registration ID is one the contract can carry; `projects.id` has no grammar constraint in the schema. */
+function isRegistrationId(value: string): boolean {
+  try { registrationId(value); return true; } catch { return false; }
 }
 
 /** A contract project ID read from storage; one the contract cannot carry is `internal`/`reason`. */
@@ -122,7 +127,7 @@ export class SqliteResourceResolver implements ResourceResolver {
     const invalid = () => new OperationError("internal", "invalid_stored_registration");
     if (typeof row !== "object") throw invalid();
     const storedId = own(row, "id"), parent = own(row, "projectId"), incarnation = own(row, "incarnation"), version = own(row, "mappingVersion");
-    if (storedId !== id || !isStamp(incarnation) || !isStamp(version) || !(parent === null || isText(parent))) throw invalid();
+    if (storedId !== id || !isRegistrationId(id) || !isStamp(incarnation) || !isStamp(version) || !(parent === null || isText(parent))) throw invalid();
     if (incarnation === 0 || version === 0) throw new OperationError("internal", "registration_unstamped");
     if (version < incarnation) throw invalid();
     const project = parent === null ? null : storedProjectId(parent, "invalid_stored_registration");
