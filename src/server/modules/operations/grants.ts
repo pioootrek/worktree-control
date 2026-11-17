@@ -14,8 +14,9 @@ export interface StoredGrant { accountId: AccountId; role: Role; scope: GrantSco
  *
  * Grants in this model do not expire: revocation is removal. The snapshot
  * therefore contains active grants only, and returning nothing else is the
- * snapshot adapter's obligation (to be tested with the adapter, slice 3). A
- * stored grant has no expiry field and this module never filters by time.
+ * snapshot adapter's obligation (the SQLite adapter,
+ * `adapters/sqlite-grants.ts`, meets it and is tested). A stored grant has no
+ * expiry field and this module never filters by time.
  * Coordination-session leases do expire; they are not part of this slice.
  */
 export interface GrantsSnapshot {

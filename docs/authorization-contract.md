@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
-last_reviewed: "2026-11-15"
+last_reviewed: "2026-11-17"
 source_of_truth: "implemented, unmounted authorization contract for the unreleased breaking auth unification; Knowledge task 040062b4"
 status: "active"
 ---
@@ -327,8 +327,10 @@ as `admin`, which makes every project visible, does not reach it.
 
 Grants do not expire; revocation is removal. The `GrantsSnapshot` port
 contains active grants only. Returning nothing else is the snapshot adapter's
-obligation, to be tested with that adapter in slice 3. Stored grants have no
-expiry field, and the module never filters grants by time.
+obligation; the SQLite adapter below meets it and its tests check it. Stored
+grants have no expiry field, and the module never filters grants by time.
+Grants on an archived project keep counting: nothing filters a grant by the
+status of its project (owner decision of 2026-11-17).
 
 ### SQLite adapters
 
@@ -1193,10 +1195,21 @@ These are not implemented here. The slices that mount the contract own them.
 
 ## Not implemented
 
-- Store adapters: the grants snapshot, resolver and idempotency store exist
-  only as ports and in-memory test doubles. Of the credential verifier, only
-  the provider-session half exists (see [Provider sessions](#provider-sessions));
+- Store adapters. Two SQLite adapters exist, unmounted (see
+  [SQLite adapters](#sqlite-adapters)): the grants snapshot, and a resolver for
+  the `registration` and `project` kinds only. Every other resource kind has
+  no resolver and answers `internal`. The idempotency store exists only as a
+  port and an in-memory test double. Of the credential verifier, only the
+  provider-session half exists (see [Provider sessions](#provider-sessions));
   the agent-token and installation-token verifiers do not.
+- Enforcement of the project ID grammar. A project ID in the contract matches
+  `^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$` (`src/shared/contracts/operations.ts`),
+  and the owner decided on 2026-11-17 that Knowledge project IDs must follow it
+  as part of the breaking release. Nothing enforces it on Knowledge yet: the
+  Knowledge create path and the Hub import still accept any trimmed ID of up
+  to 160 characters, and the unmounted resolver leaves such a project out of
+  its listing. IDs on an installation that do not conform are migrated by
+  hand. The upgrade does not remap them, and the grammar is not widened.
 - Coordination-session issuance and storage (`coordination.*`), any
   transport, and every product operation of the catalogue except
   `session.describe`. The extensions of slice 4 are exercised by test
