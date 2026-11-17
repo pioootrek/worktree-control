@@ -330,6 +330,37 @@ contains active grants only. Returning nothing else is the snapshot adapter's
 obligation, to be tested with that adapter in slice 3. Stored grants have no
 expiry field, and the module never filters grants by time.
 
+### SQLite adapters
+
+Slice 3 (C4) adds two unmounted adapters under
+`src/server/modules/operations/adapters/`. Neither imports SQLite: each takes a
+structural read port, and only tests wire the SQLite query modules
+(`AccountGrantsQueries`, `ProjectDirectoryQueries`) into them. Nothing exports
+or mounts them yet.
+
+- `sqliteGrants` builds the runtime's `grants()`. Each call is one snapshot
+  that reads each account at most once, together with its grants, in one
+  statement. `owner` and `human` accounts are `human`, `agent` accounts are
+  `agent`. Workers, the installation principal, revoked and unknown accounts
+  are `null` and hold no grant, even when their rows remain. Every stored row
+  is returned, because revocation deletes the row; `effectivePermissions`
+  still re-validates the recipient. A stored value outside the schema's
+  domain, a reader fault, more than 5001 grants for one account or more than
+  64 accounts in one snapshot is `internal`.
+- `SqliteResourceResolver` resolves `registration` and `project` only. Every
+  other kind is `internal`/`resource_kind_unsupported`, never `not_found`. A
+  registration resolves to its parent project, or to `null` when it has none.
+  Its version is its `mapping_version`, which the mapping clock advances on
+  every parent change and on re-creation. An unstamped row is `internal`. A
+  project resolves to itself with the constant version 1. This relies on no
+  production path deleting or recreating a `knowledge_projects` row, and a
+  test pins that. Archived projects resolve and are listed, because archiving
+  changes no mapping. `listProjects` refuses more than 1000 projects.
+
+Versions are unique within one linear history of the database. A restore
+rewinds the mapping clock, and the quarantine is the recovery boundary for
+anything that retains versions.
+
 ## Requirements and decisions
 
 An operation declares an `OperationRequirement`. Its `require` field takes one
