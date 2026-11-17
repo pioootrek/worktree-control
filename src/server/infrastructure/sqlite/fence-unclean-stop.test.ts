@@ -35,6 +35,13 @@ function fixture() {
 describe.sequential("released fence unclean-stop investigation (no production changes)", () => {
   it("records each storage traffic class, both sides of commit, outside-window controls, SIGTERM and recovery", async () => {
     for (const operation of operations) {
+      const normalRoot = fixture();
+      try {
+        const completed = await child("write", normalRoot, operation, "none");
+        expect(completed.code, `${operation}: ${JSON.stringify(completed)}`).toBe(0);
+        expect((await child("open", normalRoot)).code).toBe(0);
+        record("FENCE_NO_KILL", { operation, completed });
+      } finally { rmSync(normalRoot, { recursive: true, force: true }); }
       for (const edge of ["before-pending", "before-row", "after-commit", "after-confirmed"]) {
         const root = fixture();
         try {
@@ -84,15 +91,6 @@ describe.sequential("released fence unclean-stop investigation (no production ch
           record("FENCE_TERM", { operation, edge, stopped, opened, database: JSON.stringify(before.checkpoint) === JSON.stringify(after.checkpoint) ? "before" : "after" });
         } finally { rmSync(root, { recursive: true, force: true }); }
       }
-    }
-    for (const operation of ["provider-sign-in", "provider-totp-verify"]) {
-      const root = fixture();
-      try {
-        const completed = await child("write", root, operation, "none");
-        expect(completed.code, JSON.stringify(completed)).toBe(0);
-        expect((await child("open", root)).code).toBe(0);
-        record("FENCE_NO_KILL", { operation, completed });
-      } finally { rmSync(root, { recursive: true, force: true }); }
     }
   }, 600_000);
   it("measures 200 post-warmup windows for bearer authentication and test-run persistence", async () => {
