@@ -70,6 +70,7 @@
     "smoke:package": "node scripts/package-smoke.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:fence-unclean-stop": "vitest run --maxWorkers 1 src/server/infrastructure/sqlite/fence-unclean-stop.test.ts",
     "test:godot-web-cleanup": "vitest run --maxWorkers 1 src/server/godot-web.test.ts src/server/modules/godot-web src/server/modules/lifecycle/project-lifecycle.test.ts src/server/test-job-manager.test.ts",
     "typecheck": "tsc --noEmit",
     "test:run-directory": "vitest run src/server/test-job-run-directory.test.ts src/server/infrastructure/run-directories src/server/test-job-manager.test.ts src/server/modules/environments/profile-validation.test.ts src/architecture.test.ts",
