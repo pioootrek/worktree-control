@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const operations = ["bearer", "test-persist", "claim", "renew", "release", "expiry", "human-intent", "human-claim", "human-renew", "human-release", "settings", "project", "knowledge-project", "grant", "worker-contact", "vault", "provider-session-storage", "session-issuance", "factor-step", "factor-budget", "factor-receipt", "installation-token", "remote-submit", "remote-assign", "remote-cancel", "remote-report", "worker-receipt", "human-test", "agent-test", "runtime-credential", "membership", "factor-reset", "passkey-stage", "provider-sign-in"];
+const operations = ["provider-sign-in", "provider-totp-verify", "vault", "bearer", "test-persist", "claim", "renew", "release", "expiry", "human-intent", "human-claim", "human-renew", "human-release", "settings", "project", "knowledge-project", "grant", "worker-contact", "provider-session-storage", "session-issuance", "factor-step", "factor-budget", "factor-receipt", "installation-token", "remote-submit", "remote-assign", "remote-cancel", "remote-report", "worker-receipt", "human-test", "agent-test", "runtime-credential", "membership", "factor-reset", "passkey-stage"];
 const evidence: unknown[] = [];
 function record(kind: string, value: unknown) {
   evidence.push({ kind, value });
@@ -48,7 +48,7 @@ describe.sequential("released fence unclean-stop investigation (no production ch
           const beforeCommit = ["before-pending", "before-row"].includes(edge);
           expect(JSON.stringify(after.checkpoint) === JSON.stringify(before.checkpoint)).toBe(beforeCommit);
           const changed = Object.keys(before.tables).filter(table => before.tables[table].hash !== after.tables[table].hash);
-          expect(changed.length === 0).toBe(beforeCommit);
+          expect(changed.length === 0, `${operation}/${edge}: ${JSON.stringify({before:before.checkpoint,after:after.checkpoint,changed})}`).toBe(beforeCommit);
           const opened = await child("open", root);
           const inside = ["before-row", "after-commit"].includes(edge);
           expect(opened.code).toBe(inside ? 1 : 0);
@@ -69,7 +69,7 @@ describe.sequential("released fence unclean-stop investigation (no production ch
         } finally { rmSync(root, { recursive: true, force: true }); }
       }
     }
-    for (const operation of ["bearer", "test-persist", "provider-session-storage"]) {
+    for (const operation of ["bearer", "test-persist", "provider-session-storage", "provider-sign-in", "provider-totp-verify"]) {
       for (const edge of ["before-row", "after-commit"]) {
         const root = fixture();
         try {
@@ -81,6 +81,15 @@ describe.sequential("released fence unclean-stop investigation (no production ch
           record("FENCE_TERM", { operation, edge, stopped, opened });
         } finally { rmSync(root, { recursive: true, force: true }); }
       }
+    }
+    for (const operation of ["provider-sign-in", "provider-totp-verify"]) {
+      const root = fixture();
+      try {
+        const completed = await child("write", root, operation, "none");
+        expect(completed.code, JSON.stringify(completed)).toBe(0);
+        expect((await child("open", root)).code).toBe(0);
+        record("FENCE_NO_KILL", { operation, completed });
+      } finally { rmSync(root, { recursive: true, force: true }); }
     }
   }, 600_000);
   it("measures 200 post-warmup windows for bearer authentication and test-run persistence", async () => {

@@ -62,6 +62,7 @@ const { legacySourceEvidence } = await import("../src/server/test-source-attribu
 const { createControllerShutdown } = await import("../src/server/bootstrap/controller-shutdown");
 const { acquireControllerLock } = await import("../src/server/controller-lock");
 const { openControllerStore } = await import("../src/server/controller-storage");
+const { DevVaultCipher } = await import("../src/server/modules/dev-vault/crypto");
 const Database = require("better-sqlite3") as typeof import("better-sqlite3");
 function snapshot() {
   const db = new Database(databasePath, { readonly: true, fileMustExist: true });
@@ -115,6 +116,7 @@ if (mode === "open") {
   store.saveRemotePrincipalProjectGrant({ principalId: "agent", projectId: "remote", permissions: ["submit"], revokedAt: null }, "local-cli");
   store.saveRemoteWorkerProjectGrant({ workerId: "worker", projectId: "remote", localProjectId: project.id, presetIds: ["node:test"], revokedAt: null }, "local-cli");
   store.saveRuntimeDelegation({ principalId: "agent", projectId: project.id, sponsorId: owner.principalId, actions: ["projects:read"], revision: 1, expiresAt: null, updatedAt: now, revokedAt: null }, 0, "local-cli");
+  store.issueScopedCredential({ id: "machine", principalId: "agent", kind: "agent_token", label: "fixture", tokenPrefix: "fixture", verifierHash: "a".repeat(64), status: "active", expiresAt: null, createdAt: now, revokedAt: null, lastUsedAt: null }, [{ credentialId: "machine", projectId: project.id, actions: ["projects:read"], createdAt: now }], "local-cli");
   store.runtimeMemberships().saveRuntimeMembership({ principalId: "human", scope: { kind: "runtime-project", id: project.id }, role: "operator", permissions: ["claims:manage"], expectedRevision: 0 }, "local-cli", now);
   const provider = store.authenticationProviderStorage();
   async function sql(source: string) {
@@ -154,13 +156,34 @@ if (mode === "open") {
   const attempt = { id: "remote-attempt", requestId: "request", workerId: "worker", sequence: 1, phase: "assigned" as const, version: 1, localRunId: null, executedCommitSha: null, failureKind: null, errorCode: null, acceptedAt: now, lastReportedAt: now, finishedAt: null };
   if (["remote-assign", "remote-cancel", "remote-report"].includes(operation)) store.createOrReplayRemoteVerificationRequest(request);
   if (operation === "remote-report") store.createOrReplayRemoteVerificationAttempt(attempt);
+  if (operation === "bearer") {
+    store.acquireReservation({ projectId: project.id, worktreePath: root, kind: "human", owner: "fixture" });
+    store.saveTestRun({ ...run, phase: "running", startedAt: now });
+    store.createOrReplayRemoteVerificationRequest(request);
+    store.createOrReplayRemoteVerificationAttempt(attempt);
+  }
   let proof: Awaited<ReturnType<typeof import("../packages/auth-provider-better-auth-proof/test/fixture").loadProof>> | undefined;
   let client: import("../packages/auth-provider-better-auth-proof/test/fixture").Client | undefined;
-  if (operation === "provider-sign-in") {
+  let totpCode: string | undefined;
+  if (["provider-sign-in", "provider-totp-verify"].includes(operation)) {
     const fixture = await import("../packages/auth-provider-better-auth-proof/test/fixture");
-    proof = await fixture.loadProof(store);
+    // Finite fixture inputs, matching the existing provider proof. These configure
+    // the synthetic provider only; no resource guard environment is changed.
+    const factors = operation === "provider-totp-verify" ? { rpId: "controller.test", rpName: "Synthetic", limits: {
+      totp: { attempts: 32, windowMs: 60_000 }, passkey: { attempts: 32, windowMs: 60_000 }, ticketMs: 15_000, stagingMs: 600_000, capacity: 256, pruneBatch: 16,
+      issuance: { perPeer: { attempts: 64, windowMs: 60_000 }, global: { attempts: 128, windowMs: 60_000 }, peers: 32, nativeChallenges: 256, reservedContexts: 8 },
+      webauthn: { credentialIdBytes: 2048, clientDataBytes: 2048, attestationBytes: 16_384, authenticatorDataBytes: 8192, publicKeyBytes: 2048, signatureBytes: 2048, userHandleBytes: 64, challengeBytes: 64, transports: 8, credentials: 16, responseBytes: 65_536 },
+    } } : undefined;
+    proof = await fixture.loadProof(store, undefined, undefined, factors);
     await proof.runtime.provisionLocal({ principalId: "human", email: "human@fixture.invalid", name: "Synthetic", password: fixture.OWNER_PASSWORD, actor: "local-cli" });
     client = new fixture.Client(proof.runtime);
+    if (operation === "provider-totp-verify") {
+      if ((await client.signIn(undefined, "human@fixture.invalid")).status !== 200) throw new Error("Synthetic TOTP password sign-in failed");
+      const enabled = await client.call("/two-factor/enable", { body: { password: fixture.OWNER_PASSWORD } });
+      if (enabled.status !== 200) throw new Error(`Synthetic TOTP enrollment failed: ${enabled.status}`);
+      const { Authenticator } = await import("../packages/auth-provider-better-auth-proof/test/factor-fixture");
+      totpCode = new Authenticator((await enabled.json()).totpURI).code();
+    }
   }
   fs.writeFileSync(join(root, "before.json"), JSON.stringify(snapshot()));
   const protection = () => new AuthenticationProtectionQueries((store as unknown as { database: import("better-sqlite3").Database }).database, "better-auth");
@@ -181,7 +204,7 @@ if (mode === "open") {
       case "knowledge-project": store.saveKnowledgeProject({ ...kp, name: "Changed", revision: 2 }, "local-cli"); break;
       case "grant": store.saveKnowledgeProjectGrant({ principalId: "agent", projectId: kp.id, permissions: ["knowledge:read", "knowledge:write"], revokedAt: null }, "local-cli"); break;
       case "worker-contact": store.remoteConnection.contact("worker", deadline); break;
-      case "vault": store.devVault.commit(project.id, 0, "synthetic-ciphertext"); break;
+      case "vault": if (!store.devVault.commit(project.id, 0, new DevVaultCipher({ key: () => Buffer.alloc(32, 7) }).seal({ synthetic: true }, project.id, "state", 1))) throw new Error("Synthetic vault write was ignored"); break;
       case "provider-session-storage": await sql(`INSERT INTO authentication_ba_session(id,expiresAt,token,createdAt,updatedAt,userId) VALUES('new-session','${deadline}','new-synthetic-session','${now}','${now}','subject')`); break;
       case "session-issuance": provider.sessionIssuance().insertPending("session", deadline); break;
       case "factor-step": protection().advanceStep("subject", 2); break;
@@ -205,6 +228,7 @@ if (mode === "open") {
       case "factor-reset": (store as unknown as { database: import("better-sqlite3").Database }).database.transaction(() => protection().resetLocalFactors("subject"))(); break;
       case "passkey-stage": protection().insertStaged({ credential: "credential", nativeId: "passkey", capability: "capability", subject: "subject", handle: "handle", fingerprint: "fingerprint", generation: 1, policyRevision: 1, sessionId: "session", originalDeadline: deadline, deadline: Date.now() + 600_000 }); break;
       case "provider-sign-in": { const response = await client!.signIn(undefined, "human@fixture.invalid"); if (response.status !== 200) throw new Error(`sign-in status ${response.status}: ${await response.text()}`); break; }
+      case "provider-totp-verify": { const response = await client!.call("/two-factor/verify-totp", { body: { code: totpCode } }); if (response.status !== 200) throw new Error(`TOTP status ${response.status}: ${await response.text()}`); break; }
       default: throw new Error(`Unknown operation: ${operation}`);
     }
   }
@@ -229,6 +253,6 @@ if (mode === "open") {
     armed = false;
     if (edge !== "none" && !hit) throw new Error(`Did not hit ${operation}/${edge}`);
     if (signal === "SIGTERM" && hit) await new Promise(resolve => setTimeout(resolve, 100));
-    else { store.close(); controllerLock.release(); emit({ completed: true, installationTokenPresent: !!installation }); }
+    else { await proof?.runtime.dispose(); store.close(); controllerLock.release(); emit({ completed: true, installationTokenPresent: !!installation }); }
   }
 } else { throw new Error(`Unknown mode: ${mode}`); }
