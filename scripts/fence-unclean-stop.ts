@@ -132,7 +132,7 @@ if (mode === "open") {
     `INSERT INTO authentication_passkey_trust VALUES('credential','passkey','better-auth','subject','handle','fingerprint',1,'${now}')`,
     `INSERT INTO authentication_factor_contexts(capability,provider_id,purpose,subject,deadline,used) VALUES('capability','better-auth','totp_login','subject',9999999999999,0)`,
     `INSERT INTO authentication_factor_budgets VALUES('better-auth','totp','subject',1,1)`,
-    `INSERT INTO authentication_factor_receipts(attempt_id,provider_id,capability,purpose,subject,epoch,deadline,state) VALUES('attempt','better-auth','capability','totp_login','subject',1,9999999999999,'charged')`,
+    `INSERT INTO authentication_factor_receipts(attempt_id,provider_id,capability,purpose,subject,principal_id,credential,binding,generation,policy_revision,epoch,deadline,state) VALUES('attempt','better-auth','capability','totp_login','subject','${owner.principalId}','totp','synthetic-binding',1,1,1,9999999999999,'charged')`,
     `INSERT INTO authentication_session_evidence VALUES('session','better-auth','subject','password','${now}','${deadline}',1,1,NULL,NULL,'session-attempt')`,
     `INSERT INTO authentication_session_issuance VALUES('session','may_publish','${deadline}')`,
   ]) await sql(source);
