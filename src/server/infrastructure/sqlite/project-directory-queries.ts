@@ -37,6 +37,8 @@ export interface StoredProject { readonly id: ProjectId; readonly status: "activ
 
 /** The most rows one project's listing returns; more is refused, never truncated. */
 export const PROJECT_DIRECTORY_LIMIT = 1000;
+/** The most projects the listing of every project returns; more is refused, never truncated. */
+export const PROJECT_LIST_LIMIT = 1000;
 
 type MappingRow = { id: unknown; parent_project_id: unknown; incarnation: unknown; mapping_version: unknown };
 function stamp(value: unknown): number {
@@ -106,6 +108,19 @@ export class ProjectDirectoryQueries {
     if (!row) return null;
     if (row.status !== "active" && row.status !== "archived") throw new Error("Malformed project status.");
     return { id: text(row.id) as ProjectId, status: row.status };
+  }
+
+  /**
+   * Every project, archived ones included, by ID. Throws above
+   * {@link PROJECT_LIST_LIMIT} projects.
+   */
+  projects(): StoredProject[] {
+    const rows = this.database.prepare("SELECT id,status FROM knowledge_projects ORDER BY id LIMIT ?").all(PROJECT_LIST_LIMIT + 1) as Array<{ id: unknown; status: unknown }>;
+    if (rows.length > PROJECT_LIST_LIMIT) throw new Error("Project listing exceeds its limit.");
+    return rows.map(row => {
+      if (row.status !== "active" && row.status !== "archived") throw new Error("Malformed project status.");
+      return { id: text(row.id) as ProjectId, status: row.status };
+    });
   }
 
   /** The registrations whose parent is this project, by ID. */
