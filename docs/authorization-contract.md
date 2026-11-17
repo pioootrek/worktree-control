@@ -1207,9 +1207,16 @@ These are not implemented here. The slices that mount the contract own them.
   and the owner decided on 2026-11-17 that Knowledge project IDs must follow it
   as part of the breaking release. Nothing enforces it on Knowledge yet: the
   Knowledge create path and the Hub import still accept any trimmed ID of up
-  to 160 characters, and the unmounted resolver leaves such a project out of
-  its listing. IDs on an installation that do not conform are migrated by
-  hand. The upgrade does not remap them, and the grammar is not widened.
+  to 160 characters. The two unmounted adapters treat such an ID differently.
+  The resolver leaves the project out of its listing. The grants snapshot
+  fails harder: `account_grants.project_id` checks length only, so a grant on
+  such a project is a valid stored row, and the adapter validates every row
+  of an account before it answers. One grant on a non-conforming project
+  therefore makes `accountKind` and `grantsFor` answer `internal`
+  (`invalid_stored_grant`) for the whole account, which then reaches no
+  project at all. IDs on an installation that do not conform are migrated by
+  hand, and that has to be finished before the grants snapshot is mounted.
+  The upgrade does not remap them, and the grammar is not widened.
 - Coordination-session issuance and storage (`coordination.*`), any
   transport, and every product operation of the catalogue except
   `session.describe`. The extensions of slice 4 are exercised by test
