@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
+import { ownedFixtureDatabase, unmanagedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
 import { resolveAppPaths, type AppPaths } from "@/server/paths";
 import { createControllerBackup } from "@/server/controller-backup";
 import { IdentityService } from "@/server/modules/identity";
@@ -12,13 +12,15 @@ import { SqliteStateStore } from "@/server/infrastructure/sqlite/sqlite-state-st
 import { AccountGrantsQueries } from "@/server/infrastructure/sqlite/account-grants-queries";
 import { ProjectDirectoryQueries } from "@/server/infrastructure/sqlite/project-directory-queries";
 import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup } from "@/server/infrastructure/sqlite/upgrade-maintenance";
-import { openStoreAt49 } from "@/server/infrastructure/sqlite/fixtures/released-schema";
+import { initializeSchema } from "@/server/infrastructure/sqlite/migrations";
+import { inspectSchema } from "@/server/infrastructure/sqlite/schema-inspection";
+import { schemaAt49, openStoreAt49 } from "@/server/infrastructure/sqlite/fixtures/released-schema";
 import { SUPPORTED_SCHEMA_VERSION } from "@/server/infrastructure/sqlite/migration-registry";
 import type { AuthenticationContext } from "../authentication-context";
 import { effectivePermissions, type GrantsSnapshot } from "../grants";
 import type { ReadOperation } from "../operation";
 import { A, createWorld, InMemoryGrants, MemoryIdempotency, P, presented } from "../operations-fixture";
-import { allOf, onProject, sameProject, type OperationRequirement, type ResourceRef } from "../requirements";
+import { allOf, onProject, resourceKinds, sameProject, type OperationRequirement, type ResourceRef } from "../requirements";
 import { OperationRunner } from "../runner";
 import { fakeStart } from "../runner-fixture";
 import { sqliteGrants } from "./sqlite-grants";
@@ -118,6 +120,24 @@ async function upgradedInstall() {
   return { ...open(paths), ids };
 }
 
+/** Equivalent starting data for gates that must hold on both install paths. */
+async function install(kind: "fresh" | "upgraded") {
+  if (kind === "upgraded") return upgradedInstall();
+  const opened = freshInstall();
+  const { store, database, register, grant } = opened;
+  store.saveRemotePrincipal({ id: "owner", kind: "owner", status: "active" }, "fixture");
+  store.saveRemotePrincipal({ id: "agent-a", kind: "agent", status: "active" }, "fixture");
+  store.saveRemotePrincipal({ id: "worker-a", kind: "worker", status: "active" }, "fixture");
+  store.humanAccounts().createHumanPrincipal({ id: "human-a", kind: "human", status: "active" }, "fixture");
+  for (const id of ["project-a", "project-b", "knowledge"]) {
+    store.saveKnowledgeProject({ id, name: id, status: "active", revision: 1, createdAt: AT, updatedAt: AT }, "fixture");
+  }
+  const registrationA = register("alpha"), registrationB = register("beta");
+  reparent(database, registrationA, "project-a"); reparent(database, registrationB, "project-b");
+  grant("owner", "admin", null);
+  return { ...opened, ids: { owner: "owner", agent: "agent-a", worker: "worker-a", human: "human-a", registrationA, registrationB, knowledge: "knowledge" } };
+}
+
 const notFound = (effect: string | null) => ({ ok: false, error: { category: "not_found", status: 404, reason: "resource_not_found", retry: "none", effect } });
 const runtimeControl: OperationRequirement = { require: onProject("runtime:control", "registration") };
 const parentOf = (database: Database.Database, registration: string) => database.prepare("SELECT parent_project_id FROM projects WHERE id=?").pluck().get(registration) as string | null;
@@ -127,103 +147,179 @@ const answer = (snapshot: GrantsSnapshot, id: string) => ({
   grants: snapshot.grantsFor(A(id)).map(grant => ({ role: grant.role, scope: grant.scope.kind === "project" ? grant.scope.projectId : "installation" })),
 });
 
-describe("C4 gate 1: the owner after the upgrade", () => {
-  it("is a human with exactly admin's permissions through its upgrade grant, and holds nothing once revoked although the row remains", async () => {
-    const { ids, grants, database, runner, world, human, store } = await upgradedInstall();
-    expect(database.prepare("SELECT account_id,role,scope_kind,project_id FROM account_grants").all()).toEqual([{ account_id: ids.owner, role: "admin", scope_kind: "installation", project_id: null }]);
-    expect(grants().accountKind(A(ids.owner))).toBe("human");
-    const actor = { kind: "human" as const, accountId: A(ids.owner) };
-    const expected = effectivePermissions(actor, new InMemoryGrants().account(A(ids.owner), "human").grant({ accountId: A(ids.owner), role: "admin", scope: { kind: "installation" } }));
-    const actual = effectivePermissions(actor, grants());
-    const parentA = P(parentOf(database, ids.registrationA)!);
-    expect([...actual.installation].sort()).toEqual([...expected.installation].sort());
-    expect([...actual.everyProject].sort()).toEqual([...expected.everyProject].sort());
-    expect([...actual.project(parentA)].sort()).toEqual([...expected.project(parentA)].sort());
-    const context = human(ids.owner);
-    const { operation, log } = fakeStart(world, { requirement: runtimeControl });
-    expect(await runner.run(operation, context, { registrationId: ids.registrationA })).toEqual({ ok: true, value: { projectId: parentA, started: true }, replayed: false });
-    expect(log.effects).toEqual([`start ${parentA}`]);
-
-    store.saveRemotePrincipal({ id: ids.owner, kind: "owner", status: "revoked" }, "fixture");
-    expect(grants().accountKind(A(ids.owner))).toBeNull();
-    const none = effectivePermissions(actor, grants());
-    expect([none.installation.size, none.everyProject.size, none.project(parentA).size, none.visible(parentA)]).toEqual([0, 0, 0, false]);
-    expect(database.prepare("SELECT count(*) FROM account_grants WHERE account_id=?").pluck().get(ids.owner)).toBe(1);
-    expect(await runner.run(fakeStart(world, { requirement: runtimeControl }).operation, context, { registrationId: ids.registrationA })).toEqual(notFound("not_started"));
-  });
-
-  it("gives worker and installation principals, and the upgraded agent and human without grants, nothing", async () => {
-    const { ids, grants } = await upgradedInstall();
-    const snapshot = grants();
-    expect(answer(snapshot, ids.worker)).toEqual({ kind: null, grants: [] });
-    expect(answer(snapshot, "installation")).toEqual({ kind: null, grants: [] });
-    expect(answer(snapshot, ids.agent)).toEqual({ kind: "agent", grants: [] });
-    expect(answer(snapshot, ids.human)).toEqual({ kind: "human", grants: [] });
-  });
-});
-
-describe("C4 gate 4: replay and recheck compare the SQLite version", () => {
-  it("refuses a replay after every reparent, back to the original parent too, and withholds a result when the registration moves during the effect", async () => {
-    const { ids, database, runner, world, human, grant } = await upgradedInstall();
-    const p1 = parentOf(database, ids.registrationA)!, p2 = parentOf(database, ids.registrationB)!;
-    grant(ids.human, "operator", p1); grant(ids.human, "operator", p2);
-    const context = human(ids.human);
-    const input = { registrationId: ids.registrationA };
-    const { operation, log } = fakeStart(world, { requirement: runtimeControl });
-    expect(await runner.run(operation, context, input, { idempotencyKey: "k-1" })).toMatchObject({ ok: true, replayed: false });
-    // Unchanged: the retained result replays.
-    expect(await runner.run(operation, context, input, { idempotencyKey: "k-1" })).toMatchObject({ ok: true, replayed: true });
-    const changed = { ok: false, error: { category: "conflict", status: 409, reason: "resource_changed", retry: "none", effect: "not_started" } };
-    reparent(database, ids.registrationA, p2);
-    expect(await runner.run(operation, context, input, { idempotencyKey: "k-1" })).toEqual(changed);
-    reparent(database, ids.registrationA, p1);
-    // Back in the original project, with a new version: still not the stored resolution.
-    expect(await runner.run(operation, context, input, { idempotencyKey: "k-1" })).toEqual(changed);
-    expect(log.effects).toEqual([`start ${p1}`]);
-
-    const moving = fakeStart(world, { requirement: runtimeControl, duringEffect: () => reparent(database, ids.registrationA, p2) });
-    expect(await runner.run(moving.operation, context, input)).toMatchObject({ ok: false, error: { category: "conflict", reason: "resource_changed", effect: "committed" } });
-    expect(moving.log.effects).toEqual([`start ${p1}`]);
-  });
-});
-
-describe("C4 gate 5: a parentless registration through the runner", () => {
-  /** A read over the given slots; `reads` counts reads that ran. */
-  const guarded = (requirement: OperationRequirement, refs: Record<string, ResourceRef>, counter: { reads: number }): ReadOperation<object, { ok: boolean }, { ok: boolean }> => ({
-    id: "fixture.sqlite_parentless_read", kind: "read", requirement, parse: () => ({}), resources: () => refs,
-    read: () => { counter.reads++; return { ok: true }; }, publicKeys: ["ok"], project: value => value,
-  });
-
-  it("lets the installation and the operator act, and answers every account exactly as for a missing registration, admin included", async () => {
-    const { store, runner, world, human, agent, grant, register } = freshInstall();
-    store.saveKnowledgeProject({ id: "project-a", name: "A", status: "active", revision: 1, createdAt: AT, updatedAt: AT }, "fixture");
-    store.saveRemotePrincipal({ id: "owner", kind: "owner", status: "active" }, "fixture");
-    store.humanAccounts().createHumanPrincipal({ id: "maintainer", kind: "human", status: "active" }, "fixture");
-    store.saveRemotePrincipal({ id: "robot", kind: "agent", status: "active" }, "fixture");
-    grant("owner", "admin", null); grant("maintainer", "maintainer", "project-a"); grant("robot", "operator", "project-a");
-    const loose = register("loose");
-    expect(new ProjectDirectoryQueries(ownedFixtureDatabase(store)).registration(loose as never)?.projectId).toBeNull();
-
-    for (const [name, context] of Object.entries({ installation: world.installation().context, operator: world.operator() })) {
+describe.each(["fresh", "upgraded"] as const)("C4 SQLite runner gates (%s install)", kind => {
+  describe("C4 gate 1: the owner with admin", () => {
+    it("is a human with exactly admin's permissions through its install's admin grant, and holds nothing once revoked although the row remains", async () => {
+      const { ids, grants, database, runner, world, human, store } = await install(kind);
+      expect(database.prepare("SELECT account_id,role,scope_kind,project_id FROM account_grants").all()).toEqual([{ account_id: ids.owner, role: "admin", scope_kind: "installation", project_id: null }]);
+      expect(grants().accountKind(A(ids.owner))).toBe("human");
+      const actor = { kind: "human" as const, accountId: A(ids.owner) };
+      const expected = effectivePermissions(actor, new InMemoryGrants().account(A(ids.owner), "human").grant({ accountId: A(ids.owner), role: "admin", scope: { kind: "installation" } }));
+      const actual = effectivePermissions(actor, grants());
+      const parentA = P(parentOf(database, ids.registrationA)!);
+      expect([...actual.installation].sort()).toEqual([...expected.installation].sort());
+      expect([...actual.everyProject].sort()).toEqual([...expected.everyProject].sort());
+      expect([...actual.project(parentA)].sort()).toEqual([...expected.project(parentA)].sort());
+      const context = human(ids.owner);
       const { operation, log } = fakeStart(world, { requirement: runtimeControl });
-      expect(await runner.run(operation, context, { registrationId: loose }), name).toEqual({ ok: true, value: { projectId: null, started: true }, replayed: false });
-      expect(log.effects, name).toEqual(["start (no project)"]);
-    }
-    const accounts = { admin: human("owner"), maintainer: human("maintainer"), robot: agent("robot") };
-    const counter = { reads: 0 };
-    for (const [name, context] of Object.entries(accounts)) {
+      expect(await runner.run(operation, context, { registrationId: ids.registrationA })).toEqual({ ok: true, value: { projectId: parentA, started: true }, replayed: false });
+      expect(log.effects).toEqual([`start ${parentA}`]);
+
+      store.saveRemotePrincipal({ id: ids.owner, kind: "owner", status: "revoked" }, "fixture");
+      expect(grants().accountKind(A(ids.owner))).toBeNull();
+      const none = effectivePermissions(actor, grants());
+      expect([none.installation.size, none.everyProject.size, none.project(parentA).size, none.visible(parentA)]).toEqual([0, 0, 0, false]);
+      expect(database.prepare("SELECT count(*) FROM account_grants WHERE account_id=?").pluck().get(ids.owner)).toBe(1);
+      expect(await runner.run(fakeStart(world, { requirement: runtimeControl }).operation, context, { registrationId: ids.registrationA })).toEqual(notFound("not_started"));
+    });
+
+    it("gives worker and installation principals, and the agent and human without grants, nothing", async () => {
+      const { ids, grants } = await install(kind);
+      const snapshot = grants();
+      expect(answer(snapshot, ids.worker)).toEqual({ kind: null, grants: [] });
+      expect(answer(snapshot, "installation")).toEqual({ kind: null, grants: [] });
+      expect(answer(snapshot, ids.agent)).toEqual({ kind: "agent", grants: [] });
+      expect(answer(snapshot, ids.human)).toEqual({ kind: "human", grants: [] });
+    });
+  });
+
+  describe("C4 gate 2: grants and recipient isolation", () => {
+    it("withholds deleted grants and invalid recipients without borrowing another account's or project's permissions", async () => {
+      const { ids, database, grants, runner, world, human, agent, grant } = await install(kind);
+      const p1 = parentOf(database, ids.registrationA)!, p2 = parentOf(database, ids.registrationB)!;
+      grant(ids.human, "operator", p1);
+      grant(ids.agent, "maintainer", p1); // Stored, but human-only: this row grants the agent nothing.
+      grant(ids.worker, "operator", p1); grant("installation", "operator", p1);
+      const run = (context: AuthenticationContext, registrationId = ids.registrationA) =>
+        runner.run(fakeStart(world, { requirement: runtimeControl }).operation, context, { registrationId });
+      const context = human(ids.human);
+      expect(await run(context)).toMatchObject({ ok: true });
+      expect(await run(context, ids.registrationB)).toEqual(notFound("not_started"));
+      expect(await run(agent(ids.agent))).toEqual(notFound("not_started"));
+      // The verified actor's kind must also match the stored account kind.
+      expect(await run(agent(ids.human))).toEqual(notFound("not_started"));
+      expect(await run(human(ids.agent))).toEqual(notFound("not_started"));
+      expect(grants().grantsFor(A(ids.agent)).map(row => row.role)).toEqual(["maintainer"]);
+      expect(effectivePermissions({ kind: "agent", accountId: A(ids.agent) }, grants()).project(P(p1)).size).toBe(0);
+      for (const id of [ids.worker, "installation", "unknown"]) expect(answer(grants(), id)).toEqual({ kind: null, grants: [] });
+      database.prepare("DELETE FROM account_grants WHERE account_id=? AND role='operator' AND project_id=?").run(ids.human, p1);
+      expect(answer(grants(), ids.human)).toEqual({ kind: "human", grants: [] });
+      expect(await run(context)).toEqual(notFound("not_started"));
+      grant(ids.human, "operator", p2);
+      expect(await run(context)).toEqual(notFound("not_started"));
+    });
+  });
+
+  describe("C4 gate 3: registration versions", () => {
+    it("never reuses a version across P1 to P2 to P1 or deletion and recreation with the same ID", async () => {
+      const { ids, database, resolver, store, runner, world } = await install(kind);
+      const id = ids.registrationA, p1 = parentOf(database, id)!, p2 = parentOf(database, ids.registrationB)!;
+      const ref: ResourceRef = { kind: "registration", id };
+      const seen = [resolver.resolve(ref)!.version];
+      const { operation } = fakeStart(world, { requirement: runtimeControl });
+      const context = world.installation().context;
+      expect(await runner.run(operation, context, { registrationId: id }, { idempotencyKey: "recreated" })).toMatchObject({ ok: true });
+      const record = () => {
+        const version = resolver.resolve(ref)!.version;
+        expect(version).toBeGreaterThan(Math.max(...seen)); seen.push(version);
+      };
+      reparent(database, id, p2); record();
+      reparent(database, id, p1); record();
+      const row = database.prepare("SELECT name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at FROM projects WHERE id=?").get(id) as Record<string, unknown>;
+      store.removeProject(id, "fixture");
+      expect(resolver.resolve(ref)).toBeNull();
+      database.prepare(`INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at,parent_project_id)
+        VALUES(@id,@name,@repository_path,@port,@executable,@args_json,@healthcheck_path,@startup_timeout_ms,@created_at,@updated_at,@parent)`).run({ ...row, id, parent: p1 });
+      record();
+      expect(await runner.run(operation, context, { registrationId: id }, { idempotencyKey: "recreated" }))
+        .toMatchObject({ ok: false, error: { category: "conflict", reason: "resource_changed", effect: "not_started" } });
+    });
+  });
+
+  describe("C4 gate 4: replay and recheck compare the SQLite version", () => {
+    it("refuses a replay after every reparent, back to the original parent too, and withholds a result when the registration moves during the effect", async () => {
+      const { ids, database, runner, world, human, grant } = await install(kind);
+      const p1 = parentOf(database, ids.registrationA)!, p2 = parentOf(database, ids.registrationB)!;
+      grant(ids.human, "operator", p1); grant(ids.human, "operator", p2);
+      const context = human(ids.human);
+      const input = { registrationId: ids.registrationA };
       const { operation, log } = fakeStart(world, { requirement: runtimeControl });
-      const missing = await runner.run(operation, context, { registrationId: "missing-registration" });
-      expect(missing, name).toEqual(notFound("not_started"));
-      expect(await runner.run(operation, context, { registrationId: loose }), name).toEqual(missing);
-      expect(await runner.run({ ...operation }, context, { registrationId: loose }, { idempotencyKey: `k-${name}` }), name).toEqual(missing);
-      expect(log.effects, name).toEqual([]);
-      // No child-resource path: pairing the registration with a project the account holds opens nothing.
-      const paired = { require: allOf(onProject("project:read", "project"), sameProject("project", "registration")) };
-      expect(await runner.run(guarded(paired, { project: { kind: "project", id: "project-a" }, registration: { kind: "registration", id: loose } }, counter), context, {}), name)
-        .toEqual(await runner.run(guarded(paired, { project: { kind: "project", id: "project-a" }, registration: { kind: "registration", id: "missing-registration" } }, counter), context, {}));
-    }
-    expect(counter.reads).toBe(0);
+      expect(await runner.run(operation, context, input, { idempotencyKey: "k-1" })).toMatchObject({ ok: true, replayed: false });
+      // Unchanged: the retained result replays.
+      expect(await runner.run(operation, context, input, { idempotencyKey: "k-1" })).toMatchObject({ ok: true, replayed: true });
+      const changed = { ok: false, error: { category: "conflict", status: 409, reason: "resource_changed", retry: "none", effect: "not_started" } };
+      reparent(database, ids.registrationA, p2);
+      expect(await runner.run(operation, context, input, { idempotencyKey: "k-1" })).toEqual(changed);
+      reparent(database, ids.registrationA, p1);
+      // Back in the original project, with a new version: still not the stored resolution.
+      expect(await runner.run(operation, context, input, { idempotencyKey: "k-1" })).toEqual(changed);
+      expect(log.effects).toEqual([`start ${p1}`]);
+
+      const moving = fakeStart(world, { requirement: runtimeControl, duringEffect: () => reparent(database, ids.registrationA, p2) });
+      expect(await runner.run(moving.operation, context, input)).toMatchObject({ ok: false, error: { category: "conflict", reason: "resource_changed", effect: "committed" } });
+      expect(moving.log.effects).toEqual([`start ${p1}`]);
+    });
+  });
+
+  describe("C4 gate 5: a parentless registration through the runner", () => {
+    /** A read over the given slots; `reads` counts reads that ran. */
+    const guarded = (requirement: OperationRequirement, refs: Record<string, ResourceRef>, counter: { reads: number }): ReadOperation<object, { ok: boolean }, { ok: boolean }> => ({
+      id: "fixture.sqlite_parentless_read", kind: "read", requirement, parse: () => ({}), resources: () => refs,
+      read: () => { counter.reads++; return { ok: true }; }, publicKeys: ["ok"], project: value => value,
+    });
+
+    it("lets the installation and the operator act, and answers every account exactly as for a missing registration, admin included", async () => {
+      const { ids, store, database, runner, world, human, agent, grant, register } = await install(kind);
+      const project = parentOf(database, ids.registrationA)!;
+      grant(ids.human, "maintainer", project); grant(ids.human, "secrets", project);
+      grant(ids.agent, "operator", project); grant(ids.agent, "executor", project); grant(ids.agent, "secrets", project);
+      store.saveRemotePrincipal({ id: "revoked", kind: "agent", status: "revoked" }, "fixture");
+      grant("revoked", "operator", project);
+      const loose = register("loose");
+      expect(new ProjectDirectoryQueries(ownedFixtureDatabase(store)).registration(loose as never)?.projectId).toBeNull();
+
+      for (const [name, context] of Object.entries({ installation: world.installation().context, operator: world.operator() })) {
+        const { operation, log } = fakeStart(world, { requirement: runtimeControl });
+        expect(await runner.run(operation, context, { registrationId: loose }), name).toEqual({ ok: true, value: { projectId: null, started: true }, replayed: false });
+        expect(log.effects, name).toEqual(["start (no project)"]);
+      }
+      const accounts = {
+        admin: human(ids.owner), maintainer: human(ids.human), robot: agent(ids.agent), revoked: agent("revoked"),
+        worker: agent(ids.worker), installationPrincipal: human("installation"), unknown: human("unknown"),
+      };
+      const counter = { reads: 0 };
+      for (const [name, context] of Object.entries(accounts)) {
+        const { operation, log } = fakeStart(world, { requirement: runtimeControl });
+        const missing = await runner.run(operation, context, { registrationId: "missing-registration" });
+        expect(missing, name).toEqual(notFound("not_started"));
+        expect(await runner.run(operation, context, { registrationId: loose }), name).toEqual(missing);
+        expect(await runner.run({ ...operation }, context, { registrationId: loose }, { idempotencyKey: `k-${name}` }), name).toEqual(missing);
+        expect(log.effects, name).toEqual([]);
+        // No child-resource path: pairing the registration with a project the account holds opens nothing.
+        const paired = { require: allOf(onProject("project:read", "project"), sameProject("project", "registration")) };
+        expect(await runner.run(guarded(paired, { project: { kind: "project", id: project }, registration: { kind: "registration", id: loose } }, counter), context, {}), name)
+          .toEqual(await runner.run(guarded(paired, { project: { kind: "project", id: project }, registration: { kind: "registration", id: "missing-registration" } }, counter), context, {}));
+      }
+      expect(counter.reads).toBe(0);
+    });
+  });
+
+  describe("C4 gate 7: unsupported kinds fail as internal through the runner", () => {
+    it("answers internal, not not_found, for a kind this adapter does not resolve, whether or not something with that ID exists", async () => {
+      const { runner, world, ids } = await install(kind);
+      const context = world.installation().context;
+      for (const kind of resourceKinds.filter(value => value !== "project" && value !== "registration")) {
+        for (const id of [ids.knowledge, "missing"]) {
+          const read: ReadOperation<object, { ok: boolean }, { ok: boolean }> = {
+            id: "fixture.sqlite_claim_read", kind: "read", requirement: { require: onProject("project:read", "claim") }, parse: () => ({}),
+            resources: () => ({ claim: { kind, id } }), read: () => ({ ok: true }), publicKeys: ["ok"], project: value => value,
+          };
+          const result = await runner.run(read, context, {});
+          expect(result, id).toMatchObject({ ok: false, error: { category: "internal" } });
+          expect(JSON.stringify(result)).not.toContain("not_found");
+        }
+      }
+    });
   });
 });
 
@@ -280,19 +376,28 @@ describe("C4 gate 6: fresh and upgraded installs answer alike", () => {
   });
 });
 
-describe("C4 gate 7: unsupported kinds fail as internal through the runner", () => {
-  it("answers internal, not not_found, for a kind this adapter does not resolve, whether or not something with that ID exists", async () => {
-    const { runner, world, store } = freshInstall();
-    store.saveKnowledgeProject({ id: "project-a", name: "A", status: "active", revision: 1, createdAt: AT, updatedAt: AT }, "fixture");
-    const context = world.installation().context;
-    for (const id of ["project-a", "missing"]) {
+describe("C4 gate 7: an unstamped SQLite row through the runner", () => {
+  it("answers internal before reading or effect, including when another slot is missing", async () => {
+    // The structural upgrade leaves pre-51 rows unstamped until apply's data acts.
+    const database = schemaAt49(unmanagedFixtureDatabase());
+    try {
+      database.prepare(`INSERT INTO projects(id,name,repository_path,port,executable,args_json,healthcheck_path,startup_timeout_ms,created_at,updated_at)
+        VALUES('legacy','legacy','/code/legacy',5599,'node','[]','/',45000,?,?)`).run(AT, AT);
+      initializeSchema(database, false, candidate => { inspectSchema(candidate, TARGET); });
+      const world = createWorld();
+      const resolver = new SqliteResourceResolver(new ProjectDirectoryQueries(database));
+      const runner = new OperationRunner({ ...world.runtime(), grants: sqliteGrants(new AccountGrantsQueries(database)), resolver });
+      const { operation, log } = fakeStart(world, { requirement: runtimeControl });
+      expect(await runner.run(operation, world.installation().context, { registrationId: "legacy" }))
+        .toMatchObject({ ok: false, error: { category: "internal", reason: "registration_unstamped", effect: "not_started" } });
+      expect(log.effects).toEqual([]);
       const read: ReadOperation<object, { ok: boolean }, { ok: boolean }> = {
-        id: "fixture.sqlite_claim_read", kind: "read", requirement: { require: onProject("project:read", "claim") }, parse: () => ({}),
-        resources: () => ({ claim: { kind: "claim", id } }), read: () => ({ ok: true }), publicKeys: ["ok"], project: value => value,
+        id: "fixture.sqlite_unstamped_read", kind: "read", requirement: runtimeControl, parse: () => ({}),
+        resources: () => ({ registration: { kind: "registration", id: "legacy" }, missing: { kind: "project", id: "missing" } }),
+        read: () => { throw new Error("An unstamped row must never reach the read."); }, publicKeys: ["ok"], project: value => value,
       };
-      const result = await runner.run(read, context, {});
-      expect(result, id).toMatchObject({ ok: false, error: { category: "internal" } });
-      expect(JSON.stringify(result)).not.toContain("not_found");
-    }
+      expect(await runner.run(read, world.operator(), {}))
+        .toMatchObject({ ok: false, error: { category: "internal", reason: "registration_unstamped" } });
+    } finally { database.close(); }
   });
 });
