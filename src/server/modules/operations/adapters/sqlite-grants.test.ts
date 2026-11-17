@@ -155,22 +155,27 @@ describe("SQLite grants adapter: snapshot semantics", () => {
 
 describe("SQLite grants adapter: refusals", () => {
   it("is structurally the SQLite reader, with the same grant bound; over it the read fails as internal", () => {
-    const { reader, database, grants } = accounts();
+    const { reader, database, grants, store, grant } = freshInstall();
+    store.saveRemotePrincipal({ id: "agent-a", kind: "agent", status: "active" }, "fixture");
     const port: AccountGrantsReader = reader;
     expect(port).toBe(reader);
     expect(MAX_ACCOUNT_GRANTS).toBe(ACCOUNT_GRANTS_READ_LIMIT);
+    // Two bulk statements retain the production bound and every fence/row
+    // trigger without thousands of statement preparations and guarded calls.
     database.transaction(() => {
-      let rows = 0;
-      for (let index = 0; rows <= ACCOUNT_GRANTS_READ_LIMIT; index++) {
-        const id = `bulk-${String(index).padStart(5, "0")}`;
-        database.prepare("INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at) VALUES(?,?,'active',1,?,?)").run(id, id, AT, AT);
-        for (const role of ["reader", "operator", "maintainer", "secrets", "executor"]) {
-          if (rows > ACCOUNT_GRANTS_READ_LIMIT) break;
-          database.prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('agent-a',?,'project',?,?)").run(role, id, AT);
-          rows++;
-        }
-      }
+      database.prepare(`WITH RECURSIVE ids(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<?)
+        INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at)
+        SELECT 'bulk-'||n,'bulk','active',1,?,? FROM ids`)
+        .run(Math.ceil(ACCOUNT_GRANTS_READ_LIMIT / 5), AT, AT);
+      database.prepare(`INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at)
+        SELECT 'agent-a',role,'project',id,? FROM knowledge_projects CROSS JOIN
+          (SELECT 'reader' AS role UNION ALL SELECT 'operator' UNION ALL SELECT 'maintainer' UNION ALL SELECT 'secrets' UNION ALL SELECT 'executor')
+        ORDER BY id,role LIMIT ?`).run(AT, ACCOUNT_GRANTS_READ_LIMIT);
     })();
+    expect(grants().grantsFor(A("agent-a"))).toHaveLength(ACCOUNT_GRANTS_READ_LIMIT);
+    // A fresh project makes this one more distinct grant, regardless of sort order.
+    database.prepare("INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at) VALUES('overflow','overflow','active',1,?,?)").run(AT, AT);
+    grant("agent-a", "reader", "overflow");
     expect(() => grants().accountKind(A("agent-a"))).toThrowError(internal("grants_read_failed"));
     expect(() => effectivePermissions({ kind: "agent", accountId: A("agent-a") }, grants())).toThrowError(internal("grants_read_failed"));
   });
