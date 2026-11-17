@@ -116,9 +116,29 @@ export class SqliteResourceResolver implements ResourceResolver {
     const rows: unknown = read(() => this.#reader.projects(), "project_list_read_failed");
     if (!Array.isArray(rows)) throw new OperationError("internal", "invalid_stored_project");
     if (rows.length > MAX_LISTED_PROJECTS) throw new OperationError("internal", "project_list_limit_exceeded");
-    const ids = rows.map(row => this.#projectRow(row).id);
+    const ids: ProjectId[] = [];
+    for (const row of rows) {
+      const id = this.#listedProject(row);
+      if (id !== null) ids.push(id);
+    }
     if (new Set(ids).size !== ids.length) throw new OperationError("internal", "invalid_stored_project");
     return Object.freeze(ids);
+  }
+
+  /**
+   * One listed project's ID, or `null` for a project whose stored ID the
+   * contract cannot carry. Knowledge accepts any trimmed ID of up to 160
+   * characters (for example `team notes` from a Hub import), and the contract
+   * grammar is narrower. No operation can name such a project, so the listing
+   * leaves it out instead of refusing the whole installation because of one
+   * row. A direct lookup of it still refuses only itself (`#project`). A
+   * malformed row (status, non-text ID) is still `internal`.
+   */
+  #listedProject(row: unknown): ProjectId | null {
+    if (typeof row !== "object" || row === null) throw new OperationError("internal", "invalid_stored_project");
+    const id = own(row, "id");
+    if (!PROJECT_STATUSES.includes(own(row, "status")) || !isText(id)) throw new OperationError("internal", "invalid_stored_project");
+    try { return projectId(id); } catch { return null; }
   }
 
   #registration(id: string): ResolvedResource | null {

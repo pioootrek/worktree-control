@@ -126,6 +126,18 @@ describe("SQLite resolver: projects", () => {
     expect(Object.isFrozen(resolver.listProjects())).toBe(true);
   });
 
+  it("leaves out of the listing a project whose Knowledge ID the contract cannot carry, and refuses only that project on lookup", () => {
+    const { resolver, database, project: create } = freshInstall();
+    const valid = create("project-a");
+    // IDs that Knowledge and the Hub import accept (trimmed, at most 160 characters) but the contract grammar does not.
+    for (const id of ["team notes", "_inbox"]) {
+      database.prepare("INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at) VALUES(?,?,'active',1,?,?)").run(id, "p", AT, AT);
+    }
+    expect(resolver.listProjects()).toEqual([valid]);
+    expect(() => resolver.resolve(project("team notes"))).toThrowError(internal("invalid_stored_project"));
+    expect(resolver.resolve(project(valid))?.projectId).toBe(valid);
+  });
+
   it("refuses a listing above its bound as internal, never truncated; the bound equals the SQLite reader's", () => {
     expect(MAX_LISTED_PROJECTS).toBe(PROJECT_LIST_LIMIT);
     const { resolver, database } = freshInstall();
@@ -260,7 +272,7 @@ describe("SQLite resolver: namespaces and refusals", () => {
     for (const bad of [{ id: "p", status: "deleted" }, { id: "other", status: "active" }, { id: "../p", status: "active" }, "p"]) {
       expect(() => with_({ project: () => bad }).resolve(project("p")), JSON.stringify(bad)).toThrowError(internal("invalid_stored_project"));
     }
-    for (const bad of [null, [{ id: "p", status: "gone" }], [{ id: "p", status: "active" }, { id: "p", status: "active" }]]) {
+    for (const bad of [null, [{ id: "p", status: "gone" }], [{ id: "p", status: "active" }, { id: "p", status: "active" }], [{ id: 7, status: "active" }], [{ id: "", status: "active" }], ["p"]]) {
       expect(() => with_({ projects: () => bad }).listProjects(), JSON.stringify(bad)).toThrowError(internal("invalid_stored_project"));
     }
     expect(() => with_({ projects: () => Array.from({ length: MAX_LISTED_PROJECTS + 1 }, (_, index) => ({ id: `p${index}`, status: "active" })) }).listProjects())

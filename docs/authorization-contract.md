@@ -355,7 +355,11 @@ or mounts them yet.
   project resolves to itself with the constant version 1. This relies on no
   production path deleting or recreating a `knowledge_projects` row, and a
   test pins that. Archived projects resolve and are listed, because archiving
-  changes no mapping. `listProjects` refuses more than 1000 projects.
+  changes no mapping. `listProjects` refuses more than 1000 projects. It
+  leaves out a project whose stored Knowledge ID the contract grammar cannot
+  carry (Knowledge accepts any trimmed ID of up to 160 characters), because no
+  operation can name it; a lookup of such a project is `internal` for that
+  project alone.
 
 A version is never reused for the same reference within one linear history of
 the database. Versions are not unique across references: every project has
