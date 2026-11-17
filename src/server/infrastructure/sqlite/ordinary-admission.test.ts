@@ -5,7 +5,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveAppPaths, type AppPaths } from "../../paths";
-import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
+import { ownedFixtureDatabase, unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { createControllerBackup, restoreControllerBackup } from "../../controller-backup";
 import { acknowledgeRecoveredBackupHandoff, preflightSecurityRecoveryHandoff } from "../../modules/backups";
 import { AuthenticationService } from "../../modules/authentication";
@@ -18,6 +18,7 @@ import { applySqliteUpgrade, inspectSqliteUpgrade, type UpgradeBackup } from "./
 import { upgradePlanPath } from "./upgrade-plan";
 import type { UpgradeError } from "./upgrade-contract";
 import { assertOrdinaryAdmission } from "./ordinary-admission";
+import { AccountGrantsQueries } from "./account-grants-queries";
 import { createFencedAt49, createFencedDatabase, openStoreAt49, RELEASED_SCHEMA_VERSION } from "./fixtures/released-schema";
 import { openRemoteRecoveryInspection } from "./remote-connection-inspection";
 import { openControllerStore, openCurrentControllerStore } from "../../controller-storage";
@@ -389,6 +390,90 @@ describe("an admitted current database at the store's opening", () => {
       expect(before.marker).toHaveLength(1);
       new SqliteStateStore(paths.databasePath).close();
       expect({ migrations: rows(path, "schema_migrations"), marker: rows(path, "upgrade_marker") }).toEqual(before);
+    }
+  }, 30_000);
+});
+
+/**
+ * Gate row 5 of slice 3: revoke a grant, then roll the database file back in
+ * place; startup is refused. Revocation of a grant is deletion, so an older
+ * copy of the file holds the deleted row. The copy must never be admitted: it
+ * would bring the revoked grant back. The earlier tests of this file roll back
+ * the upgrade itself; this one rolls back a write of the new `account_grants`
+ * table on a schema-52 database, with the writes made on the store's own
+ * guarded handle (so the table's fence trigger moves the checkpoint epoch and
+ * the store publishes the matching witness), as production writes them.
+ */
+describe("a revoked grant and a database file put back in place at target 52", () => {
+  const AT = "2026-11-17T00:00:00.000Z";
+  const GRANT = "INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('human-a','operator','project','project-a',?)";
+  const REVOKE = "DELETE FROM account_grants WHERE account_id='human-a' AND role='operator' AND project_id='project-a'";
+  const GRANTED = [{ role: "operator", scopeKind: "project", projectId: "project-a" }];
+  type Image = { database: Buffer; wal: Buffer | null };
+  const ENTRY_POINTS: Array<[string, (paths: AppPaths) => void]> = [
+    ["the ordinary admission check", paths => admit(paths, TARGET)],
+    ["the store constructor", paths => new SqliteStateStore(paths.databasePath).close()],
+    ["openControllerStore (controller start)", paths => openControllerStore(paths.databasePath).close()],
+    ["the read-only remote recovery inspection", paths => openRemoteRecoveryInspection(paths.databasePath).close()],
+  ];
+  /** The main file and its WAL as they are now (the WAL is null when it holds no frames). */
+  const image = (paths: AppPaths): Image => {
+    const path = canonical(paths), wal = `${path}-wal`;
+    return { database: readFileSync(path), wal: existsSync(wal) && lstatSync(wal).size > 0 ? readFileSync(wal) : null };
+  };
+  /** What a refusal must leave: the database file, its non-empty WAL and the witness, byte for byte. */
+  const snapshot = (paths: AppPaths) => {
+    const now = image(paths);
+    return { database: sha(now.database), wal: now.wal === null ? "none" : sha(now.wal), witness: readFileSync(witnessPath(paths), "utf8") };
+  };
+  /** The account's grants as the grants reader (the one the operations adapter uses) reads them. */
+  const grantsOf = (store: SqliteStateStore) => new AccountGrantsQueries(ownedFixtureDatabase(store)).accountGrants("human-a")?.grants;
+  /** The grants an image holds, read from a scratch copy so the installation's own files stay as they are. */
+  function grantsInImage(earlier: Image): unknown[] {
+    const directory = mkdtempSync(join(tmpdir(), "ordinary-admission-image-")); roots.push(directory);
+    const path = join(directory, "state.sqlite3");
+    writeFileSync(path, earlier.database, { mode: 0o600 });
+    if (earlier.wal) writeFileSync(`${path}-wal`, earlier.wal, { mode: 0o600 });
+    const reader = unmanagedFixtureDatabase(path);
+    try { return reader.prepare("SELECT account_id AS account,role,scope_kind AS scopeKind,project_id AS projectId FROM account_grants ORDER BY rowid").all(); }
+    finally { reader.close(); }
+  }
+
+  it.each([
+    ["the main file alone", false],
+    ["the main file and its WAL", true],
+  ])("opens the database normally after the revocation, and refuses the same database put back to before it (%s)", async (_name, withWal) => {
+    const paths = fenced49();
+    await upgraded(paths);
+    // 1. Grant a role, as production writes it, and take the copy that holds the grant.
+    let earlier!: Image;
+    let store: SqliteStateStore | undefined = new SqliteStateStore(paths.databasePath);
+    try {
+      store.humanAccounts().createHumanPrincipal({ id: "human-a", kind: "human", status: "active" }, "fixture");
+      store.saveKnowledgeProject({ id: "project-a", name: "project-a", status: "active", revision: 1, createdAt: AT, updatedAt: AT }, "fixture");
+      expect(ownedFixtureDatabase(store).prepare(GRANT).run(AT).changes).toBe(1);
+      expect(grantsOf(store)).toEqual(GRANTED);
+      if (withWal) earlier = image(paths);
+      else { store.close(); store = undefined; earlier = image(paths); store = new SqliteStateStore(paths.databasePath); }
+      expect(earlier.wal !== null, "the copy carries a WAL exactly in the WAL variant").toBe(withWal);
+      // 2. Revoke it: deletion, through the same guarded handle.
+      expect(ownedFixtureDatabase(store).prepare(REVOKE).run().changes).toBe(1);
+      expect(grantsOf(store)).toEqual([]);
+    } finally { store?.close(); }
+    // The copy does hold the grant that was revoked (so admitting it would bring the grant back).
+    expect(grantsInImage(earlier)).toEqual([{ account: "human-a", role: "operator", scopeKind: "project", projectId: "project-a" }]);
+
+    // 3. Control: without the roll-back every ordinary opening admits the database and the grant is gone.
+    for (const [entry, open] of ENTRY_POINTS) expect(verdict(() => open(paths)), entry).toBe("admitted");
+    const reopened = new SqliteStateStore(paths.databasePath);
+    try { expect(grantsOf(reopened), "the revoked grant stays revoked").toEqual([]); } finally { reopened.close(); }
+
+    // 4. Put the older copy back in place (same file, same inode): every ordinary opening refuses it, twice, and changes nothing.
+    rollBack(paths, earlier);
+    const before = snapshot(paths);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      for (const [entry, open] of ENTRY_POINTS) expect(verdict(() => open(paths)), `${entry}, attempt ${attempt}`).toEqual(fence("security_fence_recovery_required"));
+      expect(snapshot(paths), `attempt ${attempt}`).toEqual(before);
     }
   }, 30_000);
 });
