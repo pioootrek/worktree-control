@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const operations = ["provider-sign-in", "provider-totp-verify", "vault", "bearer", "test-persist", "claim", "renew", "release", "expiry", "human-intent", "human-claim", "human-renew", "human-release", "settings", "project", "knowledge-project", "grant", "worker-contact", "provider-session-storage", "session-issuance", "factor-step", "factor-budget", "factor-receipt", "installation-token", "remote-submit", "remote-assign", "remote-cancel", "remote-report", "worker-receipt", "human-test", "agent-test", "runtime-credential", "membership", "factor-reset", "passkey-stage"];
+const operations = ["agent-test", "runtime-credential", "membership", "factor-reset", "passkey-stage", "provider-sign-in", "provider-totp-verify", "vault", "bearer", "test-persist", "claim", "renew", "release", "expiry", "human-intent", "human-claim", "human-renew", "human-release", "settings", "project", "knowledge-project", "grant", "worker-contact", "provider-session-storage", "session-issuance", "factor-step", "factor-budget", "factor-receipt", "installation-token", "remote-submit", "remote-assign", "remote-cancel", "remote-report", "worker-receipt", "human-test"];
 const evidence: unknown[] = [];
 function record(kind: string, value: unknown) {
   evidence.push({ kind, value });
@@ -41,12 +41,13 @@ describe.sequential("released fence unclean-stop investigation (no production ch
           const killed = await child("write", root, operation, edge);
           expect(killed.stderr, `${operation}/${edge}`).toBe("");
           expect(killed.signal, `${operation}/${edge}: ${JSON.stringify(killed)}`).toBe("SIGKILL");
+          expect(killed.records).toContainEqual({ boundary: edge, signal: "SIGKILL" });
           const before = JSON.parse(readFileSync(join(root, "before.json"), "utf8"));
           const state = await child("snapshot", root);
           expect(state.code).toBe(0);
           const after = state.records[0];
           const beforeCommit = ["before-pending", "before-row"].includes(edge);
-          expect(JSON.stringify(after.checkpoint) === JSON.stringify(before.checkpoint)).toBe(beforeCommit);
+          expect(JSON.stringify(after.checkpoint) === JSON.stringify(before.checkpoint), `${operation}/${edge}`).toBe(beforeCommit);
           const changed = Object.keys(before.tables).filter(table => before.tables[table].hash !== after.tables[table].hash);
           expect(changed.length === 0, `${operation}/${edge}: ${JSON.stringify({before:before.checkpoint,after:after.checkpoint,changed})}`).toBe(beforeCommit);
           const opened = await child("open", root);
@@ -54,7 +55,7 @@ describe.sequential("released fence unclean-stop investigation (no production ch
           expect(opened.code).toBe(inside ? 1 : 0);
           expect(opened.stderr).toBe("");
           if (inside) expect(opened.records[0].code).toBe("security_fence_recovery_required");
-          record("FENCE_CASE", { operation, edge, kill: killed.signal, opening: opened, database: beforeCommit ? "before" : "after", changed });
+          record("FENCE_CASE", { operation, edge, boundary: killed.records[0], kill: killed.signal, opening: opened, database: beforeCommit ? "before" : "after", changed });
           if (operation === "bearer" && edge === "after-commit") {
             const recovered = await child("recover", root);
             expect(recovered.code, JSON.stringify(recovered)).toBe(0);
@@ -78,7 +79,9 @@ describe.sequential("released fence unclean-stop investigation (no production ch
           expect(stopped.records.some(r => r.graceful)).toBe(true);
           const opened = await child("open", root);
           expect(opened.code).toBe(0);
-          record("FENCE_TERM", { operation, edge, stopped, opened });
+          const before = JSON.parse(readFileSync(join(root, "before.json"), "utf8"));
+          const after = (await child("snapshot", root)).records[0];
+          record("FENCE_TERM", { operation, edge, stopped, opened, database: JSON.stringify(before.checkpoint) === JSON.stringify(after.checkpoint) ? "before" : "after" });
         } finally { rmSync(root, { recursive: true, force: true }); }
       }
     }

@@ -222,7 +222,7 @@ if (mode === "open") {
           reference: { principalId: a.principalId, sessionKey: a.sessionKey, evidenceKey: a.evidenceKey, generation: a.generation, deadline, nativeSessionId: "session" }, reservationId: null, fingerprint: "c".repeat(64) });
         break;
       }
-      case "agent-test": store.saveTestRun(run, "agent-test-key", { principalId: owner.principalId, credentialId: owner.credential.id, projectId: project.id, sessionOwner: run.actor, reservationId: null, leaseTokenHash: null }); break;
+      case "agent-test": store.saveTestRun({ ...run, actor: "agent:mcp:fixture" }, "agent-test-key", { principalId: "agent", credentialId: "machine", projectId: project.id, sessionOwner: "agent:mcp:fixture", reservationId: null, leaseTokenHash: null }); break;
       case "runtime-credential": store.issueScopedCredential({ id: "scoped", principalId: "agent", kind: "agent_token", label: "fixture", tokenPrefix: "fixture", verifierHash: "a".repeat(64), status: "active", expiresAt: null, createdAt: now, revokedAt: null, lastUsedAt: null }, [{ credentialId: "scoped", projectId: project.id, actions: ["projects:read"], createdAt: now }], "local-cli"); break;
       case "membership": store.runtimeMemberships().saveRuntimeMembership({ principalId: "human", scope: { kind: "runtime-project", id: project.id }, role: "reader", permissions: ["projects:read"], expectedRevision: 1 }, "local-cli", now); break;
       case "factor-reset": (store as unknown as { database: import("better-sqlite3").Database }).database.transaction(() => protection().resetLocalFactors("subject"))(); break;
