@@ -14,8 +14,8 @@ import { schemaTarget } from "./migration-registry";
  * time it was granted. There is no expiry: a grant holds until it is deleted,
  * and revocation is deletion. The step carries structure only: it writes no
  * grant. The upgrade's authority acts write the first `admin` grant
- * (`authority-upgrade-acts.ts`); nothing reads the table yet (the adapter that
- * reads grants comes with a later pull request).
+ * (`authority-upgrade-acts.ts`). The unmounted SQLite grants snapshot reads the
+ * table (`modules/operations/adapters/sqlite-grants.ts`); no mounted code does.
  *
  * What the table enforces, and `validateDatabase` checks again at 52: a known
  * role; a scope kind consistent with the role (from {@link GRANT_ROLE_SCOPES},

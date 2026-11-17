@@ -1667,13 +1667,32 @@ remains.
 
 A proposal, not a decision. It reproduces the ordering of review `ce8aa214`.
 Treat the catalogue as a draft inventory, not as a single implementation pull
-request or a fixed final count. The aim is about 12 to 15 reviewable pull
-requests, split by security boundary rather than equal row count.
+request or a fixed final count. Split pull requests by security boundary rather
+than equal row count. The lead's estimate for the whole of slice 4 is 30 to 40
+pull requests. It extrapolates from slice 3, whose steps C1 to C4 were planned
+as four pull requests and took eleven; it is not a measurement. It replaces an
+earlier aim of 12 to 15.
 
-State on 2026-11-14: item 1 (#129) and slice 2 (session freshness, #133) are
-merged. Slice 3 (projects, roles and the fence) runs next, on the branch
-`integration/auth-unification`, and item 2 depends on both (plan revision 2,
-Knowledge reply `156522ad`; slice 3 plan, reply `84abdf8a`).
+State on 2026-11-17: item 1 (#129), slice 2 (session freshness, #133) and
+steps C0 to C4 of slice 3 (projects, roles and the fence) are merged. Slice 3's
+gate report and documentation (C5) are not. Slice 3 is on the branch
+`integration/auth-unification`. It left two unmounted SQLite adapters: the
+grants snapshot, and a resolver for the `registration` and `project` kinds
+only. Nothing of the operations module is mounted.
+
+Item 2 is split by what each consumer needs, in this order (a proposal, plan
+revision 3 in task 040062b4):
+
+- the read path: the credential verifier, the trusted TCP, unix, MCP and
+  offline boundaries, bootstrap, and one synchronous runtime eligibility
+  predicate for provider sessions. It uses the grants snapshot and resolver
+  that exist;
+- then the four reads of item 3 (`session.describe`, `project.list`,
+  `project.status`, `project.worktrees`);
+- then the bounded synchronous idempotency store with restart repair;
+- then the one retained Knowledge write of item 3;
+- the coordination-session lifecycle, before item 7 and before any cancel or
+  worker report.
 
 1. Contract integration prerequisites: the reviewed deltas of section 1.2,
    admission interfaces for asynchronous work, expected-transition receipts and
@@ -1727,11 +1746,14 @@ Dependency notes.
   pass. Scope the unmounted guard deliberately during integration rather than
   deleting its protection globally. Minimal dashboard migration is still a
   release dependency in slice 5.
-- Before the first family mounts, require real resolver, grants and verifier
-  adapters and the complete transport boundary. Before the first retained write,
-  require the store adapter. Before the first claim, cancel or report, require
-  coordination sessions. Prefer landing these foundations before the first
-  family rather than shipping fixture adapters or transport-local authorization.
+- Hard prerequisites. Before the first family mounts, require real resolver,
+  grants and verifier adapters and the complete transport boundary. Before the
+  first retained write, require the store adapter. Before the first claim,
+  cancel or report, require coordination sessions. Do not ship fixture adapters
+  or transport-local authorization. Beyond these three, no foundation has to
+  land before the first family: mount the four reads as soon as their
+  prerequisites exist, so that a design error shows on four reads and not on
+  twelve families.
 - Future verification must exercise actor by mode by listener by role, hidden and
   missing resources, revocation during waits, effects, replay and streams, and
   ownership and cleanup. No such verification was run for this page.
