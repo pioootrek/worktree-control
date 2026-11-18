@@ -390,6 +390,20 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
   get issuanceBounded(): boolean { return this.#unreleased !== undefined; }
 
   /**
+   * Point-in-time session authority eligibility; only synchronous `true` counts.
+   * Throws and non-boolean storage answers fail closed. Bootstrap will combine
+   * this with the maintenance, stopping and pinned-configuration guard.
+   */
+  isSessionAuthorityEligible(): boolean {
+    try {
+      if (this.disposed !== false || this.#supportsSessionAuthority() !== true) return false;
+      const available: unknown = this.#input.storage.available();
+      if (available && typeof (available as { then?: unknown }).then === "function") Promise.resolve(available).catch(noop);
+      return available === true;
+    } catch { return false; }
+  }
+
+  /**
    * Native responses for private proof callers. No caller can receive a session
    * this way that the global bound did not admit: its return is a conservative
    * publication, so the marker commits first. A failed or uncertain result
@@ -423,6 +437,19 @@ export class AuthenticationProviderRuntime implements ProviderSessionAuthority {
   async resolve(headers: Headers): Promise<ProviderPrincipalResolution | null> {
     const resolved = await this.#resolve(headers);
     return resolved && { session: resolved.session, principalId: resolved.principalId };
+  }
+
+  /**
+   * Verified session and principal for one HTTP request, outside core admission.
+   * Cancellable while queued; `settled` tracks started provider work to its real
+   * end, including after an abort, so callers can retain their capacity slot.
+   */
+  resolveRequest(headers: Headers, options: { signal?: AbortSignal } = {}): BrowserLifetime<ProviderPrincipalResolution | null> {
+    if (!this.#supportsSessionAuthority()) return { result: Promise.reject(unavailable("session authority")), settled: Promise.resolve() };
+    const lifetime = this.#lifetime(() => this.#resolveInBorrow(headers), options, false);
+    const result = lifetime.result.then(resolution => (!resolution || !this.isSessionAuthorityEligible() ? null : { session: resolution.session, principalId: resolution.principalId }));
+    result.catch(noop);
+    return { result, settled: lifetime.settled };
   }
 
   #resolve(headers: Headers): Promise<ActorResolution | null> {
