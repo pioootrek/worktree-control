@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { authenticationModes, type AuthenticationMode } from "@/shared/contracts/operations";
 import { classifyBearer, type AcceptedPath } from "../acceptance";
 import type { CredentialIdentity, CredentialVerifier, VerifiedCredential } from "../authentication-context";
 import { isInstallationTokenId, isInstant, isVerifierHash, settled } from "./credential-values";
@@ -10,26 +11,32 @@ export interface InstallationPolicy {
   readonly token: { readonly id: string; readonly prefix: string; readonly verifierHash: string; readonly createdAt: string } | null;
 }
 export interface InstallationPolicyReader { getAuthenticationPolicy(): InstallationPolicy }
-export interface InstallationVerifierOptions { reader: InstallationPolicyReader }
+export interface InstallationVerifierOptions { mode: AuthenticationMode; reader: InstallationPolicyReader }
 
 // Outside the 36-character lowercase hex/hyphen token-ID grammar. Also a
 // different accepted path, so anonymous and token identities cannot collide.
 const ANONYMOUS_CREDENTIAL_ID = "anonymous-installation";
 const DUMMY_HASH = Buffer.alloc(32);
-const FINGERPRINT_VERSION = "wtc-installation-credential-v1";
+const FINGERPRINT_VERSION = "wtc-installation-credential-v2";
 
 /**
- * Installation and anonymous halves. Reads the stored mode on every call,
- * rather than the old service's immutable controller boot mode. Identity is
- * token ID (or the fixed anonymous ID) and a versioned fingerprint of the mode,
- * authentication generation and, for tokens, all stored token facts. current
- * returns a fresh identity; the boundary compares it with the mint baseline.
+ * Installation and anonymous halves, using the listener's immutable active
+ * mode. The stored mode is validated but only selects the next controller
+ * start. AuthenticationService.setMode and the policy writer preserve the
+ * authentication generation, so a pending selection does not end contexts.
+ * Token facts and generation are read on every verify and current call.
+ * Identity is token ID (or the fixed anonymous ID) and a versioned fingerprint
+ * of active mode, authentication generation and, for tokens, all token facts.
+ * current returns a fresh identity; the boundary compares it with the mint baseline.
  * A throw, thenable or malformed policy is no answer. No usage is written.
  */
 export class InstallationVerifier implements CredentialVerifier {
+  readonly #mode: AuthenticationMode;
   readonly #reader: InstallationPolicyReader;
   constructor(options: InstallationVerifierOptions) {
-    if (typeof options?.reader?.getAuthenticationPolicy !== "function") throw new TypeError("Invalid installation verifier options.");
+    if (!(authenticationModes as readonly string[]).includes(options?.mode)
+      || typeof options?.reader?.getAuthenticationPolicy !== "function") throw new TypeError("Invalid installation verifier options.");
+    this.#mode = options.mode;
     this.#reader = options.reader;
   }
 
@@ -38,12 +45,12 @@ export class InstallationVerifier implements CredentialVerifier {
       if (path !== "installation_token" && path !== "anonymous_installation") return null;
       const policy = this.#policy();
       if (!policy) return null;
-      if (path === "anonymous_installation") return secret === null && policy.mode === "open" ? this.#answer(path, policy) : null;
+      if (path === "anonymous_installation") return secret === null && this.#mode === "open" ? this.#answer(path, policy) : null;
       if (typeof secret !== "string") return null;
       const expected = policy.token ? Buffer.from(policy.token.verifierHash, "hex") : DUMMY_HASH;
       const supplied = createHash("sha256").update(secret, "utf8").digest();
       const matches = expected.length === supplied.length && timingSafeEqual(expected, supplied);
-      return policy.mode === "token" && policy.token && classifyBearer(secret) === "installation_token"
+      return this.#mode === "token" && policy.token && classifyBearer(secret) === "installation_token"
         && secret.slice(4, 40) === policy.token.id && matches ? this.#answer(path, policy) : null;
     } catch { return null; }
   }
@@ -55,8 +62,8 @@ export class InstallationVerifier implements CredentialVerifier {
       if ((path !== "installation_token" && path !== "anonymous_installation") || !Number.isSafeInteger(generation)) return null;
       const policy = this.#policy();
       if (!policy) return null;
-      if (path === "anonymous_installation") return policy.mode === "open" && credentialId === ANONYMOUS_CREDENTIAL_ID ? this.#answer(path, policy) : null;
-      return policy.mode === "token" && policy.token?.id === credentialId ? this.#answer(path, policy) : null;
+      if (path === "anonymous_installation") return this.#mode === "open" && credentialId === ANONYMOUS_CREDENTIAL_ID ? this.#answer(path, policy) : null;
+      return this.#mode === "token" && policy.token?.id === credentialId ? this.#answer(path, policy) : null;
     } catch { return null; }
   }
 
@@ -76,10 +83,10 @@ export class InstallationVerifier implements CredentialVerifier {
   /**
    * UTF-8 JSON.stringify of the ordered array below, without whitespace;
    * SHA-256, first six digest bytes as an unsigned big-endian integer.
-   * Anonymous identities depend only on the mode and authentication generation.
+   * Anonymous identities depend only on active mode and authentication generation.
    */
   #fingerprint(path: "installation_token" | "anonymous_installation", policy: InstallationPolicy): number {
-    const facts = [FINGERPRINT_VERSION, policy.mode, policy.generation];
+    const facts = [FINGERPRINT_VERSION, this.#mode, policy.generation];
     if (path === "installation_token") {
       const token = policy.token!;
       facts.push(token.id, token.prefix, token.verifierHash, token.createdAt);

@@ -46,8 +46,12 @@ export function installationWorld() {
   const policy: Mutable<InstallationPolicy> = { mode: "token", generation: 7,
     token: { id, prefix: `wsi_${id}`, verifierHash: hash(secret), createdAt: iso(NOW) } };
   const reader: { read: () => unknown } = { read: () => policy };
-  const installation = new InstallationVerifier({ reader: { getAuthenticationPolicy: () => reader.read() as InstallationPolicy } });
-  const composite = new CompositeCredentialVerifier({ installation, agent: null, providerSession: null });
-  const boundary = (mode: "open" | "token") => createListenerBoundary({ mode, listener: "api", verifier: composite, open: () => true });
-  return { policy, reader, secret, installation, mint: (wire = secret) => boundary("token").mint(presentedBearer(wire)), anonymous: () => boundary("open").mint(none()) };
+  const policyReader = { getAuthenticationPolicy: () => reader.read() as InstallationPolicy };
+  const installation = new InstallationVerifier({ mode: "token", reader: policyReader });
+  const openInstallation = new InstallationVerifier({ mode: "open", reader: policyReader });
+  const boundary = (mode: "open" | "token", verifier: InstallationVerifier) => createListenerBoundary({ mode, listener: "api",
+    verifier: new CompositeCredentialVerifier({ installation: verifier, agent: null, providerSession: null }), open: () => true });
+  const tokenBoundary = boundary("token", installation), openBoundary = boundary("open", openInstallation);
+  return { policy, reader, secret, installation, openInstallation,
+    mint: (wire = secret) => tokenBoundary.mint(presentedBearer(wire)), anonymous: () => openBoundary.mint(none()) };
 }

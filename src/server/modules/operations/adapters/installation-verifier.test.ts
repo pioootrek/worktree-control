@@ -18,10 +18,13 @@ describe("installation verifier through the real boundary and composite", () => 
     expect(failure(() => w.mint(token("wsi")))).toBe(INVALID);
   });
 
-  it.each(["legacy", "open", "better-auth"] as const)("a token cannot authorize stored mode %s", mode => {
-    const w = installationWorld(), context = w.mint(); w.policy.mode = mode;
-    expect(failure(() => w.mint())).toBe(INVALID);
-    expect(failure(() => context.revalidate())).toBe(GONE);
+  it.each(["token", "open", "better-auth", "legacy"] as const)("active token mode ignores stored selection %s at mint and revalidation", mode => {
+    const w = installationWorld(), context = w.mint(), baseline = context.revalidate();
+    const identity = w.installation.verify("installation_token", w.secret)!.identity;
+    w.policy.mode = mode;
+    expect(w.mint().revalidate()).toEqual(baseline);
+    expect(context.revalidate()).toEqual(baseline);
+    expect(w.installation.current(identity)!.identity).toEqual(identity);
   });
 
   it.each(["id", "generation", "removed token"])("rotation (%s) ends the context", change => {
@@ -53,7 +56,8 @@ describe("installation verifier through the real boundary and composite", () => 
 
   it("pins the token fingerprint version, field order and 48-bit encoding", () => {
     const w = installationWorld(), p = w.policy, t = p.token!;
-    const encoding = JSON.stringify(["wtc-installation-credential-v1", p.mode, p.generation, t.id, t.prefix, t.verifierHash, t.createdAt]);
+    p.mode = "better-auth";
+    const encoding = JSON.stringify(["wtc-installation-credential-v2", "token", p.generation, t.id, t.prefix, t.verifierHash, t.createdAt]);
     const expected = createHash("sha256").update(encoding, "utf8").digest().readUIntBE(0, 6);
     const generation = w.installation.verify("installation_token", w.secret)!.identity.generation;
     expect(generation).toBe(expected);
@@ -61,47 +65,63 @@ describe("installation verifier through the real boundary and composite", () => 
   });
 
   it("pins the anonymous fingerprint version and fields, excluding token facts", () => {
-    const w = installationWorld(); w.policy.mode = "open";
-    const encoding = JSON.stringify(["wtc-installation-credential-v1", "open", w.policy.generation]);
+    const w = installationWorld();
+    const encoding = JSON.stringify(["wtc-installation-credential-v2", "open", w.policy.generation]);
     const expected = createHash("sha256").update(encoding, "utf8").digest().readUIntBE(0, 6);
-    expect(w.installation.verify("anonymous_installation", null)!.identity.generation).toBe(expected);
+    expect(w.openInstallation.verify("anonymous_installation", null)!.identity.generation).toBe(expected);
     const context = w.anonymous(); w.policy.token = null;
     expect(context.revalidate().actor.kind).toBe("installation");
-    expect(w.installation.verify("anonymous_installation", null)!.identity.generation).toBe(expected);
-  });
-
-  it.each(["token", "open"] as const)("restoring %s mode with identical facts restores this request", mode => {
-    const w = installationWorld(); w.policy.mode = mode;
-    const context = mode === "token" ? w.mint() : w.anonymous();
-    w.policy.mode = "legacy";
-    expect(failure(() => context.revalidate())).toBe(GONE);
-    w.policy.mode = mode;
-    expect(context.revalidate().actor.kind).toBe("installation");
+    expect(w.openInstallation.verify("anonymous_installation", null)!.identity.generation).toBe(expected);
   });
 
   it("anonymous mints only in open mode, without a secret, and uses a non-token ID", () => {
-    const w = installationWorld(); w.policy.mode = "open";
+    const w = installationWorld();
     const context = w.anonymous();
     expect(context.revalidate().actor.kind).toBe("installation");
-    const identity = w.installation.verify("anonymous_installation", null)!.identity;
+    const identity = w.openInstallation.verify("anonymous_installation", null)!.identity;
     expect(identity).toEqual({ path: "anonymous_installation", credentialId: "anonymous-installation", generation: expect.any(Number) });
     expect(/^[0-9a-f-]{36}$/.test(identity.credentialId)).toBe(false);
-    expect(w.installation.verify("anonymous_installation", "")).toBeNull();
-    expect(w.installation.verify("anonymous_installation", w.secret)).toBeNull();
-    expect(w.installation.current({ ...identity, credentialId: w.policy.token!.id })).toBeNull();
+    expect(w.openInstallation.verify("anonymous_installation", "")).toBeNull();
+    expect(w.openInstallation.verify("anonymous_installation", w.secret)).toBeNull();
+    expect(w.openInstallation.current({ ...identity, credentialId: w.policy.token!.id })).toBeNull();
     w.policy.generation++;
     expect(failure(() => context.revalidate())).toBe(GONE);
   });
 
   it("anonymous needs no stored token", () => {
-    const w = installationWorld(); w.policy.mode = "open"; w.policy.token = null;
+    const w = installationWorld(); w.policy.token = null;
     expect(w.anonymous().revalidate().actor.kind).toBe("installation");
   });
 
-  it.each(["legacy", "token", "better-auth"] as const)("anonymous refuses stored mode %s at mint and revalidation", mode => {
-    const w = installationWorld(); w.policy.mode = "open"; const context = w.anonymous(); w.policy.mode = mode;
-    expect(failure(() => w.anonymous())).toBe(INVALID);
-    expect(failure(() => context.revalidate())).toBe(GONE);
+  it.each(["open", "token", "better-auth", "legacy"] as const)("active open mode ignores stored selection %s at mint and revalidation", mode => {
+    const w = installationWorld(); w.policy.mode = "open";
+    const context = w.anonymous(), baseline = context.revalidate();
+    const identity = w.openInstallation.verify("anonymous_installation", null)!.identity;
+    w.policy.mode = mode;
+    expect(w.anonymous().revalidate()).toEqual(baseline);
+    expect(context.revalidate()).toEqual(baseline);
+    expect(w.openInstallation.current(identity)!.identity).toEqual(identity);
+  });
+
+  it.each(["open", "token", "better-auth", "legacy"] as const)("active better-auth refuses both installation paths with stored selection %s", mode => {
+    const w = installationWorld(); w.policy.mode = mode;
+    const verifier = new InstallationVerifier({ mode: "better-auth", reader: { getAuthenticationPolicy: () => w.policy } });
+    const tokenIdentity = w.installation.verify("installation_token", w.secret)!.identity;
+    const anonymousIdentity = w.openInstallation.verify("anonymous_installation", null)!.identity;
+    expect(verifier.verify("installation_token", w.secret)).toBeNull();
+    expect(verifier.verify("anonymous_installation", null)).toBeNull();
+    expect(verifier.current(tokenIdentity)).toBeNull();
+    expect(verifier.current(anonymousIdentity)).toBeNull();
+  });
+
+  it.each(["open", "token", "better-auth", "legacy"] as const)("refuses paths outside the active mode with stored selection %s", mode => {
+    const w = installationWorld(); w.policy.mode = mode;
+    const tokenIdentity = w.installation.verify("installation_token", w.secret)!.identity;
+    const anonymousIdentity = w.openInstallation.verify("anonymous_installation", null)!.identity;
+    expect(w.openInstallation.verify("installation_token", w.secret)).toBeNull();
+    expect(w.openInstallation.current(tokenIdentity)).toBeNull();
+    expect(w.installation.verify("anonymous_installation", null)).toBeNull();
+    expect(w.installation.current(anonymousIdentity)).toBeNull();
   });
 
   const malformed: [string, (policy: ReturnType<typeof installationWorld>["policy"]) => unknown][] = [
@@ -122,11 +142,13 @@ describe("installation verifier through the real boundary and composite", () => 
     ["throwing field", policy => ({ ...policy, get mode(): never { throw new Error("field failed"); } })],
   ];
   it.each(malformed)("a policy reader returning %s gives no answer", (_name, read) => {
-    const w = installationWorld(), context = w.mint();
+    const w = installationWorld(), context = w.mint(), anonymousContext = w.anonymous();
     w.reader.read = () => read(w.policy);
     expect(failure(() => w.mint())).toBe(INVALID);
     expect(failure(() => context.revalidate())).toBe(GONE);
-    expect(w.installation.verify("anonymous_installation", null)).toBeNull();
+    expect(failure(() => w.anonymous())).toBe(INVALID);
+    expect(failure(() => anonymousContext.revalidate())).toBe(GONE);
+    expect(w.openInstallation.verify("anonymous_installation", null)).toBeNull();
   });
 
   it("refuses missing secrets, wrong paths and malformed identities", () => {
@@ -137,4 +159,17 @@ describe("installation verifier through the real boundary and composite", () => 
       { path: "agent_token", credentialId: w.policy.token!.id, generation: 7 }]) expect(w.installation.current(identity as CredentialIdentity)).toBeNull();
     expect(() => new InstallationVerifier({} as never)).toThrow(TypeError);
   });
+
+  it("requires an explicit active mode and a policy reader", () => {
+    const w = installationWorld(), reader = { getAuthenticationPolicy: () => w.policy };
+    expect(() => new InstallationVerifier({ reader } as never)).toThrow(TypeError);
+    expect(() => new InstallationVerifier({ mode: "token" } as never)).toThrow(TypeError);
+  });
+
+  it.each([{ mode: "legacy" }, { mode: "future" }, { mode: "" }, { mode: null }, { mode: undefined }, { mode: 0 }, { mode: {} }, { mode: [] }])(
+    "refuses invalid active mode $mode at construction", ({ mode }) => {
+      const w = installationWorld();
+      expect(() => new InstallationVerifier({ mode, reader: { getAuthenticationPolicy: () => w.policy } } as never)).toThrow(TypeError);
+    },
+  );
 });

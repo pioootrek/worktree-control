@@ -189,21 +189,29 @@ integer. Usage time, label and token prefix are excluded.
 
 The installation identity is the token ID, or the fixed
 `anonymous-installation` ID, and a fingerprint with the same encoding and
-48-bit digest rule. Its ordered array is
-`["wtc-installation-credential-v1", mode, authentication_generation, token.id, token.prefix, token.verifier_hash, token.created_at]`.
+48-bit digest rule. The verifier requires the listener's active mode at
+construction, the same mode passed to `createListenerBoundary`. Only active
+`token` mode accepts the installation token; only active `open` mode accepts
+anonymous requests without a secret. Active `better-auth` mode accepts neither
+path. The stored mode is the next-start selection, validated as part of the
+policy's shape but ignored for eligibility and identity until restart.
+Selecting a mode preserves the authentication generation and existing contexts.
+The token fingerprint's ordered array is
+`["wtc-installation-credential-v2", active_mode, authentication_generation, token.id, token.prefix, token.verifier_hash, token.created_at]`.
 For the anonymous path it is only
-`["wtc-installation-credential-v1", mode, authentication_generation]`.
-The stored mode must still authorize the path. Token rotation, a mode or
-authentication-generation change, or a same-ID verifier-hash replacement
-changes the identity. `current` returns the recomputed identity; the boundary
-compares it with the mint baseline and refuses a change.
+`["wtc-installation-credential-v2", active_mode, authentication_generation]`.
+Token facts and the authentication generation are re-read on every `verify`
+and `current`. Token rotation or removal, a changed creation time or a same-ID
+verifier-hash replacement ends token contexts immediately. An authentication
+generation change ends both token and anonymous contexts. `current` returns
+the recomputed identity; the boundary compares it with the mint baseline and
+refuses a change.
 
 Disabling a credential or principal invalidates its context while disabled.
 Re-enabling with every fingerprinted fact unchanged may validate that same
-request-scoped context again. The same holds for withdrawing and restoring
-an installation mode without changing its fingerprinted facts. There is no
-principal-incarnation detection: same-ID deletion and recreation with the
-same facts is not detected. D1a adds neither principal recreation nor
+request-scoped context again. There is no principal-incarnation detection:
+same-ID deletion and recreation with the same facts is not detected. D1a
+adds neither principal recreation nor
 credential-ID reuse. A durable incarnation must exist before supporting
 same-ID principal recreation, and retained contexts need a separate review.
 
