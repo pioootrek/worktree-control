@@ -10,9 +10,9 @@ import { afterEach, describe, expect, it } from "vitest";
  * the module or its shared contract. Remove this guard in the slice that
  * mounts the module.
  *
- * Inventory: every source file under `src`, `packages` and `scripts`, without
- * build or dependency trees, plus the root entry and configuration files
- * below. Within it:
+ * Inventory: every source file under `src`, `packages`, `scripts` and `tests`,
+ * without build or dependency trees, plus the root entry and configuration
+ * files below. Within it:
  *
  * - every literal specifier (static, re-export, type, `import()`, `require()`,
  *   `require.resolve()`, `import.meta.resolve()`, `import x = require()`) is
@@ -30,7 +30,7 @@ const ROOT_FILES = Object.freeze([
   "vitest.auth-provider-proof.config.ts", "vitest.config.ts", "vitest.https.config.ts", "vitest.integration.config.ts",
   "vitest.provider-administration.config.ts", "vitest.remote-recovery.config.ts",
 ]);
-const INVENTORY_DIRECTORIES = Object.freeze(["src", "packages", "scripts"]);
+const INVENTORY_DIRECTORIES = Object.freeze(["src", "packages", "scripts", "tests"]);
 /** Untracked build and dependency trees; never scanned, so the inventory does not depend on local builds. */
 const SKIPPED_DIRECTORIES = new Set(["node_modules", ".git", ".next", "dist", "out", "build", "coverage", ".turbo", "test-results", "playwright-report"]);
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs", ".mts", ".cts", ".jsx"]);
@@ -269,6 +269,25 @@ describe("authorization contract stays unmounted", () => {
       "createRequire() alias", "createRequire()()",
     ]);
     expect(literals).toEqual(["node:module", "node:fs", "tsx"]);
+  });
+
+  it("reports a tests import of the module or contract, including a hop from src", () => {
+    const root = mkdtempSync(join(tmpdir(), "unmounted-guard-hop-")); temporary.push(root);
+    const write = (path: string, text: string) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), text); };
+    write("src/server/modules/operations/index.ts", "export const x = 1;\n");
+    write("src/shared/contracts/operations.ts", "export const y = 1;\n");
+    write("tests/support/adapter.ts", 'import { x } from "../../src/server/modules/operations";\n');
+    write("tests/types/contract.ts", 'import type { Actor } from "@/shared/contracts/operations";\n');
+    const guard = createGuard(root);
+    const violations = [
+      "tests/support/adapter.ts: imports ../../src/server/modules/operations",
+      "tests/types/contract.ts: imports @/shared/contracts/operations",
+    ];
+    expect(guard.violations({})).toEqual(violations);
+    write("src/uses-adapter.ts", 'import "../tests/support/adapter";\n');
+    expect(guard.inventory().files).toContain(join(root, "src/uses-adapter.ts"));
+    // The hop cannot hide the import: its tests/ target is itself scanned.
+    expect(guard.violations({})).toEqual(violations);
   });
 
   it("finds an import through a symlink and a symlink inside the inventory, and ignores build trees", () => {

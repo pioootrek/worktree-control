@@ -27,16 +27,14 @@ import { schemaAt49 } from "./fixtures/released-schema";
  * matching TEST_FILE; fixtures under `src/` are scanned too):
  *
  * 1. Step modules: imports of the step modules (STEP_MODULES) are confined to
- *    the importer and module pairs of STEP_IMPORTS. No non-test file imports
- *    the project directory or the grants reader (nothing mounted reads them:
- *    the operations module's SQLite adapters take them as structural ports,
- *    wired only by tests); the authority reset is
+ *    the importer and module pairs of STEP_IMPORTS. Only the store imports
+ *    the project directory and grants reader, exposing structural ports for
+ *    the still-unmounted operations adapters; the authority reset is
  *    imported only by the quarantine and the authority acts; the recovery's
  *    predictor only by the authority acts; the exact-text check only by the
  *    predictor and both act domains.
  * 2. Grants: the text `account_grants` appears only in GRANTS_TEXT_FILES, so
- *    no mounted code reads the new grants table (its one reader is itself a
- *    step module without importers, rule 1).
+ *    the store's port reads it only through the listed reader (rule 1).
  * 3. Mounted entry points: the upgrade composition is imported only by its
  *    command runner (and the test-side fixture), the runner only by the CLI
  *    entry; each entry point of ENTRY_OCCURRENCES is written only in the file
@@ -65,16 +63,18 @@ const MAPPING_STEP = `${SQLITE}/mapping-structure-migration.ts`, DIRECTORY = `${
 const MAPPING_ACTS = `${SQLITE}/mapping-upgrade-acts.ts`;
 const GRANTS_STEP = `${SQLITE}/account-grants-migration.ts`, AUTHORITY_ACTS = `${SQLITE}/authority-upgrade-acts.ts`;
 const GRANTS_READER = `${SQLITE}/account-grants-queries.ts`;
+const STORE = `${SQLITE}/sqlite-state-store.ts`;
 const AUTHORITY_RESET = `${SQLITE}/authority-reset.ts`, RECOVERY_PREDICTION = `${SQLITE}/test-run-recovery-prediction.ts`, STORED_TEXT = `${SQLITE}/stored-text.ts`;
 const STEP_MODULES = Object.freeze([MARKER_STEP, COVERAGE, MAPPING_STEP, DIRECTORY, MAPPING_ACTS, GRANTS_STEP, GRANTS_READER, AUTHORITY_ACTS, AUTHORITY_RESET, RECOVERY_PREDICTION,
   STORED_TEXT]);
 /**
  * The only non-test importers of the step modules, each with the modules it may
- * import and why. The project directory (step 51) and the grants reader (step
- * 52) have no importer: they are not mounted (no production reader of either
- * exists yet).
+ * import and why. The store exposes the directory and grants readers on its
+ * owned core connection; no operations adapter is mounted.
  */
 const STEP_IMPORTS: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
+  [STORE]: { [DIRECTORY]: "exposes synchronous project directory reads on the owned core connection",
+    [GRANTS_READER]: "exposes synchronous account grants reads on the owned core connection" },
   [COVERAGE]: { [MARKER_STEP]: "lists step 50's fence coverage", [MAPPING_STEP]: "lists step 51's fence coverage and its other triggers",
     [GRANTS_STEP]: "lists step 52's fence coverage and its other triggers" },
   [`${SQLITE}/migrations.ts`]: { [MARKER_STEP]: "applies step 50 when initializeSchema is given the target", [MAPPING_STEP]: "applies step 51 when initializeSchema is given the target",
@@ -107,8 +107,8 @@ const GRANTS_TEXT_FILES: Readonly<Record<string, string>> = Object.freeze({
   [`${SQLITE}/authority-upgrade-acts.ts`]: "writes the first admin grant in the upgrade's authority acts",
   [`${SQLITE}/schema-inspection.ts`]: "recognises the table's structure from the catalogue, never its rows",
   [`${SQLITE}/fixtures/schema-rewind.ts`]: "rewinds synthetic step-52 test fixtures",
-  // C4 of slice 3: the read side of the operations module's unmounted grants adapter. Rule 1 keeps every importer out.
-  [GRANTS_READER]: "reads one account and its stored grants for the unmounted grants adapter; no non-test file imports it",
+  // The read side of the operations module's unmounted grants adapter. Rule 1 confines its importer to the store.
+  [GRANTS_READER]: "reads one account and its stored grants through the store's structural read port",
 });
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
@@ -458,14 +458,14 @@ describe("schema entry points", () => {
     } finally { memory.close(); }
   });
 
-  it("finds no step-module import outside its listed importer and module pairs, and no import of the project directory or the grants reader", () => {
+  it("finds no step-module import outside its listed pairs; only the store imports the directory and grants reader", () => {
     const scanned = scan();
     expect(scanned.length).toBeGreaterThan(100);
     expect(scanned.flatMap(({ file, text, steps }) => stepFindings(file, text, steps).map(finding => `${file}: ${finding}`))).toEqual([]);
-    expect(Object.values(STEP_IMPORTS).some(modules => Object.hasOwn(modules, DIRECTORY))).toBe(false);
-    expect(scanned.filter(({ steps }) => steps.some(entry => entry.module === DIRECTORY)).map(({ file }) => file)).toEqual([]);
-    expect(Object.values(STEP_IMPORTS).some(modules => Object.hasOwn(modules, GRANTS_READER))).toBe(false);
-    expect(scanned.filter(({ steps }) => steps.some(entry => entry.module === GRANTS_READER)).map(({ file }) => file)).toEqual([]);
+    for (const stepModule of [DIRECTORY, GRANTS_READER]) {
+      expect(Object.keys(STEP_IMPORTS).filter(file => Object.hasOwn(STEP_IMPORTS[file], stepModule))).toEqual([STORE]);
+      expect(scanned.filter(({ steps }) => steps.some(entry => entry.module === stepModule)).map(({ file }) => file)).toEqual([STORE]);
+    }
   }, 30_000); // One parse of every source file under src/: about a second here, growing with the tree.
 
   it("keeps the new grants table out of every file but its step, the authority acts, the schema recognition, the rewind fixture and the unmounted reader", () => {
@@ -607,9 +607,9 @@ describe("schema entry points", () => {
       `import() type of ./project-directory-queries.js (${DIRECTORY})`, `import of ./upgrade-marker-migration (${MARKER_STEP})`,
       `import of ./security-coverage (${COVERAGE})`,
     ]);
-    // Every listed importer is reported for the directory, and so is a file that is not listed.
+    // Every other listed importer is reported for the directory, and so is a file that is not listed.
     const specifier = "@/server/infrastructure/sqlite/project-directory-queries";
-    for (const file of [...Object.keys(STEP_IMPORTS), `${SQLITE}/example.ts`]) {
+    for (const file of [...Object.keys(STEP_IMPORTS).filter(file => file !== STORE), `${SQLITE}/example.ts`]) {
       expect(strip(stepFindings(file, `import { ProjectDirectoryQueries } from "${specifier}";`)), file).toEqual([`import of ${specifier} (${DIRECTORY})`]);
     }
     // A listed pair is not a finding.
@@ -665,6 +665,22 @@ describe("schema entry points", () => {
     }
   });
 
+  it("allows only the store-reader pairs, refusing either reader elsewhere and every other step module from the store", () => {
+    const strip = (findings: string[]) => findings.map(entry => entry.replace(/ at line \d+$/, ""));
+    for (const stepModule of [DIRECTORY, GRANTS_READER]) {
+      const specifier = `@/${stepModule.slice(4, -3)}`;
+      const source = `import * as reader from "${specifier}";`;
+      expect(stepFindings(STORE, source)).toEqual([]);
+      // Every current production file except the store, plus an unlisted file.
+      for (const file of [...scan().map(entry => entry.file).filter(file => file !== STORE), "src/server/example.ts"]) {
+        expect(strip(stepFindings(file, source)), file).toEqual([`import of ${specifier} (${stepModule})`]);
+      }
+    }
+    for (const stepModule of STEP_MODULES.filter(module => module !== DIRECTORY && module !== GRANTS_READER)) {
+      const specifier = `@/${stepModule.slice(4, -3)}`;
+      expect(strip(stepFindings(STORE, `import * as step from "${specifier}";`))).toEqual([`import of ${specifier} (${stepModule})`]);
+    }
+  }, 30_000);
 
   it("keeps the shared authority reset callable on a schema-49 database, as the quarantine at 49 runs it", () => {
     const memory = schemaAt49(new Database(":memory:"));
