@@ -27,6 +27,8 @@ const FINGERPRINT_VERSION = "wtc-agent-token-credential-v1";
  * Only committed agent_token credentials belonging to active agent principals
  * authorize. verify hashes the entire wire token as the old hashToken does.
  * Every throw, thenable, malformed row or non-finite clock is no answer.
+ * Credential-ID existence may still be observable through lookup timing, as in
+ * authenticateBearer; defending against that is outside this verifier's scope.
  *
  * current rechecks eligibility and returns the recomputed identity, even if
  * its fingerprint changed; the boundary compares it with the mint baseline.
@@ -50,14 +52,17 @@ export class AgentTokenVerifier implements CredentialVerifier {
     try {
       if (path !== "agent_token" || typeof secret !== "string" || classifyBearer(secret) !== "agent_token") return null;
       const id = secret.slice(4, 40);
-      const row = this.#row(id);
-      // A missing or malformed row still hashes and compares, using a fixed
-      // equal-length dummy, before any eligibility decision.
-      const expected = row ? Buffer.from(row.verifierHash, "hex") : DUMMY_HASH;
       const supplied = createHash("sha256").update(secret, "utf8").digest();
-      const matches = expected.length === supplied.length && timingSafeEqual(expected, supplied);
+      const raw = this.#reader.credential(id);
+      const verifierHash = typeof raw === "object" && raw !== null ? raw.verifierHash : null;
+      // Compare before copying or validating any other row facts. Missing and
+      // malformed hashes use the same-size dummy. Retain the compared hash.
+      const expected = isVerifierHash(verifierHash) ? Buffer.from(verifierHash, "hex") : DUMMY_HASH;
+      const matches = timingSafeEqual(expected, supplied);
+      const row = this.#row(id, raw, verifierHash);
       const now = settled(this.#now());
-      return matches && row && this.#eligible(row, now) ? this.#answer(row) : null;
+      const eligible = row ? this.#eligible(row, now) : false;
+      return matches && row && eligible ? this.#answer(row) : null;
     } catch { return null; }
   }
 
@@ -66,16 +71,18 @@ export class AgentTokenVerifier implements CredentialVerifier {
       if (typeof identity !== "object" || identity === null) return null;
       const { path, credentialId, generation } = identity;
       if (path !== "agent_token" || !isTokenId(credentialId) || !Number.isSafeInteger(generation)) return null;
-      const row = this.#row(credentialId), now = settled(this.#now());
+      const raw = this.#reader.credential(credentialId);
+      const verifierHash = typeof raw === "object" && raw !== null ? raw.verifierHash : null;
+      const row = this.#row(credentialId, raw, verifierHash), now = settled(this.#now());
       return row && this.#eligible(row, now) ? this.#answer(row) : null;
     } catch { return null; }
   }
 
   /** Copy once before checking: a getter or retained mutable row cannot change the checked facts afterwards. */
-  #row(credentialId: string): AgentCredentialRecord | null {
-    const row = settled(this.#reader.credential(credentialId));
+  #row(credentialId: string, raw: AgentCredentialRecord | null, verifierHash: unknown): AgentCredentialRecord | null {
+    const row = settled(raw);
     if (typeof row !== "object" || row === null) return null;
-    const { id, principalId, kind, verifierHash, status, expiresAt, createdAt, revokedAt, principal: rawPrincipal } = row;
+    const { id, principalId, kind, status, expiresAt, createdAt, revokedAt, principal: rawPrincipal } = row;
     const principal = settled(rawPrincipal);
     if (typeof principal !== "object" || principal === null) return null;
     const { id: principalRowId, kind: principalKind, status: principalStatus } = principal;

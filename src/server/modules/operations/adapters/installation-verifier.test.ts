@@ -1,15 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { CredentialIdentity } from "../authentication-context";
-import { failure, GONE, installationWorld, INVALID, NOW, token } from "./credential-verifier-fixture";
+import { failure, GONE, hash, installationWorld, INVALID, iso, NOW, token } from "./credential-verifier-fixture";
 import { InstallationVerifier } from "./installation-verifier";
 
 describe("installation verifier through the real boundary and composite", () => {
-  it("mints in token mode with token ID and authentication generation", () => {
+  it("mints in token mode with token ID and a fingerprint generation", () => {
     const w = installationWorld();
     expect(w.mint().revalidate()).toEqual({ actor: { kind: "installation" }, mode: "token", listener: "api", evidence: null, coordinationSession: null });
     const identity = w.installation.verify("installation_token", w.secret)!.identity;
-    expect(identity).toEqual({ path: "installation_token", credentialId: w.policy.token!.id, generation: 7 });
+    expect(identity).toEqual({ path: "installation_token", credentialId: w.policy.token!.id, generation: expect.any(Number) });
   });
 
   it("refuses wrong secrets and forged IDs", () => {
@@ -32,12 +32,59 @@ describe("installation verifier through the real boundary and composite", () => 
     expect(failure(() => context.revalidate())).toBe(GONE);
   });
 
+  it("same-ID hash replacement without a generation change ends the context", () => {
+    const w = installationWorld(), context = w.mint();
+    const original = w.installation.verify("installation_token", w.secret)!.identity;
+    const replacement = token("wsi", w.policy.token!.id);
+    w.policy.token = { ...w.policy.token!, verifierHash: hash(replacement) };
+    const current = w.installation.current(original)!;
+    expect(current).not.toBeNull();
+    expect(current.identity.generation === original.generation).toBe(false);
+    expect(failure(() => context.revalidate())).toBe(GONE);
+    expect(failure(() => w.mint())).toBe(INVALID);
+    expect(w.mint(replacement).revalidate().actor.kind).toBe("installation");
+  });
+
+  it("a changed token creation time ends the context", () => {
+    const w = installationWorld(), context = w.mint();
+    w.policy.token = { ...w.policy.token!, createdAt: iso(NOW - 1000) };
+    expect(failure(() => context.revalidate())).toBe(GONE);
+  });
+
+  it("pins the token fingerprint version, field order and 48-bit encoding", () => {
+    const w = installationWorld(), p = w.policy, t = p.token!;
+    const encoding = JSON.stringify(["wtc-installation-credential-v1", p.mode, p.generation, t.id, t.prefix, t.verifierHash, t.createdAt]);
+    const expected = createHash("sha256").update(encoding, "utf8").digest().readUIntBE(0, 6);
+    const generation = w.installation.verify("installation_token", w.secret)!.identity.generation;
+    expect(generation).toBe(expected);
+    expect(generation).toBeGreaterThanOrEqual(0); expect(generation).toBeLessThan(2 ** 48);
+  });
+
+  it("pins the anonymous fingerprint version and fields, excluding token facts", () => {
+    const w = installationWorld(); w.policy.mode = "open";
+    const encoding = JSON.stringify(["wtc-installation-credential-v1", "open", w.policy.generation]);
+    const expected = createHash("sha256").update(encoding, "utf8").digest().readUIntBE(0, 6);
+    expect(w.installation.verify("anonymous_installation", null)!.identity.generation).toBe(expected);
+    const context = w.anonymous(); w.policy.token = null;
+    expect(context.revalidate().actor.kind).toBe("installation");
+    expect(w.installation.verify("anonymous_installation", null)!.identity.generation).toBe(expected);
+  });
+
+  it.each(["token", "open"] as const)("restoring %s mode with identical facts restores this request", mode => {
+    const w = installationWorld(); w.policy.mode = mode;
+    const context = mode === "token" ? w.mint() : w.anonymous();
+    w.policy.mode = "legacy";
+    expect(failure(() => context.revalidate())).toBe(GONE);
+    w.policy.mode = mode;
+    expect(context.revalidate().actor.kind).toBe("installation");
+  });
+
   it("anonymous mints only in open mode, without a secret, and uses a non-token ID", () => {
     const w = installationWorld(); w.policy.mode = "open";
     const context = w.anonymous();
     expect(context.revalidate().actor.kind).toBe("installation");
     const identity = w.installation.verify("anonymous_installation", null)!.identity;
-    expect(identity).toEqual({ path: "anonymous_installation", credentialId: "anonymous-installation", generation: 7 });
+    expect(identity).toEqual({ path: "anonymous_installation", credentialId: "anonymous-installation", generation: expect.any(Number) });
     expect(/^[0-9a-f-]{36}$/.test(identity.credentialId)).toBe(false);
     expect(w.installation.verify("anonymous_installation", "")).toBeNull();
     expect(w.installation.verify("anonymous_installation", w.secret)).toBeNull();

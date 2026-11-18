@@ -151,13 +151,72 @@ headers on `unix`. The former `legacy` mode is not a contract mode. Pre-login,
 MFA ceremonies, public status and static assets are not operations and are
 never registered, so they produce no actor. Nothing in this slice routes them.
 
+Classification by wire format selects a verifier, never authority.
+`classifyBearer` recognises the full `wsi_` installation-token and `wts_`
+machine-token formats; everything else is unrecognised. The abstract
+`legacy_owner_token` and `legacy_worker_token` classes remain in the acceptance
+matrix and its tests, but are unreachable from the wire. Owner and worker
+tokens have the `wts_` format and reach the agent verifier. In account mode
+(`better-auth`) their committed kinds fail verification, so they answer
+`unauthenticated` / `invalid_credential`. There is no fallback or promotion
+from a token's format to an actor.
+
+`InstallationVerifier` implements the installation-token and anonymous paths.
+`AgentTokenVerifier` implements the agent-token path. Both read synchronous
+ports on the store owner's admitted connection and open no connection.
+`CompositeCredentialVerifier` dispatches each accepted path to its configured
+verifier, including the existing provider-session verifier, without fallback.
+These adapters exist but are unmounted. They write no usage time or other
+state, including `last_used_at`.
+
+The agent verifier compares SHA-256 of the entire presented token with the
+stored verifier hash in constant time, using an equal-length dummy for a
+missing or malformed hash. It does this before copying and validating the
+remaining row facts. Credential-ID existence may still be observable through
+lookup timing, as with `authenticateBearer`; the verifier does not defend
+against that. Only an active `agent_token` credential belonging to an active
+`agent` principal can authorize. A revoked credential, a revocation timestamp
+or an expiry at or before the verifier's clock refuses.
+
+The agent identity is the credential ID and a versioned 48-bit fingerprint.
+Its ordered field list is credential `id`, `principal_id`, `kind`,
+`verifier_hash`, `status`, `expires_at`, `created_at`, `revoked_at`, then
+principal `id`, `kind`, `status`. Its encoding is UTF-8 `JSON.stringify` of an
+array starting with `"wtc-agent-token-credential-v1"` and followed by those
+fields in order, preserving nulls and adding no whitespace. SHA-256 of that
+encoding supplies the first six bytes, interpreted as an unsigned big-endian
+integer. Usage time, label and token prefix are excluded.
+
+The installation identity is the token ID, or the fixed
+`anonymous-installation` ID, and a fingerprint with the same encoding and
+48-bit digest rule. Its ordered array is
+`["wtc-installation-credential-v1", mode, authentication_generation, token.id, token.prefix, token.verifier_hash, token.created_at]`.
+For the anonymous path it is only
+`["wtc-installation-credential-v1", mode, authentication_generation]`.
+The stored mode must still authorize the path. Token rotation, a mode or
+authentication-generation change, or a same-ID verifier-hash replacement
+changes the identity. `current` returns the recomputed identity; the boundary
+compares it with the mint baseline and refuses a change.
+
+Disabling a credential or principal invalidates its context while disabled.
+Re-enabling with every fingerprinted fact unchanged may validate that same
+request-scoped context again. The same holds for withdrawing and restoring
+an installation mode without changing its fingerprinted facts. There is no
+principal-incarnation detection: same-ID deletion and recreation with the
+same facts is not detected. D1a adds neither principal recreation nor
+credential-ID reuse. A durable incarnation must exist before supporting
+same-ID principal recreation, and retained contexts need a separate review.
+
 ### Provider sessions
 
-Slice 2 adds `ProviderSessionVerifier`
-(`src/server/modules/operations/adapters/provider-session-verifier.ts`), the
-`CredentialVerifier` for the `provider_session` path. It answers `null` for
-every other path. Like the rest of the module it is unmounted: no transport
-creates it, and it is not exported from the module's `index.ts`.
+`ProviderSessionVerifier`
+(`src/server/modules/operations/adapters/provider-session-verifier.ts`) is the
+existing `CredentialVerifier` for the `provider_session` path. It answers
+`null` for every other path. `CompositeCredentialVerifier` can dispatch that
+path to it alongside the installation and agent verifiers. Like the rest of
+the module it is unmounted: no transport creates it, and it is not exported
+from the module's `index.ts`. It reads committed authority and writes no usage
+state.
 
 **Handoff.** The provider verifies its cookie asynchronously and outside this
 module, so `verify` cannot do that itself (decision W). A transport passes the
@@ -1206,9 +1265,12 @@ These are not implemented here. The slices that mount the contract own them.
   the `registration` and `project` kinds only. The store exposes their read
   ports; production does not wire the adapters. Every other resource kind has
   no resolver and answers `internal`. The idempotency store exists only as a
-  port and an in-memory test double. Of the credential verifier, only the
-  provider-session half exists (see [Provider sessions](#provider-sessions));
-  the agent-token and installation-token verifiers do not.
+  port and an in-memory test double. The installation-token, anonymous,
+  agent-token and provider-session verifiers exist, with a composite that
+  dispatches without fallback (see [Actors and authentication](#actors-and-authentication)
+  and [Provider sessions](#provider-sessions)). Production composition and
+  transport mounting remain unimplemented. Credential usage recording and
+  principal-incarnation detection are not implemented.
 - Enforcement of the project ID grammar. A project ID in the contract matches
   `^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$` (`src/shared/contracts/operations.ts`),
   and the owner decided on 2026-11-17 that Knowledge project IDs must follow it
