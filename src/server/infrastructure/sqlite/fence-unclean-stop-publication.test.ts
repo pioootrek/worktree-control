@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -25,6 +25,8 @@ type Measurement = {
 const helper = resolve("scripts/fence-unclean-stop-publication.ts");
 const evidenceRoot = join(homedir(), ".local/state/worktree-control-auth-unification/fence-13e00db3");
 mkdirSync(evidenceRoot, { recursive: true, mode: 0o700 });
+// This task owns the evidence directory; older evidence used a group-writable mode.
+chmodSync(evidenceRoot, 0o700);
 const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const evidencePath = join(evidenceRoot, `fence-part2-${head.slice(0, 8)}-${Date.now()}.json`);
 const evidence: { head: string; generatedAt: string; measurements: unknown[]; faults: unknown[]; commitFailures: unknown[]; notes: string[] } = {
