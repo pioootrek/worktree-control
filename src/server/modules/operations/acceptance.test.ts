@@ -1,6 +1,7 @@
+import { randomBytes, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { authenticationModes, listenerKinds, type AuthenticationMode, type ListenerKind } from "@/shared/contracts/operations";
-import { acceptanceTable, credentialClasses, resolveAcceptance, unregisteredRouteClasses, type CredentialClass, type PresentedCredentials } from "./acceptance";
+import { acceptanceTable, classifyBearer, credentialClasses, resolveAcceptance, unregisteredRouteClasses, type CredentialClass, type PresentedCredentials } from "./acceptance";
 import { createListenerBoundary, mintOfflineContext, type CredentialVerifier, type VerifiedCredential } from "./authentication-context";
 import { OperationError } from "./errors";
 import { A, createWorld, FakeVerifier, presented } from "./operations-fixture";
@@ -251,5 +252,32 @@ describe("authority values are immutable copies", () => {
       .mint(presented({ bearers: [{ class: "agent_token", secret: "t" }] }));
     expect(context.revalidate().actor).toEqual({ kind: "agent", accountId: "bot" });
     expect(failure(() => context.revalidate())).toBe("unauthenticated:credential_no_longer_valid");
+  });
+});
+
+
+describe("bearer wire classification (candidate only, never authority)", () => {
+  const wire = (prefix: string) => `${prefix}_${randomUUID()}_${randomBytes(32).toString("hex")}`;
+  it("recognizes installation and machine formats, including legacy machine candidates", () => {
+    expect(classifyBearer(wire("wsi"))).toBe("installation_token");
+    // Owner, worker and agent issuance share one wire format. Abstract legacy
+    // rejection remains in the acceptance-table tests above; the real verifier
+    // tests cover reachable wire promotion attempts and invalid_credential.
+    for (const _kind of ["owner_session", "worker_token", "agent_token"]) {
+      void _kind;
+      expect(classifyBearer(wire("wts"))).toBe("agent_token");
+    }
+    expect(classifyBearer("unrecognized")).toBe("unrecognized");
+  });
+
+  it("refuses format near misses, uppercase hex and every trailing character", () => {
+    for (const prefix of ["wsi", "wts"]) {
+      const valid = wire(prefix);
+      for (const invalid of [wire("wrong"), valid.slice(1), valid.slice(0, -1), valid + "x", valid + "\n", valid + "\r\n",
+        valid.toUpperCase(), valid.slice(0, -1) + "A", valid.slice(0, -1) + "g", " " + valid, valid.replace("_", "-"),
+        `${prefix}_${randomUUID()}_${randomBytes(31).toString("hex")}`]) {
+        expect(classifyBearer(invalid)).toBe("unrecognized");
+      }
+    }
   });
 });
