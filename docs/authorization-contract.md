@@ -1184,11 +1184,13 @@ These are not implemented here. The slices that mount the contract own them.
   creates one `ProviderSessionVerifier` with the provider storage as its
   reader, and gives the reader and the runner the same clock. It binds
   `eligible` to the runtime's disposal state, session-authority support and
-  storage availability. The runtime does not yet expose these as one public
-  synchronous predicate; that slice adds it. It must call `verify` and
-  `current` where `currentSession` may read: the storage requires core
-  admission. It must not release a `credentialId`, because for a provider
-  session it is the session's row ID.
+  storage availability. The runtime exposes `isSessionAuthorityEligible()`
+  and request-scoped `resolveRequest()` with `result` and `settled`; bootstrap
+  still must bind the predicate with its maintenance, stopping and pinned
+  configuration guard, and the transport must consume the resolution. It must
+  call `verify` and `current` where `currentSession` may read: the storage
+  requires core admission. It must not release a `credentialId`, because for a
+  provider session it is the session's row ID.
 - **Operation-bound proof.** Slice 2 does not remove the Ed25519 owner proof.
   Fresh login replaces it only once a transport mounts the provider-session
   verifier.
