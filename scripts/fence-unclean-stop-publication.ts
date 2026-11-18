@@ -23,7 +23,10 @@ const injections: Array<{ publication: string; step: string; code: string }> = [
 const descriptors = new Map<number, "temp" | "directory">();
 const segments: Array<{ aMs: number; bMs: number; totalMs: number; aShare: number }> = [];
 function fail(at: string) {
-  if (mode !== "fault" || !armed || at !== step || (publication !== phase && !(persistence === "all-publications" && hits)) || (persistence === "once" && hits)) return;
+  const fallbackOpen = persistence === "fallback-open" && hits > 0 && at === "open-temp";
+  if (mode !== "fault" || !armed || (at !== step && !fallbackOpen)
+    || (publication !== phase && !(persistence === "all-publications" && hits) && !fallbackOpen)
+    || (persistence === "once" && hits)) return;
   hits++;
   injections.push({ publication, step: at, code: errno });
   if (publication === "confirmed") fallback = true;

@@ -35,6 +35,7 @@ const evidence: { head: string; generatedAt: string; measurements: unknown[]; fa
     "Close faults are thrown after the real close, so descriptors are not leaked by the injector.",
     "A new read-only process invokes production SecurityFence.inspect while the owner lives; full opening separately reports the ownership lock. Full opening is repeated after owner close.",
     "The SQLITE_FULL case throws at the native COMMIT call boundary before invoking COMMIT; real SQLite rollback follows. It does not simulate a VFS or actual engine I/O failure.",
+    "fallback-open keeps temporary-file creation failing after the selected confirmed-publication error. This also covers a post-rename sync failure followed by inability to republish pending.",
     "Publication coverage: O_EXCL temporary open; writeFileSync; file fsync; file close; rename; directory open; directory fsync; directory close. Validation and successful cleanup calls remain active.",
   ],
 };
@@ -133,6 +134,27 @@ describe.sequential("fence publication failure observation (no production change
         expect(result.newProcessAfterFailure.inspect.error?.code).toBe("security_fence_recovery_required");
         expect(result.newProcessAfterRetry.inspect.error?.code).toBe("security_fence_recovery_required");
         expect(result.newProcessAfterClose.error?.code).toBe("security_fence_recovery_required");
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }
+  }, 300_000);
+  it("records a lasting inability to create the fallback temporary after confirmation fails", async () => {
+    for (const operation of ["bearer", "test-persist"]) for (const step of steps) for (const errno of ["ENOSPC", "EIO"]) {
+      const root = fixture();
+      try {
+        const result = await child<Fault>("fault", root, operation, "confirmed", step, errno, "fallback-open");
+        evidence.faults.push(result); save();
+        expect(result.injections).toEqual([{ publication: "confirmed", step, code: errno }, { publication: "pending", step: "open-temp", code: errno }]);
+        expect(result.first).toMatchObject({ success: false, error: { code: "security_fence_pending", committed: true } });
+        const renamed = ["open-directory", "fsync-directory", "close-directory"].includes(step);
+        expect(result.after.epoch).not.toBe(result.before.epoch);
+        expect(result.after.witness).toEqual(renamed
+          ? { state: "confirmed", epoch: result.after.epoch } : { state: "pending", epoch: result.before.epoch });
+        expect(result.after.temporaries).toEqual([]);
+        expect(result.retry.success).toBe(false); expect(result.read.success).toBe(false);
+        expect(result.afterRetry).toEqual(result.after);
+        expect(result.newProcessAfterFailure.inspect.accepted).toBe(renamed);
+        expect(result.newProcessAfterRetry.inspect.accepted).toBe(renamed);
+        expect(result.newProcessAfterClose.opened).toBe(renamed);
       } finally { rmSync(root, { recursive: true, force: true }); }
     }
   }, 300_000);
