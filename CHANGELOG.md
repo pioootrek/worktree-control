@@ -23,7 +23,8 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
   protected write can leave the installation refusing to start until
   `auth fence resume`.** Resume removes all credentials, grants and the
   installation token. The problem has been present since 0.2.0. This release
-  changes no behaviour; a fix is planned for the next breaking release. See
+  does not change the fence behaviour described here; a fix is planned for the
+  next breaking release. See
   [After an unclean stop or a storage failure](docs/authentication.md#after-an-unclean-stop-or-a-storage-failure).
 
 ## 0.2.0 - 2026-11-09

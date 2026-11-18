@@ -1362,9 +1362,16 @@ accounts, principals, history and audit, but it removes authority:
 - claims are released;
 - running test runs are marked interrupted.
 
-Afterwards, in `token` mode, create a new installation token, reconfigure every
-client and issue agent credentials again. In account mode, every user sets a
-password and a second factor again.
+Afterwards nobody has access until it is set up again. In `token` mode, create
+a new installation token, reconfigure every client and issue agent credentials
+again. New credentials reach no project by themselves: recreate the project
+grants, roles, delegations and memberships that resume revoked. In account
+mode, users cannot set a password themselves, because passwords and sessions
+are gone. Restore the provider configuration first. Then the owner runs
+`auth provider recover` from the CLI for the owner account and for each human
+that should return, as described in
+[Protected operator workflow](#protected-operator-workflow), and each of them
+enrols a second factor again.
 
 A storage failure while the controller runs, such as no space left or an I/O
 error, can strike during one of these publications. It does not stop the
