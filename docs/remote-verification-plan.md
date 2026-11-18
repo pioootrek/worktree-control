@@ -41,6 +41,63 @@ reply `f7c90101-30e3-4b1e-b7d5-a7b17f797474`, project `k7a-worktree-switcher`.
 
 See the [remaining implementation slices](knowledge/AGENTS.md) (Knowledge attachment `64ab7a29d6c4ae015d5cd794c58a8a68`).
 
+### Worker-only process
+
+`worktree-control worker start --config FILE` runs a machine as a worker only.
+It is experimental and speaks the unchanged version 1 protocol. It takes the
+singleton controller lock, `controller.lock` in its state directory, and opens
+the store like `start`, including migrations, the security fence and restore
+handoff completion. It accepts `--data-dir`, `--state-dir`, `--backup-dir` and
+`--backup-before-migration`. It then runs file logs, run directories, the test
+queue, Git reading, worker recovery and the outbound poll loop. Unconfirmed
+remote cleanup still blocks test admission at startup.
+
+It starts no dashboard or API server, MCP server, admin socket,
+remote-verification listener, Knowledge services, backups or schedules, Godot
+preview or development vault. It issues no installation token. Its only
+standard output line names the worker id and server origin. `SIGINT` and
+`SIGTERM` stop polling, then follow the controller's shutdown order. A job in
+flight is cancelled locally and reported as `uncertain` after the next start.
+
+The configuration file is separate from `--remote-verification-config`:
+`{"version": 1, "workerId", "origin", "credentialFile", "workspaceRoot",
+"allowLoopbackHttpFixture"?, "mappings": [...]}`. Unknown keys, including
+`listener`, are rejected; mappings use the embedded schema. The credential file
+must be an owner-only regular file. It is opened once without following a
+symlink; where the platform has no such open (Windows), the credential is
+refused. It holds one opaque token of 16 to 2048 visible ASCII characters, so a
+legacy worker token and a later installation or agent token both pass.
+
+If startup fails after the lock is taken and before the first poll, the worker
+has admitted no job and owns no process tree. It runs every cleanup step for
+what it opened, newest first, continuing after a failed step, and then always
+attempts to release the lock. It exits with status 1 and reports the original
+error; when a cleanup step or the release also failed, it adds that cleanup did
+not complete and how many steps failed. It never keeps running after a failed
+startup. A failed shutdown after polling has
+started is different: the worker keeps the lock and keeps running with exit
+status 1 for operator recovery.
+
+Local operator commands run with the worker stopped, because the worker holds
+the lock. On a fresh data directory, `project add` needs no credential.
+`auth token generate` issues an installation token. That token, passed as
+`WORKTREE_CONTROL_TOKEN`, authorizes `remote-verification provision`, which
+imports the broker's worker principal with `worker.principalId`. The worker
+credential comes from the broker.
+
+`remote-verification inspect` and `reconcile` require an owner session, passed
+as `WORKTREE_CONTROL_OWNER_TOKEN`. The installation token is refused by both. A
+worker-only data directory has no owner at first: `identity bootstrap-owner`
+creates one and prints its session token once. `identity recover-owner` issues
+a new session for that owner. Both run offline with the worker stopped. The
+accepted authorization target removes owner sessions, so these two commands
+need a replacement in that release.
+
+`worker start` still runs through the shared CLI entry. That entry loads the
+controller's HTTP, MCP and `ControlService` code but does not start it. The
+architecture test fences the worker composition, not this entry. A dedicated
+worker entry follows with packaging.
+
 ## Owner need and priority
 
 The owner wants to work with an LLM remotely, including from a lightweight

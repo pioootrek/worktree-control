@@ -34,10 +34,11 @@ Existing areas include projects, reservations, runtime, verification,
 environments, status, dashboard queries, identity, authentication, knowledge
 and the Godot Web preview (`modules/godot-web`, static server under
 `infrastructure/godot-web`).
-Remote verification has request/attempt and workspace foundations, without a
-connected-worker execution flow. Add further worker or coordination modules
-with their first implemented workflow. Do not create empty modules or generic
-extension frameworks for backlog ideas.
+Remote verification has an experimental connected worker, available as an
+embedded mode of the controller and as a worker-only process (`worker start`)
+composed in `src/server/bootstrap/worker-process.ts`. Add further worker or
+coordination modules with their first implemented workflow. Do not create empty
+modules or generic extension frameworks for backlog ideas.
 
 See [module development](module-development.md) for implemented APIs, ownership,
 focused test commands, and responsibilities still retained by the facade.

@@ -19,6 +19,7 @@ export const CLI_HELP = [
   "  identity           Owners, agents, runtime delegations/credentials and knowledge grants",
   "  vault              DEV-only encrypted vault; signed owner approval, JSON on stdin",
   "  remote-verification  Local owner provisioning: provision --file FILE, revoke-token --credential-id ID; start opts in with --remote-verification-config FILE",
+  "  worker start       Experimental worker-only process: --config FILE [--data-dir, --state-dir]; no HTTP, MCP or admin listener",
   "  sandbox            Throwaway loopback controller for test suites; prints one JSON line, removes everything on stop",
   "  config mcp         Print the MCP client configuration",
   "  config path        Print the database path",

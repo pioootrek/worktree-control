@@ -1,21 +1,16 @@
 import { LinuxWorkerRecoveryHost } from "@/server/infrastructure/git";
 import { openRemoteRecoveryInspection } from "@/server/infrastructure/sqlite";
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { z } from "zod";
 import type { AppPaths } from "@/server/paths";
 import { acquireControllerLock } from "@/server/controller-lock";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { cliCredential, OWNER_CREDENTIAL_VARIABLES, OWNER_CREDENTIAL_REQUIRED } from "./credentials";
 import { authenticateOfflineActor } from "./offline-actor";
-import { WorkerRecoveryService, remoteDependencySetupSchema, remotePreparationTimeoutSchema } from "@/server/modules/remote-verification";
+import { WorkerRecoveryService } from "@/server/modules/remote-verification";
+import { absolutePathSchema as absolutePath, readOwnerOnlyCredentialFile, remoteIdentifierSchema as identifier, remoteNameSchema as remoteName, remoteWorkerMappingSchema as mapping } from "./remote-worker-config";
 
-const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
-const remoteName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
-const absolutePath = z.string().refine(isAbsolute, "Absolute path required");
-const mapping = z.object({ projectId: identifier, localProjectId: identifier, sourceCachePath: absolutePath, sourceRemote: remoteName, presetIds: z.array(identifier).min(1).max(16),
-  dependencySetup: remoteDependencySetupSchema.optional(), preparationTimeoutMs: remotePreparationTimeoutSchema.optional(),
-}).strict();
 const listener = z.object({
   host: z.string().min(1), port: z.number().int().min(1).max(65535),
   keyFile: absolutePath.optional(), certFile: absolutePath.optional(), allowLoopbackHttpFixture: z.boolean().default(false),
@@ -32,12 +27,9 @@ export const remoteVerificationConfigSchema = z.object({
 }).strict().refine(value => value.listener || value.worker, "A listener or outbound worker is required");
 export type RemoteVerificationConfig = z.infer<typeof remoteVerificationConfigSchema>;
 
-/** Reject shared or symlinked credential files rather than silently repairing permissions. */
+/** Embedded mode keeps requiring the legacy worker token format. */
 export function readRemoteWorkerToken(path: string): string {
-  const metadata = lstatSync(path);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.mode & 0o077 || typeof process.getuid === "function" && metadata.uid !== process.getuid()) throw new Error("Worker token must be in an owner-only regular file.");
-  if (metadata.size > 1024) throw new Error("Invalid worker token file.");
-  const token = readFileSync(path, "utf8").trim();
+  const token = readOwnerOnlyCredentialFile(path, 1024, "Worker token");
   if (!/^wts_[0-9a-f-]{36}_[0-9a-f]{64}$/.test(token)) throw new Error("Invalid worker token file.");
   return token;
 }

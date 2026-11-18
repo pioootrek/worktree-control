@@ -11,6 +11,7 @@ import { loadRemoteVerificationConfig, runRemoteVerificationCommand } from "./re
 import { LinuxWorkerRecoveryHost } from "../server/infrastructure/git";
 import { hasUnconfirmedRemoteExecution, WorkerRecoveryService } from "../server/modules/remote-verification";
 import { createRemoteVerificationRuntime } from "./remote-verification-runtime";
+import { runWorkerCommand } from "./worker-command";
 import { controllerRestoreBoundary } from "../server/restore-requests";
 import { parseUserBackupOptions } from "./user-backup-options";
 import { UserSchedules, BackupOperations, RestoreOperations, recoverBackupHandoff, finishBackupHandoff, assertBackupHandoffCompleted } from "../server/modules/backups";
@@ -143,6 +144,12 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   if (command === "backup" && process.argv[3] === "monitor") {
     const result = await runBackupMonitor(process.argv.slice(4));
     writeCliLine(JSON.stringify(result, null, 2)); process.exitCode = result.exitCode; return;
+  }
+  if (command === "worker") {
+    await runWorkerCommand(process.argv.slice(3), {
+      version: packageJson.version, write: line => process.stdout.write(`${line}\n`), error: line => console.error(line),
+    });
+    return;
   }
   const remoteVerificationConfigPath = option("--remote-verification-config");
   if (process.argv.includes("--remote-verification-config") && (!remoteVerificationConfigPath || remoteVerificationConfigPath.startsWith("--"))) throw new Error("Missing --remote-verification-config file.");

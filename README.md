@@ -767,9 +767,11 @@ restore generations remain available for recovery and may consume disk.
 Local server switching, verification and shared knowledge are available on
 `main`. Remote verification is still in development: the planned workflow is to
 push a commit, ask a customer-owned worker to check that exact SHA, and read the
-result in your existing client. Authorization, persistence and workspace
-foundations are merged; connected-worker dispatch and the complete remote
-workflow are not yet available. See the [remote verification plan](https://github.com/pioootrek/worktree-control/blob/main/docs/remote-verification-plan.md).
+result in your existing client. Authorization, persistence, workspace
+preparation and an experimental connected worker, including a worker-only
+process, are merged on `main`; the complete remote workflow, worker installation
+from the dashboard and a self-contained worker package are not yet available.
+See the [remote verification plan](https://github.com/pioootrek/worktree-control/blob/main/docs/remote-verification-plan.md).
 
 Optional local account login is available from `0.2.0`. Agent-fleet
 coordination and maintainer-operated hosting are planned. There is no hosted
