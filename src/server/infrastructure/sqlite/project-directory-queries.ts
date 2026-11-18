@@ -61,9 +61,10 @@ function mapping<Id extends string>(row: MappingRow): StoredMapping<Id> {
 
 /**
  * The project directory of step 51: a typed, read-only view of which project
- * each registration and remote identity belongs to. Not mounted anywhere: no
- * production file imports it until the resolver adapter does (a guard test
- * keeps it so). It borrows the owner's connection, as the other query modules
+ * each registration and remote identity belongs to. The store exposes the
+ * registration and project reads as a structural port; the resolver adapter
+ * remains unmounted. A guard confines production imports to the store.
+ * It borrows the owner's connection, as the other query modules
  * do, and never owns the database lifecycle. Its construction checks step 51
  * against the supported version.
  *

@@ -22,9 +22,9 @@ export interface StoredAccountGrants {
 type Row = { kind: unknown; status: unknown; role: unknown; scope_kind: unknown; project_id: unknown };
 
 /**
- * Read-only view of one account and its step-52 grants. Not mounted anywhere:
- * no production file imports it until the grants adapter is wired (a guard
- * test keeps it so). It borrows the owner's connection, as the other query
+ * Read-only view of one account and its step-52 grants, exposed by the store
+ * as a structural read port. The operations adapter remains unmounted. A guard
+ * confines production imports to the store. It borrows the owner's connection, as the other query
  * modules do, and never owns the database lifecycle. Its construction checks
  * step 52 against the supported version.
  *

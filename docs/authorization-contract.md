@@ -336,9 +336,10 @@ status of its project (owner decision of 2026-11-17).
 
 Slice 3 (C4) adds two unmounted adapters under
 `src/server/modules/operations/adapters/`. Neither imports SQLite: each takes a
-structural read port, and only tests wire the SQLite query modules
-(`AccountGrantsQueries`, `ProjectDirectoryQueries`) into them. Nothing exports
-or mounts them yet.
+structural read port. The store exposes the SQLite query modules
+(`AccountGrantsQueries`, `ProjectDirectoryQueries`) on its owned core
+connection; only tests wire the adapters. Nothing exports or mounts the
+adapters yet.
 
 - `sqliteGrants` builds the runtime's `grants()`. Each call is one snapshot
   that reads each account at most once, together with its grants, in one
@@ -1197,7 +1198,8 @@ These are not implemented here. The slices that mount the contract own them.
 
 - Store adapters. Two SQLite adapters exist, unmounted (see
   [SQLite adapters](#sqlite-adapters)): the grants snapshot, and a resolver for
-  the `registration` and `project` kinds only. Every other resource kind has
+  the `registration` and `project` kinds only. The store exposes their read
+  ports; production does not wire the adapters. Every other resource kind has
   no resolver and answers `internal`. The idempotency store exists only as a
   port and an in-memory test double. Of the credential verifier, only the
   provider-session half exists (see [Provider sessions](#provider-sessions));

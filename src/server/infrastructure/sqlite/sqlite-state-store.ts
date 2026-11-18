@@ -65,6 +65,9 @@ import { inspectSchema } from "./schema-inspection";
 import { configureDurability, assertDurability } from "./database-validation";
 import { OwnedSqliteDatabase, type DatabaseProvenance } from "./owned-database";
 import { IdentityQueries } from "./identity-queries";
+import { MachineCredentialQueries } from "./machine-credential-queries";
+import { AccountGrantsQueries } from "./account-grants-queries";
+import { ProjectDirectoryQueries, type ProjectId, type RegistrationId } from "./project-directory-queries";
 import { KnowledgeQueries } from "./knowledge-queries";
 import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
 import type { TaskStateFacts } from "@/server/modules/knowledge";
@@ -812,6 +815,7 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
     })();
   }
 
+  /** Server-only policy, token verifier and generation. Requires an admitted core phase in strict mode. */
   getAuthenticationPolicy(): AuthenticationPolicy {
     return this.authentication.getAuthenticationPolicy();
   }
@@ -944,6 +948,26 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
   runtimeMemberships(): RuntimeMembershipQueries { return new RuntimeMembershipQueries(this.database); }
 
   humanAccounts(): HumanAccountQueries { return new HumanAccountQueries(this.database); }
+
+  /** Synchronous stored credential facts. Call within an admitted core phase in strict mode; never records usage. */
+  machineCredentialReader(): MachineCredentialQueries { return new MachineCredentialQueries(this.database); }
+
+  /** Synchronous committed account and grant facts. Call within an admitted core phase in strict mode. */
+  accountGrantsReader(): AccountGrantsQueries { return new AccountGrantsQueries(this.database); }
+
+  /**
+   * Synchronous committed directory facts on this owner's core connection.
+   * Call within an admitted core phase in strict mode. String IDs are looked
+   * up only in their named namespace; contract validation belongs to the caller.
+   */
+  projectDirectoryReader() {
+    const directory = new ProjectDirectoryQueries(this.database);
+    return {
+      registration: (id: string) => directory.registration(id as RegistrationId),
+      project: (id: string) => directory.project(id as ProjectId),
+      projects: () => directory.projects(),
+    };
+  }
 
   getPrincipal(id: string): Principal | null {
     return this.identity.getPrincipal(id);
