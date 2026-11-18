@@ -39,6 +39,6 @@ export { copyResolution, resolveAll, sameRelation, sameResolution, type Resource
 export {
   OperationRunner, receiptValue,
   type IdempotencyKey, type IdempotencyRecord, type IdempotencyState, type IdempotencyStore, type OperationObserver, type OperationRuntime, type RunOptions, type RunResult,
-  type StreamItem,
+  type ReadReleaseOptions, type ReadReleaseResult, type StreamItem,
 } from "./runner";
 export { MAX_DESCRIBED_PROJECTS, sessionDescribe } from "./session-describe";

@@ -7,6 +7,7 @@ import { SqliteStateStore } from "@/server/infrastructure/sqlite/sqlite-state-st
 import type { IdleCommitScope, MutationOperation, PhaseScope, QueryOperation } from "./operation";
 import { createWorld, MemoryIdempotency, P } from "./operations-fixture";
 import { onProject } from "./requirements";
+import { sessionDescribe } from "./session-describe";
 import { OperationRunner, type RunResult } from "./runner";
 
 /**
@@ -200,4 +201,74 @@ describe("operation runner on the real admission gate", () => {
     expect(log.effects).toBe(1);
     expect(idempotency.states()).toEqual(["unknown"]);
   });
+
+  it("runs read-release checks, fresh read and commit in strict admission without an asynchronous gap", async () => {
+    const root = mkdtempSync(join(tmpdir(), "operations-read-release-")); roots.push(root);
+    const store = new SqliteStateStore(join(root, "state.sqlite3"), undefined, { admission: "strict" });
+    cleanups.push(() => store.close());
+    // Negative control: the same read used below is forbidden outside admission.
+    expect(() => store.listProjects()).toThrow();
+    const world = createWorld();
+    const alice = world.human("alice");
+    const projectA = P("project-a");
+    world.resolver.addProject(projectA);
+    world.grants.grant({ accountId: alice.id, role: "reader", scope: { kind: "project", projectId: projectA } });
+    const phases: string[] = [];
+    const admitted = (name: string) => { store.listProjects(); phases.push(name); };
+    const current = world.verifier.current.bind(world.verifier);
+    world.verifier.current = identity => { admitted("authority"); return current(identity); };
+    const list = world.resolver.listProjects.bind(world.resolver);
+    world.resolver.listProjects = () => { admitted("read"); return list(); };
+    let microtaskRan = false;
+    const admission = store.admission;
+    const runner = new OperationRunner({ ...world.runtime(),
+      admission: { ...admission, run: (callback, options) => admission.run(() => {
+        queueMicrotask(() => { microtaskRan = true; });
+        const result = callback();
+        // The entire admitted callback, including commit, returns ordinary data.
+        expect(result).not.toBeInstanceOf(Promise);
+        return result;
+      }, options) },
+      grants: () => { admitted("grants"); return world.grants; },
+      now: () => { admitted("clock"); return world.clock.now; },
+    });
+    let committed = 0;
+    expect(await runner.readRelease(sessionDescribe, alice.context, {}, {
+      eligible: () => { admitted("eligible"); return true; },
+      connected: () => { admitted("connected"); return true; }, deadline: world.clock.now + 100,
+      commit: value => {
+        admitted("commit");
+        expect(microtaskRan).toBe(false);
+        expect(value.projects.map(p => p.projectId)).toEqual([projectA]);
+        committed++;
+      },
+    })).toEqual({ status: "committed" });
+    expect(committed).toBe(1);
+    expect(microtaskRan).toBe(true);
+    expect(phases).toEqual(["authority", "clock", "eligible", "connected", "grants", "read", "commit"]);
+    expect(() => store.listProjects()).toThrow();
+  });
+
+  it("gives the same contention refusal as run while a provider holds real admission", async () => {
+    const root = mkdtempSync(join(tmpdir(), "operations-read-release-")); roots.push(root);
+    const store = new SqliteStateStore(join(root, "state.sqlite3"), undefined, { admission: "strict", admissionTimeoutMs: 20 });
+    cleanups.push(() => store.close());
+    const world = createWorld();
+    const alice = world.human("alice");
+    const runner = new OperationRunner({ ...world.runtime(), admission: store.admission });
+    const entered = gate(), release = gate();
+    const borrowing = store.authenticationProviderStorage().borrow(async () => { entered.open(); await release.opened; });
+    cleanups.push(async () => { release.open(); await borrowing; });
+    await entered.opened;
+    const normal = await runner.run(sessionDescribe, alice.context, {});
+    expect(normal).toEqual({ ok: false, error: { category: "busy", status: 503, reason: "admission_refused", retry: "retry", effect: null } });
+    let commits = 0;
+    const result = await runner.readRelease(sessionDescribe, alice.context, {}, {
+      eligible: () => true, connected: () => true, deadline: world.clock.now + 100, commit: () => { commits++; },
+    });
+    if (normal.ok) throw new Error("expected admission refusal");
+    expect(result).toEqual({ status: "refused", error: normal.error });
+    expect(commits).toBe(0);
+  });
+
 });

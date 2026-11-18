@@ -19,7 +19,7 @@ import {
 import {
   copyRelation, copyResolution, copyResolvedResource, resolveAll, resolveAllowingMissing, sameRelation, sameResolution, type ResourceResolver,
 } from "./resolver";
-import { absorb, isThenable, synchronous } from "./synchronous";
+import { absorb, holds, isThenable, synchronous } from "./synchronous";
 
 /**
  * Identifies one idempotent request. `principal` is never caller-supplied:
@@ -121,6 +121,24 @@ export interface OperationRuntime {
 
 export interface RunOptions { signal?: AbortSignal; idempotencyKey?: string }
 export type RunResult<T> = { ok: true; value: T; replayed: boolean } | { ok: false; error: PublicOperationError };
+/** A request-scoped release, with no defaults for eligibility, connection or deadline. */
+export interface ReadReleaseOptions<P> extends RunOptions {
+  /** Bootstrap's one current runtime/maintenance/configuration policy. Only synchronous true allows release. */
+  eligible(): boolean;
+  /** Only synchronous true means the caller can still receive a response. */
+  connected(): boolean;
+  /** Absolute deadline in the runtime clock's milliseconds; equality is expired. */
+  deadline: number;
+  /** Absent: direct write. Present: canonicalJson of the earlier run's public value, for this operation and input. */
+  expectedCanonical?: string;
+  /** Synchronous write of the fresh released value (or of the validated buffered payload). Never retried. */
+  commit(value: P): void;
+}
+export type ReadReleaseResult =
+  | { status: "committed" }
+  | { status: "refused"; error: PublicOperationError }
+  | { status: "commit_failed"; error: PublicOperationError };
+
 export type StreamItem<T> = { event: T } | { error: PublicOperationError };
 
 /** Everything a phase reads before it resolves any reference (decision Y). */
@@ -398,10 +416,11 @@ export class OperationRunner {
    * the effective permissions (every `GrantsSnapshot` call) and, for an
    * `any_project` requirement, the current project list.
    */
-  private prepare(context: AuthenticationContext, gate: Gate): Prepared {
+  private prepare(context: AuthenticationContext, gate: Gate, check?: (now: number) => void): Prepared {
     const { authority, credential } = currentAuthorityWithCredential(context);
     if (!listenerAllowed({ excludedListeners: gate.excluded }, authority.listener)) throw notRegistered();
     const now = synchronous(this.runtime.now(), "runtime_not_synchronous");
+    check?.(now);
     const grants: GrantsSnapshot = synchronous(this.runtime.grants(), "runtime_not_synchronous");
     const permissions = effectivePermissions(authority.actor, grants);
     const projects = usesAnyProject(gate.requirement.require) ? this.projects() : undefined;
@@ -604,20 +623,74 @@ export class OperationRunner {
     }
   }
 
-  private async read<I, R, P extends object>(operation: ReadOperation<I, R, P>, context: AuthenticationContext, raw: unknown, options: RunOptions): Promise<RunResult<P>> {
+  /**
+   * Reads and commits in one synchronous core admission. An earlier `run`
+   * result is never reused: expectedCanonical validates a buffered payload
+   * against a fresh read. A commit failure confirms no successful release;
+   * it cannot undo bytes the callback already wrote, or promise client receipt.
+   */
+  async readRelease<I, R, P extends object>(operation: Operation<I, R, P> | StreamOperation<I, R, P>, context: AuthenticationContext,
+    raw: unknown, options: ReadReleaseOptions<P>): Promise<ReadReleaseResult> {
+    try {
+      if (operation.kind !== "read") throw new OperationError("internal", "invalid_operation");
+      // Capture the call's policy and payload before waiting for admission.
+      const { eligible, connected, deadline, expectedCanonical, commit, signal, idempotencyKey } = options;
+      if (typeof eligible !== "function" || typeof connected !== "function" || typeof commit !== "function"
+        || !Number.isFinite(deadline) || (expectedCanonical !== undefined && typeof expectedCanonical !== "string")) {
+        throw new OperationError("invalid_request", "invalid_input");
+      }
+      const check = (now: number) => {
+        // Throwing predicates, like thenables and non-booleans, give no answer (decision W).
+        let allowed = false;
+        try { allowed = holds(eligible()); } catch { /* no answer */ }
+        if (!allowed) throw new OperationError("unavailable", "release_not_eligible");
+        if (!Number.isFinite(now)) throw new OperationError("internal", "invalid_input");
+        if (now >= deadline) throw new OperationError("unavailable", "release_timed_out", { retry: "retry" });
+        let open = false;
+        try { open = holds(connected()); } catch { /* no answer */ }
+        if (!open || signal?.aborted) throw cancelled();
+      };
+      const result = await this.readWith(operation, context, raw, { signal, idempotencyKey }, value => {
+        // canonicalJson runs the strict serializer and sorts object keys;
+        // serializeRelease alone returns data, not canonical comparison text.
+        if (expectedCanonical !== undefined && canonicalJson(value) !== expectedCanonical) {
+          throw new OperationError("conflict", "release_payload_changed");
+        }
+        try {
+          synchronous(commit(value), "release_commit_failed");
+          return { status: "committed" } as const;
+        } catch {
+          // The write may have partially happened. Never retry or expose its thrown value.
+          return { status: "commit_failed", error: failure(new OperationError("internal", "release_commit_failed"), null, undefined) } as const;
+        }
+      }, check);
+      return result.ok ? result.value : { status: "refused", error: result.error };
+    } catch (error) {
+      return { status: "refused", error: failure(error, null, undefined) };
+    }
+  }
+
+  private read<I, R, P extends object>(operation: ReadOperation<I, R, P>, context: AuthenticationContext, raw: unknown, options: RunOptions): Promise<RunResult<P>> {
+    return this.readWith(operation, context, raw, options, value => value);
+  }
+
+  /** Shared read refusals and release checks. `finish` runs before the admitted callback returns, with no await. */
+  private async readWith<I, R, P extends object, T>(operation: ReadOperation<I, R, P>, context: AuthenticationContext, raw: unknown,
+    options: RunOptions, finish: (value: P) => T, check?: (now: number) => void): Promise<RunResult<T>> {
     const { signal } = options;
     try {
+      if (!this.registeredFor(operation, context)) throw notRegistered();
       this.idempotency(false, options.idempotencyKey);
       const input = this.parse(operation.parse, raw);
       const refs = this.references(operation, input);
       const gate = gateOf(operation);
       const value = await this.runtime.admission.run(() => {
-        const phase = this.admit(context, gate, refs);
+        const phase = this.decideOn(this.prepare(context, gate, check), gate, refs);
         const live: Liveness = { open: true };
         let result: R;
         try { result = operation.read(input, this.scope(phase, signal, live)); } finally { live.open = false; }
         if (isThenable(result)) { absorb(result); throw new OperationError("internal", "read_not_synchronous"); }
-        return releaseValue<P>(synchronous(operation.project(result, phase.release), "projection_not_synchronous"), operation.publicKeys);
+        return finish(releaseValue<P>(synchronous(operation.project(result, phase.release), "projection_not_synchronous"), operation.publicKeys));
       }, { signal });
       return { ok: true, value, replayed: false };
     } catch (error) {
