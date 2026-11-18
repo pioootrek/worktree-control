@@ -11,7 +11,6 @@ import { SUPPORTED_SCHEMA_VERSION } from "./migration-registry";
 import { ACCOUNT_GRANTS_READ_LIMIT } from "./account-grants-queries";
 import { PROJECT_LIST_LIMIT } from "./project-directory-queries";
 import { SqliteStateStore } from "./sqlite-state-store";
-import { storeReaderAdapters } from "../../../../tests/types/sqlite-store-readers.test";
 
 const AT = "2026-11-18T00:00:00.000Z";
 const roots: string[] = [];
@@ -164,36 +163,6 @@ describe("store authorization read ports under strict admission", () => {
       f.project("overflow"); f.grant("agent", "reader", "overflow");
       expect(() => f.directory.projects()).toThrow("Project listing exceeds its limit.");
       expect(() => f.grants.accountGrants("agent")).toThrow("Account grants exceed their read limit.");
-    });
-  });
-
-  it("feeds the unchanged C4 adapters with fresh grants and directory facts", async () => {
-    const f = fixture();
-    const adapters = storeReaderAdapters(f.store);
-    await f.store.admission.run(() => {
-      f.project("project-a"); f.project("project-b", "archived");
-      f.store.savePrincipal({ id: "agent", kind: "agent", status: "active" }, "fixture");
-      f.grant("agent", "reader", "project-a"); f.grant("agent", "executor", "project-b");
-      const id = "agent" as Parameters<ReturnType<typeof adapters.grants>["accountKind"]>[0];
-      const first = adapters.grants();
-      expect(first.accountKind(id)).toBe("agent");
-      expect(first.grantsFor(id).map(row => row.role)).toEqual(["reader", "executor"]);
-      f.database.prepare("DELETE FROM account_grants WHERE account_id='agent' AND role='reader'").run();
-      expect(first.grantsFor(id).map(row => row.role)).toEqual(["reader", "executor"]);
-      expect(adapters.grants().grantsFor(id).map(row => row.role)).toEqual(["executor"]);
-      f.store.savePrincipal({ id: "agent", kind: "agent", status: "revoked" }, "fixture");
-      expect(adapters.grants().accountKind(id)).toBeNull();
-      expect(adapters.grants().grantsFor(id)).toEqual([]);
-      expect(adapters.resolver.listProjects()).toEqual(["project-a", "project-b"]);
-      expect(adapters.resolver.resolve({ kind: "project", id: "project-b" })).toEqual({
-        ref: { kind: "project", id: "project-b" }, projectId: "project-b", version: 1, relation: null,
-      });
-      const registration = f.store.addProject({ name: "Adapter", repositoryPath: "/fixture/adapter", port: 5433, executable: "node", args: [] });
-      expect(adapters.resolver.resolve({ kind: "registration", id: registration.id })).toEqual({
-        ref: { kind: "registration", id: registration.id }, projectId: null, version: f.directory.registration(registration.id)!.mappingVersion, relation: null,
-      });
-      f.store.removeProject(registration.id, "fixture");
-      expect(adapters.resolver.resolve({ kind: "registration", id: registration.id })).toBeNull();
     });
   });
 

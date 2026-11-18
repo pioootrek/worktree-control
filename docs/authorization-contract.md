@@ -1101,15 +1101,20 @@ not implemented.
 ## Unmounted guard
 
 `unmounted.test.ts` enforces decision U over a fixed inventory: every source
-file under `src`, `packages` and `scripts`, plus these root files:
+file under `src`, `packages`, `scripts` and `tests`, plus these root files:
 `eslint.config.mjs`, `next-env.d.ts`, `next.config.ts`, `playwright.config.ts`,
-`playwright.e2e.config.ts`, `postcss.config.mjs` and the six `vitest.*.config.ts`
-files. Build and dependency trees (`node_modules`, `.git`, `.next`, `dist`,
+`playwright.e2e.config.ts`, `postcss.config.mjs`,
+`vitest.auth-provider-proof.config.ts`, `vitest.config.ts`,
+`vitest.https.config.ts`, `vitest.integration.config.ts`,
+`vitest.provider-administration.config.ts` and
+`vitest.remote-recovery.config.ts`. Build and dependency trees (`node_modules`, `.git`, `.next`, `dist`,
 `out`, `build`, `coverage`, `.turbo`, `test-results`, `playwright-report`) are
 never scanned. The test also fails when a root-level source file is missing
 from that list. Files of the module itself and the contract file are exempt.
-`tests/`, `site/`, `skills/` and `design-reference/` are not part of the
-inventory.
+`site/`, `skills/` and `design-reference/` are not part of the inventory.
+A source file cannot hide an import behind a helper under `tests/`: that
+helper is itself scanned. Negative controls cover direct module and contract
+imports under `tests/`, and a `src/` importer of such a helper.
 
 Within the inventory, the guard does three things:
 
