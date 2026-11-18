@@ -79,6 +79,15 @@ clean environment. Steps after 49 are provisional until the release candidate,
 so rebuild fixtures after editing one, and treat every database such a build
 has migrated as disposable.
 
+Exception, on the owner's word for each run: a rehearsal of the explicit
+upgrade, up to and including `upgrade inspect`, may read real data. The source
+is an existing backup file that the owner names, never the live database, its
+witness or its state directory. Hash the source before and after the run to
+show it did not change. Restore it into a directory of its own, with its own
+data, attachment, witness, restore and key paths, and delete that directory
+when the run ends. Record the run in Knowledge. `upgrade apply` on real data is
+outside this exception.
+
 The gate, who merges, and the reasons are in Knowledge reply `84abdf8a`,
 section 7, of discussion `8a2683b8`. Merges into `main`, releases and
 publication need the owner's word.

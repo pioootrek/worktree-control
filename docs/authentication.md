@@ -1315,6 +1315,84 @@ witnesses, filesystem synchronization faults, SQL rollback, idle rechecks and
 real child-process crashes. See the historical implementation reference for
 the detailed test boundaries.
 
+### After an unclean stop or a storage failure
+
+This section is for the person who operates an installation. It explains why a
+controller can refuse to start after it was killed, how likely that is, and
+what the way out costs.
+
+Every write to a table the fence protects publishes a witness marked pending
+before the row changes. After the commit it publishes a confirmed witness.
+Such writes are routine. Each authentication with an agent or owner credential
+writes one, because it records when the credential was last used. So do each
+saved test run, claims and their renewals, sign-in and sessions in account
+mode, remote-worker contact and settings. The check of the installation token in
+`token` mode writes nothing protected.
+
+If the controller is stopped in a way it cannot catch between the two
+publications, the next start is refused with `security_fence_recovery_required`.
+The stops it cannot catch are `SIGKILL`, the kernel's out-of-memory killer,
+power loss, a kernel crash, and the service manager killing the process after
+its stop timeout (the generated systemd unit uses `TimeoutStopSec=15`). An
+ordinary stop is safe: `SIGTERM`, or a `systemctl stop` that finishes in time.
+The controller finishes the write and its confirmation first. Tests cover this.
+
+How long the gap lasts was measured on one host, with 200 samples per case. It
+is about 5 milliseconds per protected write on an ext4 disk. The medians were
+4.6 ms for an authentication with a credential and 5.6 ms for a saved test run,
+and single samples reached 14 ms. On tmpfs it is under 1.2 ms. The next figure
+is an estimate, not a measurement. An installation that handles 30 credential
+authentications and 12 test-run saves a minute spends about 0.3% of its time
+inside the gap, so roughly one uncatchable stop in 300 would land there. Stops
+caused by memory pressure during heavy test activity are more likely to land
+there than a stop at a random moment. A slower or busier disk lengthens the
+gap.
+
+The only supported way out of a refused start is `auth fence inspect`, then
+`auth fence resume --expect <preflight> --mode <token|open|better-auth>` with
+the controller stopped. The steps are in
+[Protected operator workflow](#protected-operator-workflow). Resume keeps
+accounts, principals, history and audit, but it removes authority:
+
+- credentials and all grants, roles, delegations and memberships stay as
+  records but are revoked;
+- provider passwords and tokens are cleared;
+- sessions, verification challenges, TOTP and passkey bindings are deleted;
+- the installation token is removed;
+- claims are released;
+- running test runs are marked interrupted.
+
+Afterwards, in `token` mode, create a new installation token, reconfigure every
+client and issue agent credentials again. In account mode, every user sets a
+password and a second factor again.
+
+A storage failure while the controller runs, such as no space left or an I/O
+error, can strike during one of these publications. It does not stop the
+process. From then on that process refuses every protected write and every
+protected read with `security_fence_pending`, also after space is free again.
+No caller is told that a write succeeded when its confirmation was not
+published. Restart the controller. What the restart finds depends on where the
+failure struck. If it struck before the pending witness was in place, which is
+the usual case when the disk is already full, nothing was changed and the start
+is admitted. If it struck after the pending witness was in place, the start is
+refused as described above and needs the resume, even when the row change
+itself was rolled back. This was tested with injected errors, not with a really
+full disk.
+
+To reduce the risk:
+
+- Do not stop the controller with `kill -9`. Let `systemctl stop` finish.
+- Watch the free space on the volume that holds the state directory and the
+  witness.
+- Give the host enough memory that the out-of-memory killer does not pick the
+  controller.
+- Before deciding anything about a failed start, run `auth fence inspect` to
+  see whether it is this case.
+
+Planned, not delivered: the next breaking release is meant to recognise at
+start the state that follows a completed write, so that part of these stops no
+longer needs a resume. The state before the write stays refused.
+
 ## Verification status and known limitations
 
 Release-candidate evidence, Linux x64 only:
@@ -1348,6 +1426,13 @@ Release-candidate evidence, Linux x64 only:
   monotonically increasing accepted TOTP step and commits each guessing charge
   before native verification. Its production-composition tests passed on the
   same commit. This classification does not make the full proof suite green.
+
+- **Unclean stop during a protected write.** A stop the controller cannot
+  catch, or a storage failure, between the pending and the confirmed witness can
+  leave a refused start that only `auth fence resume` clears, and resume removes
+  all credentials and grants. No behaviour change is planned for this release.
+  See
+  [After an unclean stop or a storage failure](#after-an-unclean-stop-or-a-storage-failure).
 
 Not claimed: ASVS or other compliance, MFA hardware coverage, macOS or Windows
 operation, protection against a trusted OS user or a whole-host rollback,
