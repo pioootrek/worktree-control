@@ -1479,6 +1479,14 @@ accounts, principals, history and audit, but it removes authority:
 - claims are released;
 - running test runs are marked interrupted.
 
+On this unreleased integration build, resume is not the last step. After it,
+the start and every offline `auth`, `auth provider` and `identity` command are
+refused with `upgrade_required` until the explicit upgrade has run. The order
+is: resume, `upgrade inspect`, `upgrade apply`, then credentials and grants,
+as in
+[The explicit upgrade (unreleased integration build)](#the-explicit-upgrade-unreleased-integration-build).
+Do not issue credentials or grants before the apply: it revokes them.
+
 Afterwards nobody has access until it is set up again. In `token` mode, create
 a new installation token, reconfigure every client and issue agent credentials
 again. New credentials reach no project by themselves: recreate the project
