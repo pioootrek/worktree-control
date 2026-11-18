@@ -9,7 +9,7 @@ import { InstallationVerifier, type InstallationPolicy } from "./installation-ve
 export const NOW = Date.parse("2026-11-18T12:00:00.000Z");
 export const iso = (time: number) => new Date(time).toISOString();
 export const hash = (secret: string) => createHash("sha256").update(secret, "utf8").digest("hex");
-export const token = (prefix: "wts" | "wsi", id = randomUUID()) => `${prefix}_${id}_${randomBytes(32).toString("hex")}`;
+export const token = (prefix: "wts" | "wsi", id: string = randomUUID()) => `${prefix}_${id}_${randomBytes(32).toString("hex")}`;
 export const presentedBearer = (secret: string): PresentedCredentials => ({
   bearers: [{ class: classifyBearer(secret), secret }], providerSession: null, legacySecret: false, browserHeaders: false,
 });
@@ -21,7 +21,7 @@ export const INVALID = "unauthenticated:invalid_credential";
 export const GONE = "unauthenticated:credential_no_longer_valid";
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
-export type MutableCredential = Mutable<AgentCredentialRecord> & {
+export type MutableCredential = Mutable<Omit<AgentCredentialRecord, "principal">> & {
   principal: Mutable<AgentCredentialRecord["principal"]>;
   label: string;
   lastUsedAt: string | null;
