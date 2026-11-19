@@ -48,8 +48,8 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs: { controller() {} },
     eligibility, provider: null, listeners: { api: () => apiOpen, unix: () => unixOpen } });
   const hooks: { afterMint?: () => void | Promise<void>; legacy?: (body: unknown) => unknown } = {};
-  const runtime = { ...built, mint: async (...args: Parameters<typeof built.mint>) => {
-    const result = await built.mint(...args); if (result.ok) await hooks.afterMint?.(); return result;
+  const runtime = { ...built, mint: async (...args: Parameters<Extract<typeof built, { supported: true }>["mint"]>) => {
+    const result = built.supported ? await built.mint(...args) : await built.mint(); if (result.ok) await hooks.afterMint?.(); return result;
   } };
   const oldAuthentication = { mode: () => mode as "open", authenticateInstallation: vi.fn(() => null), anonymousInstallation: vi.fn(() => null) };
   const legacy = vi.fn((body: unknown) => hooks.legacy ? hooks.legacy(body) : { echo: body });
@@ -100,6 +100,7 @@ describe("raw operations namespace", () => {
     for (const suffix of ["../session.describe", "%2e%2e/session.describe", "session%2edescribe", "session.describe/", "/session.describe", "session.describe?x=1", "session%2fdescribe", "session%5cdescribe", "unknown.operation"]) {
       expect(parseOperationsPath(`/api/operations/${suffix}`, ["session.describe"])).toEqual({ claimed: true, surface: "api", operation: null });
     }
+    for (const target of ["/api/operations?session.describe", "/api/operations%session.describe", "/api/operations%2fsession.describe"]) expect(parseOperationsPath(target, ["session.describe"])).toMatchObject({ claimed: true, operation: null });
     expect(parseOperationsPath(route, ["session.describe"])).toMatchObject({ operation: "session.describe" });
     expect(parseOperationsPath("/mcp/operations", [])).toMatchObject({ claimed: true, surface: "mcp" });
     expect(parseOperationsPath("/api/operations-old/session.describe", [])).toEqual({ claimed: false });
@@ -163,7 +164,7 @@ describe("real API and unix acceptance", () => {
 
   it("refuses browser headers and every credential on unix", async () => {
     const f = await fixture();
-    for (const headers of [{ Origin: "https://fixture.example" }, { "Sec-Fetch-Site": "none" }, { Cookie: "unrelated=x" }]) {
+    for (const headers of [{ Origin: "https://fixture.example" }, { "Sec-Fetch-Site": "none" }, { Cookie: "unrelated=x" }] as Record<string, string>[]) {
       expect((await f.send("unix", { headers: { "Content-Type": "application/json", ...headers } }).reply).body).toEqual(refusal("browser_headers_on_unix"));
     }
   });
@@ -308,6 +309,7 @@ describe("boundary conformance through real listeners", () => {
     if (!f.built.supported) throw new Error("supported runtime required");
     const runner = f.built.runner;
     vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
+      if (operation.kind === "stream") throw new Error("read required");
       const result = await runner.run(operation, context, raw, { signal: options.signal });
       entered.done(); await release.promise;
       if (!result.ok) return { status: "refused", error: result.error };
