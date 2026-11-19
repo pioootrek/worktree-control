@@ -1,5 +1,5 @@
 import type { DatabaseAdmissionOptions } from "../database-admission";
-import type { SqliteStateStore } from "../infrastructure/sqlite/sqlite-state-store";
+import type { SqliteStateStore } from "../sqlite-store";
 import type { LogWriter } from "../log-writer";
 import type { AuthenticationProviderRuntime, VerifiedProviderSession } from "../modules/authentication";
 import {

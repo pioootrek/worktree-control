@@ -266,7 +266,9 @@ describe("unmounted real operations composition under strict admission", () => {
     expect(c.registry.ids()).toEqual(["session.describe"]);
     for (const listener of ["api", "mcp", "worker", "unix", "offline"] as const) expect(c.registry.idsOn(listener)).toEqual(["session.describe"]);
     expect(Object.isFrozen(c)).toBe(true); expect(Object.isFrozen(c.boundaries)).toBe(true);
-    expect(c.runtime.admission).toBe(f.store.admission);
+    // The store returns a new wrapper on each access. Exercise the owned gate
+    // instead of comparing wrapper identity: strict SQLite refuses this outside it.
+    expect(await c.runtime.admission.run(() => f.store.getAuthenticationPolicy().mode)).toBe("open");
     c.runtime.observer.streamDisposalFailed({ operationId: "session.describe", kind: "timed_out" });
     expect(f.logs.controller).toHaveBeenCalledExactlyOnceWith("operations.stream_disposal_failed", { operationId: "session.describe", kind: "timed_out" });
     expect(CONTROLLER_OPERATION_SESSION_POLICY).toEqual({ stagedCapacity: 16, stagedTtlMs: 5000 });
