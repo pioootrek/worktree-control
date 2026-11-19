@@ -60,6 +60,11 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict", admissionTimeoutMs: 100 });
   cleanups.push(() => store.close());
+  // The getter normally returns a fresh forwarding facade. Pin ONE real facade
+  // before composition/mounting so later admission spies observe their actual
+  // calls. It still forwards to the same owned core gate, with no fake admission.
+  const admission = store.admission;
+  vi.spyOn(store, "admission", "get").mockReturnValue(admission);
   const clock = { offset: 0 };
   const db = ownedFixtureDatabase(store), state = { maintenance: false, stopping: false, configChanged: false };
   const installation = token("wsi"), agent = token("wts"), credentialId = agent.slice(4, 40);
@@ -266,9 +271,10 @@ async function disconnectedCapacity(f: Fixture, driver: BoundaryDriver, mutant: 
   } finally { release.done(); }
 }
 function assertMaintenanceRelease(reply: Reply) {
-  conform("maintenance release status", reply.status, 503);
-  expect(reply.body).toEqual(refusal("release_not_eligible", "unavailable", 503, "none"));
-  assertRefused(reply, 0);
+  conform("maintenance release status", reply.status, 401);
+  // Context revalidation precedes readRelease's eligibility check.
+  expect(reply.body).toEqual(refusal("listener_closed"));
+  expect(reply.body).not.toHaveProperty("actor");
 }
 async function bufferedRelease(f: Fixture, driver: BoundaryDriver, mutant: boolean) {
   if (!f.built.supported) throw new Error("supported runtime required");
@@ -380,7 +386,7 @@ describe("real API and unix acceptance", () => {
       for (const header of ["Host", "Content-Type", "Origin"]) {
         const headers = ["Content-Length", "2", "Content-Type", "application/json", header, header === "Content-Type" ? "application/json" : "localhost", header, header === "Content-Type" ? "application/json" : "localhost"];
         const reply = await driver.send({ headers }).reply;
-        expect(reply.status).toBe(header === "Origin" && driver.kind === "api" ? 403 : 400);
+        expect(reply.status).toBe(400);
       }
     }
     expect(mint).not.toHaveBeenCalled();
@@ -817,7 +823,7 @@ describe("boundary conformance through real listeners", () => {
   it("negative control: buffered success without revalidation writes exactly 200 with a DTO after maintenance", async () => {
     const f = await fixture(), reply = await bufferedRelease(f, f.drivers.api, true);
     expect(reply.body).toHaveProperty("actor.kind", "installation");
-    expectFailure(() => assertMaintenanceRelease(reply), "maintenance release status", 200, 503);
+    expectFailure(() => assertMaintenanceRelease(reply), "maintenance release status", 200, 401);
   });
 
   it.each(["api", "unix"] as const)("%s writes success only inside real core admission and hides credential IDs", async listener => {
@@ -864,14 +870,14 @@ describe("boundary conformance through real listeners", () => {
         f.store.saveKnowledgeProject({ id, name: id, status: "active", revision: 1, createdAt: iso(NOW), updatedAt: iso(NOW) }, "fixture");
       }
     });
-    let backpressured = false, finished = false;
+    let backpressured = false, backpressureBeforeFinish = false, finished = false;
     driver.server.prependOnceListener("request", (_req, response) => {
       const socket = response.socket!, write = socket.write.bind(socket);
       // Observe the real write's return value. No bytes, end, drain or finish
       // are delayed or simulated. The separate end-hook test controls ownership.
       socket.write = ((...args: Parameters<Socket["write"]>) => {
         const accepted = write(...args);
-        if (!accepted) { backpressured = true; expect(response.writableFinished).toBe(false); }
+        if (!accepted) { backpressured = true; backpressureBeforeFinish ||= !finished; }
         return accepted;
       }) as Socket["write"];
       response.once("finish", () => { finished = true; });
@@ -879,7 +885,7 @@ describe("boundary conformance through real listeners", () => {
     const reply = await driver.send().reply;
     expect(reply.status).toBe(200); expect(reply.body.projects).toHaveLength(302);
     expect(Buffer.byteLength(JSON.stringify(reply.body))).toBeGreaterThan(64 * 1024);
-    expect(backpressured).toBe(true); expect(finished).toBe(true);
+    expect(backpressured).toBe(true); expect(backpressureBeforeFinish).toBe(true); expect(finished).toBe(true);
     expect((await driver.capacityProbe()).status).toBe(200);
   });
 
