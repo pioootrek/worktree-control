@@ -15,6 +15,15 @@ export const OPERATIONS_MCP_TOOLS = Object.freeze([Object.freeze({
   inputSchema: Object.freeze({ type: "object" as const, properties: Object.freeze({}), additionalProperties: false }),
 })]);
 
+/** Canonical HTTP loopback origin at the listener's effective port. */
+export function isOperationsMcpOrigin(originHeader: string, localPort: number | undefined): boolean {
+  try {
+    const origin = new URL(originHeader);
+    return origin.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(origin.hostname)
+      && (origin.port || "80") === String(localPort) && origin.origin === originHeader;
+  } catch { return false; }
+}
+
 /** Built in D1a-7a, deliberately unmounted. Each handle owns exactly one SDK pair. */
 export function createOperationsMcp(options: {
   runtime: OperationsHttpRuntime;
@@ -67,14 +76,8 @@ export function createOperationsMcp(options: {
       }
       // Fail closed for browser Origins. The canonical loopback origin must match
       // the local socket port; a supplied Host is never an authority for this check.
-      if (request.headers.origin !== undefined) {
-        let allowed = false;
-        try {
-          const origin = new URL(request.headers.origin);
-          allowed = origin.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(origin.hostname)
-            && origin.port === String(request.socket.localPort) && origin.origin === request.headers.origin;
-        } catch { /* refused */ }
-        if (!allowed) { refuse(failure("forbidden", "origin_forbidden")); return; }
+      if (request.headers.origin !== undefined && !isOperationsMcpOrigin(request.headers.origin, request.socket.localPort)) {
+        refuse(failure("forbidden", "origin_forbidden")); return;
       }
       validateOperationsSingletonHeaders(request, ["accept", "mcp-protocol-version"]);
       if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers["content-type"] ?? "")) throw new BoundaryError(400, "invalid_request");
@@ -109,8 +112,8 @@ export function createOperationsMcp(options: {
           return { isError: true, content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
         }
       });
-      // The SDK has no JSON response ceiling. Bound its message before it allocates
-      // a Response, then bound the actual Response bytes too. This is NOT release.
+      // Bound messages sent via send before Response allocation. SDK protocol
+      // errors bypass send, so also bound the buffered Response. This is NOT release.
       let rejectOutput!: (error: unknown) => void;
       const outputFailure = new Promise<never>((_, reject) => { rejectOutput = reject; });
       void outputFailure.catch(() => undefined);
@@ -121,7 +124,7 @@ export function createOperationsMcp(options: {
         }
         return send(...args);
       };
-      await server.connect(transport);
+      await Promise.race([server.connect(transport), cancelled]);
       const message = body as Record<string, unknown>;
       rpcId = typeof message.id === "string" || typeof message.id === "number" ? message.id : undefined;
       engaged = true;
@@ -161,11 +164,18 @@ export function createOperationsMcp(options: {
       // All application reads are awaited before SDK dispatch. SDK handlers are
       // finite and perform no async work. close aborts its protocol bookkeeping;
       // notably SDK close does not settle an abandoned JSON response promise.
-      await server?.close();
-      await completed;
-      clearTimeout(timer); cancellations.delete(cancel);
-      request.off("aborted", cancel); request.off("error", cancel);
-      response.off("finish", finish); response.off("close", closed);
+      try { await server?.close(); }
+      catch { /* Disposal errors are contained; the committed response cannot be replaced. */ }
+      finally {
+        // A close that never settles retains ownership. A rejection must still
+        // wait for real Node completion and remove every request-owned resource.
+        try { await completed; }
+        finally {
+          clearTimeout(timer); cancellations.delete(cancel);
+          request.off("aborted", cancel); request.off("error", cancel);
+          response.off("finish", finish); response.off("close", closed);
+        }
+      }
     }
   };
   return {

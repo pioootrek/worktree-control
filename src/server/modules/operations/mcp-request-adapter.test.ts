@@ -1,8 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +15,7 @@ import { SqliteStateStore } from "@/server/sqlite-store";
 import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
 import { resolveAppPaths } from "@/server/paths";
 import { IdentityService } from "@/server/modules/identity";
-import { createOperationsMcp, OPERATIONS_MCP_TOOLS } from "@/server/transports/operations-mcp";
+import { createOperationsMcp, isOperationsMcpOrigin, OPERATIONS_MCP_TOOLS } from "@/server/transports/operations-mcp";
 import { operationsFailure, type OperationsHttpRuntime } from "@/server/transports/operations-http";
 import { SESSION_COOKIE } from "@/server/transports/authentication-http-boundary";
 import { createBoundaryDriver, conform, ConformanceFailure } from "./http-boundary-driver";
@@ -53,7 +55,8 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + state.offset, logs: { controller() {} }, provider: null,
     eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), listeners: { mcp: () => true } });
   if (!built.supported) throw new Error("fixture mode unsupported");
-  const hooks: { beforeFinal?: (response: ServerResponse) => void | Promise<void>; beforeMint?: (signal?: AbortSignal) => void | Promise<void> } = {};
+  const handles: Promise<void>[] = [];
+  const hooks: { beforeHandle?: (request: IncomingMessage, response: ServerResponse) => void; beforeFinal?: (response: ServerResponse) => void | Promise<void>; beforeMint?: (signal?: AbortSignal) => void | Promise<void> } = {};
   let currentResponse!: ServerResponse;
   const minted = vi.fn(async (...args: Parameters<typeof built.mint>) => {
     await hooks.beforeMint?.(args[3].signal);
@@ -80,7 +83,9 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
       if (brokenActive) { operationsFailure(response, { category: "busy", reason: "listener_capacity", retry: "retry", effect: null, status: 503 }); return; }
       brokenActive++; response.once("close", () => { brokenActive--; });
     }
-    void adapter.handle(request, response);
+    hooks.beforeHandle?.(request, response);
+    const handle = adapter.handle(request, response); handles.push(handle);
+    void handle;
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   cleanups.push(async () => { adapter.stop(); server.closeAllConnections(); await adapter.drain(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); });
@@ -94,7 +99,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   };
   const credential = mode === "token" ? installation : mode === "better-auth" ? agent : undefined;
   const grant = () => admission.run(() => db.prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('agent','reader','project','project-a',?)").run(iso(NOW)));
-  return { root, store, db, admission, state, built, runtime, minted, hooks, adapter, server, driver, send, client, installation, agent, other, owner, worker, credential, used, legacy, grant };
+  return { root, store, db, admission, state, built, runtime, minted, hooks, handles, adapter, server, driver, send, client, installation, agent, other, owner, worker, credential, used, legacy, grant };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const operationError = (reply: Awaited<ReturnType<Fixture["send"]>["reply"]>) => reply.body.error?.data ?? reply.body.error;
@@ -174,7 +179,96 @@ describe("unmounted request-scoped MCP adapter", () => {
   it("bounds request bytes and SDK response bytes, including before Response construction", async () => {
     const f = await fixture("open", { bodyBytes: 200, responseBytes: 100 });
     expect(operationError(await f.send(call, undefined, {}, { body: JSON.stringify({ data: "x".repeat(201) }) }).reply)).toMatchObject({ reason: "request_too_large", category: "payload_too_large" });
+    const originalSend = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
     expect(operationError(await f.send(call).reply)).toMatchObject({ reason: "response_too_large", category: "payload_too_large", status: 413 });
+    expect(originalSend).not.toHaveBeenCalled();
+  });
+
+  it("compares canonical loopback Origins using effective HTTP ports", () => {
+    for (const host of ["127.0.0.1", "localhost", "[::1]"]) {
+      expect(isOperationsMcpOrigin(`http://${host}`, 80)).toBe(true);
+      expect(isOperationsMcpOrigin(`http://${host}:1234`, 1234)).toBe(true);
+      for (const origin of [`http://${host}`, `http://${host}:80`, `http://${host}:1234/`, `https://${host}:1234`, `http://user@${host}:1234`]) {
+        expect(isOperationsMcpOrigin(origin, 1234), origin).toBe(false);
+      }
+      expect(isOperationsMcpOrigin(`http://${host}:80`, 80)).toBe(false); // non-canonical spelling
+    }
+    for (const origin of ["null", "broken", "http://evil.invalid", "http://127.0.0.2", "http://LOCALHOST"]) {
+      expect(isOperationsMcpOrigin(origin, 80), origin).toBe(false);
+    }
+    expect(isOperationsMcpOrigin("http://localhost", undefined)).toBe(false);
+  });
+
+  it("contains SDK close rejection and holds capacity until real Node finish, cleaning up exactly once", async () => {
+    const f = await fixture("open", { maxInFlight: 1, deadlineMs: 12_345 });
+    const closeCalled = pause(), written = pause();
+    const close = vi.spyOn(Server.prototype, "close").mockImplementationOnce(async () => { closeCalled.done(); throw new Error("faulted SDK disposal"); });
+    const timers = vi.spyOn(globalThis, "setTimeout"), clear = vi.spyOn(globalThis, "clearTimeout");
+    const unhandled = vi.fn(); process.on("unhandledRejection", unhandled);
+    cleanups.push(() => { process.off("unhandledRejection", unhandled); });
+    let request!: IncomingMessage, response!: ServerResponse, completeWrite!: () => void, restoreWrites!: () => void;
+    let before!: ReturnType<IncomingMessage["rawListeners"]>[];
+    f.hooks.beforeHandle = (req, res) => {
+      request = req; response = res;
+      before = [req.rawListeners("aborted"), req.rawListeners("error"), res.rawListeners("finish"), res.rawListeners("close")];
+      const socket = res.socket!;
+      const hold = (callback: (error?: Error | null) => void) => (error?: Error | null) => {
+        completeWrite = () => callback(error); written.done();
+      };
+      const write = socket._write.bind(socket), writev = socket._writev!.bind(socket);
+      const single = vi.spyOn(socket, "_write").mockImplementation((chunk, encoding, callback) => write(chunk, encoding, hold(callback)));
+      const batch = vi.spyOn(socket, "_writev").mockImplementation((chunks, callback) => writev(chunks, hold(callback)));
+      restoreWrites = () => { single.mockRestore(); batch.mockRestore(); };
+    };
+    const pending = f.send(call);
+    await closeCalled.promise; await written.promise;
+    f.hooks.beforeHandle = undefined;
+    const requestTimer = timers.mock.results[timers.mock.calls.findIndex(args => args[1] === 12_345)].value;
+    let settled = 0, rejected: unknown;
+    void f.handles[0].then(() => { settled++; }, error => { rejected = error; });
+    try {
+      expect(response.writableEnded).toBe(true); expect(response.writableFinished).toBe(false);
+      expect(operationError(await f.send(list).reply).reason).toBe("listener_capacity");
+      expect(settled).toBe(0); expect(rejected).toBeUndefined();
+      expect(clear.mock.calls.filter(args => args[0] === requestTimer)).toHaveLength(0);
+    } finally { restoreWrites(); completeWrite(); }
+    expect((await pending.reply).status).toBe(200);
+    await expect(f.handles[0]).resolves.toBeUndefined(); await f.adapter.drain();
+    expect(settled).toBe(1); expect(rejected).toBeUndefined(); expect(unhandled).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(clear.mock.calls.filter(args => args[0] === requestTimer)).toHaveLength(1);
+    const remaining = [request.rawListeners("aborted"), request.rawListeners("error"), response.rawListeners("finish"), response.rawListeners("close")];
+    expect(remaining.map((listeners, index) => listeners.filter(listener => !before[index].includes(listener)))).toEqual([[], [], [], []]);
+    expect((await f.send(list).reply).status).toBe(200); await f.adapter.drain();
+    const aborts = vi.spyOn(AbortController.prototype, "abort");
+    f.adapter.stop(); f.adapter.stop(); expect(aborts).not.toHaveBeenCalled();
+  });
+
+  it.each(["deadline", "stop", "disconnect"])("interrupts a never-settling SDK connect on %s", async kind => {
+    const f = await fixture("open", { maxInFlight: 1, deadlineMs: kind === "deadline" ? 100 : 12_345 });
+    const reached = pause();
+    vi.spyOn(Server.prototype, "connect").mockImplementationOnce(() => { reached.done(); return new Promise<void>(() => {}); });
+    const close = vi.spyOn(Server.prototype, "close");
+    const pending = f.send(call); await reached.promise;
+    if (kind === "stop") f.adapter.stop();
+    if (kind === "disconnect") pending.call.destroy();
+    if (kind === "disconnect") await expect(pending.reply).rejects.toThrow();
+    else expect(operationError(await pending.reply)).toMatchObject({ category: "unavailable", reason: kind === "deadline" ? "request_timed_out" : "request_cancelled", retry: "retry", effect: null, status: 503 });
+    await expect(f.handles[0]).resolves.toBeUndefined(); await f.adapter.drain();
+    expect(close).toHaveBeenCalledTimes(1);
+    if (kind !== "stop") expect((await f.send(list).reply).status).toBe(200);
+  });
+
+  it("retains capacity after Node finish until pending SDK disposal settles", async () => {
+    const f = await fixture("open", { maxInFlight: 1 });
+    const disposing = pause(), disposed = pause();
+    vi.spyOn(Server.prototype, "close").mockImplementationOnce(() => { disposing.done(); return disposed.promise; });
+    const pending = f.send(call); await disposing.promise;
+    try {
+      expect((await pending.reply).status).toBe(200);
+      expect(operationError(await f.send(list).reply).reason).toBe("listener_capacity");
+    } finally { disposed.done(); }
+    await f.adapter.drain(); expect((await f.send(list).reply).status).toBe(200);
   });
 
   it.each(["maintenance", "revoke", "grants", "deadline", "disconnect", "stop", "configuration"])("rechecks %s after SDK buffering and before Node write", async change => {

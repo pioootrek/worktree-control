@@ -541,13 +541,12 @@ to the SDK, confer no authority and bind no session. Cross-request cancellation
 and session binding belong to D1c. There is no usage writer.
 
 The fixed provider-cookie refusal precedes path, method, capacity, body and
-admission checks, matching the HTTP adapter's preflight. This resolves the brief's
-conflicting "method and path first" wording in favour of that established
-preflight. Other requests check the exact path and POST method, current
-eligibility, Origin, raw singleton headers and JSON content type, then read
+admission checks, matching the HTTP adapter's preflight. Other requests check
+the exact path and POST method, current eligibility, Origin, raw singleton
+headers and JSON content type, then read
 strict bounded JSON before mint. Only an absent Origin or the canonical HTTP
-loopback origin at the socket's local port is allowed. Host is not used to
-approve an Origin. Duplicate credentials remain visible to acceptance; duplicate
+loopback origin at the socket's local port is allowed. An omitted HTTP port
+means 80. Host is not used to approve an Origin. Duplicate credentials remain visible to acceptance; duplicate
 transport singleton fields, including Accept and MCP protocol version, fail.
 Batches fail before SDK dispatch. GET and DELETE return 405 with `Allow: POST`.
 
@@ -566,13 +565,19 @@ neither SDK work nor response drain.
 
 Limits reuse HTTP's pattern: 64 KiB request, 256 KiB SDK response, 32 concurrent
 requests and a total ten-second deadline, with strict JSON depth 8 and 128 fields.
-The SDK message is byte-checked before SDK Response allocation, and the actual
-Response body is checked while buffering. Fixed refusal envelopes remain finite
-and independent of a fixture's smaller response ceiling. Disconnect, deadline
-and `stop()` abort the request. Capacity remains owned through awaited admitted
-work, SDK disposal and Node finish/close; `drain()` joins those owners. Repeated
-stop and drain are harmless. All reads are awaited; no detached provider work
-exists because cookies are refused.
+Messages routed through SDK `transport.send` are byte-checked before Response
+allocation. SDK-generated negotiation and protocol errors construct Responses
+directly and are bounded only while buffering. Every actual Response body is
+checked while buffering. Fixed refusal envelopes remain finite and independent
+of a fixture's smaller response ceiling. Disconnect, deadline
+and `stop()` abort the request, including an unfinished SDK connection. Capacity
+remains owned through awaited admitted work, SDK disposal and Node finish/close;
+`drain()` joins those owners. Disposal rejections are deliberately discarded:
+they cannot replace the committed response or reject the handler promise. Node
+completion and timer, listener and cancellation cleanup still run before the
+slot is released. Disposal that never settles retains its slot and keeps
+`drain()` pending. Repeated stop and drain are harmless. All reads are awaited;
+no detached provider work exists because cookies are refused.
 
 Public refusals preserve the operations category, reason, retry and effect:
 
@@ -611,8 +616,12 @@ The in-process suite uses real HTTP, SDK clients, composition and synthetic
 SQLite fixtures. It covers the mode/method matrix, concurrent identical IDs,
 forged headers, aliases, strict bodies, limits, post-buffer release changes,
 admission refusal, disconnect/deadline ownership and exact negative controls.
-The import guard prohibits every production importer of the new adapter. Its
-one new module-consumer exemption permits the adapter to use the public error,
+The import guard rejects literal imports of the new adapter anywhere in its
+source inventory, including test files reached by production imports. It also
+rejects non-literal loaders outside the allowlist and text-scans allowlisted
+production files for the adapter name in computed imports. It does not resolve
+arbitrarily computed names in allowlisted files. Its one new module-consumer
+exemption permits the adapter to use the public error,
 release and contract APIs; it grants no production mount.
 
 ## Permissions and roles

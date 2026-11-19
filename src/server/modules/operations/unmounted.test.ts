@@ -129,13 +129,16 @@ function createGuard(root: string, composition = false, target?: string) {
 
   const insideTarget = (path: string) => path === moduleDirectory || path.startsWith(moduleDirectory + sep) || path === contractsFile;
 
+  function specifierBase(fromFile: string, specifier: string): string | null {
+    if (specifier.startsWith("file:")) { try { return fileURLToPath(specifier); } catch { return null; } }
+    if (specifier === "@" || specifier.startsWith("@/")) return join(root, "src", specifier.slice(2));
+    if (specifier.startsWith(".")) return resolve(dirname(fromFile), specifier);
+    return isAbsolute(specifier) ? resolve(specifier) : null;
+  }
+
   /** Whether a literal specifier written in `fromFile` reaches the module or its contracts file. */
   function reaches(fromFile: string, specifier: string): boolean {
-    let base: string | null = null;
-    if (specifier.startsWith("file:")) { try { base = fileURLToPath(specifier); } catch { return false; } }
-    else if (specifier === "@" || specifier.startsWith("@/")) base = join(root, "src", specifier.slice(2));
-    else if (specifier.startsWith(".")) base = resolve(dirname(fromFile), specifier);
-    else if (isAbsolute(specifier)) base = resolve(specifier);
+    const base = specifierBase(fromFile, specifier);
     if (!base) return false;
     // Lexical match first: a missing target with the module's name is still an import of it.
     const lexical = base.replace(/\.(?:[cm]?[jt]sx?|d\.ts)$/, "").replace(/[\\/]index$/, "");
@@ -174,7 +177,24 @@ function createGuard(root: string, composition = false, target?: string) {
       const path = join(root, file);
       if (existsSync(path)) files.push(path); else missing.push(file);
     }
-    return { files: files.filter(file => !exempt(file)), symlinks, missing };
+    const scanned = new Set(files.filter(file => !exempt(file)));
+    if (target) {
+      // Test files are exempt only while unreachable from production. Follow
+      // literal edges transitively, including cycles and emitted .js specifiers.
+      const byRealPath = new Map(files.map(file => [realOrSelf(file), file]));
+      for (const file of scanned) {
+        for (const specifier of analyse(file, readFileSync(file, "utf8")).literals) {
+          const base = specifierBase(file, specifier);
+          if (!base) continue;
+          const bases = [base, base.replace(/\.(?:[cm]?js|jsx)$/, "")];
+          for (const candidate of bases.flatMap(base => RESOLVE_EXTENSIONS.map(suffix => base + suffix))) {
+            const imported = byRealPath.get(realOrSelf(candidate));
+            if (imported) { scanned.add(imported); break; }
+          }
+        }
+      }
+    }
+    return { files: [...scanned], symlinks, missing };
   }
 
   /** Every violation, as stable text lines. */
@@ -191,6 +211,9 @@ function createGuard(root: string, composition = false, target?: string) {
       // feeding computed imports. The module guard keeps its own allowlist semantics.
       if (composition && Object.prototype.hasOwnProperty.call(allowlist, name) && text.includes("operations-runtime")) {
         found.push(`${name}: composition name in allowlisted text scan`);
+      }
+      if (target && Object.prototype.hasOwnProperty.call(allowlist, name) && text.includes(target.split("/").at(-1)!.replace(/\.ts$/, ""))) {
+        found.push(`${name}: target name in allowlisted text scan`);
       }
       if (dynamic.length > 0 && !Object.prototype.hasOwnProperty.call(allowlist, name)) {
         for (const each of dynamic) found.push(`${name}: non-literal ${each}`);
@@ -238,6 +261,40 @@ describe("authorization contract stays unmounted", () => {
       mkdirSync(dirname(join(root, name)), { recursive: true });
       writeFileSync(join(root, name), 'import "@/server/transports/operations-mcp";');
       expect(createGuard(root, false, target).violations(ALLOWLIST)).toContain(`${name}: imports @/server/transports/operations-mcp`);
+    }
+    writeFileSync(join(root, "src/server/mcp-http-server.ts"), 'import "./helper";');
+    expect(createGuard(root, false, target).violations(ALLOWLIST)).toContain("src/server/helper.ts: imports @/server/transports/operations-mcp");
+    expect(createGuard(root, false, target).violations(ALLOWLIST)).not.toContain("src/server/mcp-http-server.ts: imports ./helper");
+  });
+
+  it("follows production imports through test files, including emitted specifiers and cycles", () => {
+    const target = "src/server/transports/operations-mcp.ts";
+    const root = mkdtempSync(join(tmpdir(), "unmounted-mcp-test-hop-")); temporary.push(root);
+    const write = (path: string, text: string) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), text); };
+    write("src/support.test.ts", 'import "./nested.spec.js";');
+    write("src/nested.spec.ts", 'import "./support.test"; import "@/server/transports/operations-mcp";');
+    const guard = createGuard(root, false, target);
+    expect(guard.violations(ALLOWLIST)).toEqual([]); // isolated tests remain exempt
+    write("src/production.ts", 'import "./support.test";');
+    expect(guard.violations(ALLOWLIST)).toEqual(["src/nested.spec.ts: imports @/server/transports/operations-mcp"]);
+  });
+
+  it("text-scans allowlisted production files for computed adapter imports without changing existing guards", () => {
+    const target = "src/server/transports/operations-mcp.ts";
+    const root = mkdtempSync(join(tmpdir(), "unmounted-mcp-computed-")); temporary.push(root);
+    const name = "src/server/modules/authentication/provider-runtime.ts", file = join(root, name);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, 'const path = "./external-provider"; await import(path);');
+    expect(createGuard(root, false, target).violations(ALLOWLIST)).toEqual([]);
+    for (const text of [
+      'const path = "../../transports/operations-mcp"; await import(path);',
+      'const path = `../../transports/operations-mcp.${extension}`; await import(path);',
+      'const name = "operations-mcp"; await import(`../../transports/${name}`);',
+    ]) {
+      writeFileSync(file, text);
+      expect(createGuard(root, false, target).violations(ALLOWLIST)).toEqual([`${name}: target name in allowlisted text scan`]);
+      expect(createGuard(root).violations(ALLOWLIST)).toEqual([]);
+      expect(createGuard(root, true).violations(ALLOWLIST)).toEqual([]);
     }
   });
 
