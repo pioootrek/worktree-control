@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { buildOperationsRuntime } from "../server/bootstrap/operations-runtime";
 import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
 import { createProtectedIdentityAdministration } from "../server/bootstrap/identity-administration";
 import { projectAdminHandler } from "../server/bootstrap/project-administration";
@@ -425,6 +426,11 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     status: mcp ? "enabled" as const : "disabled" as const,
     statusWaits: service.statusWaitDiagnostics(),
   });
+  let apiServer: import("node:http").Server | undefined;
+  let unixServer: import("node:http").Server | undefined;
+  const operations = buildOperationsRuntime({ store, activeMode: authentication.mode(), now: Date.now, logs,
+    eligibility: providerAdministration, provider: providerAdministration.operationSessionAuthority(),
+    listeners: { api: () => apiServer?.listening === true, unix: () => unixServer?.listening === true } });
   const controller = createControllerServer({
     service,
     directoryBrowser: new DirectoryBrowser(option("--browse-root") ?? homedir()),
@@ -449,7 +455,9 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     publicOrigin,
     backups, restores, userSchedules, maintenance: () => maintenance,
     admission: store.admission,
+    operations,
   });
+  apiServer = controller.server;
   try {
     await remoteVerification?.start();
     await listen(controller.server, port, host);
@@ -528,7 +536,8 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
       }
       if (maintenance) throw new Error("Controller is in maintenance.");
       return store.admission.run(() => authenticationHandler(body));
-    });
+    }, operations);
+    unixServer = adminSocket.server;
   } catch (error) {
     const cleanup = createControllerShutdown({
       service: { closeAdmission: () => { maintenance = true; service.closeAdmission(); }, shutdown: () => service.shutdown() },

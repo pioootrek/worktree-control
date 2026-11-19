@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 /**
  * Decision U: only the exact approved bootstrap importers may import the
- * module or its shared contract. The composition itself is still unmounted.
+ * module or its shared contract. Only session.describe is mounted.
  *
  * Inventory: every source file under `src`, `packages`, `scripts` and `tests`,
  * without build or dependency trees, plus the root entry and configuration
@@ -52,9 +52,10 @@ const ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
   "scripts/package-smoke.test.mjs": "imports a copy of package-smoke.mjs from a temporary directory",
 });
 
-/** Concrete wiring only. No transport or controller-start caller yet. */
+/** Exact production consumers. No legacy handler imports the module. */
 const APPROVED_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
-  "src/server/bootstrap/operations-runtime.ts": "composes the unmounted runtime from the store owner's read ports and controller policies",
+  "src/server/bootstrap/operations-runtime.ts": "composes the runtime from the store owner's read ports and controller policies",
+  "src/server/transports/operations-http.ts": "uses the public classifier and error serializer to avoid duplicating wire and failure policy; receives the runtime as a value",
 });
 const COMPOSITION = "src/server/bootstrap/operations-runtime.ts";
 
@@ -227,8 +228,11 @@ describe("authorization contract stays unmounted", () => {
     expect(guard.invalidImporters(APPROVED_IMPORTERS)).toEqual([]);
   });
 
-  it("has no production importer of the composition yet", () => {
-    expect(createGuard(repository, true).violations(ALLOWLIST)).toEqual([]);
+  it("allows only controller start to import the composition", () => {
+    const approved = { "src/cli/index.ts": "controller start constructs the one shared runtime" };
+    const guard = createGuard(repository, true);
+    expect(guard.violations(ALLOWLIST, approved)).toEqual([]);
+    expect(guard.invalidImporters(approved)).toEqual([]);
   });
 
   it("text-scans allowlisted production files for computed composition imports", () => {

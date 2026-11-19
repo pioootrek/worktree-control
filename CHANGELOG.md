@@ -7,6 +7,12 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
 
 ### Changed
 
+- **Unreleased authorization integration:** mount `session.describe` at
+  `POST /api/operations/session.describe` on the API and private unix socket.
+  Reads use current authorization inside admission, bounded JSON and request
+  lifetimes. Cookies are refused pending the next adapter step; `legacy`
+  mode answers `unknown_mode`. Existing routes retain their authentication.
+
 - **Explicit offline upgrade to schema 52 (integration branch, not
   released).** This build runs schema 52 and no longer migrates an existing
   database at start. Every ordinary opening of the store (the controller, the

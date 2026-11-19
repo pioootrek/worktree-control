@@ -238,6 +238,8 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
   });
   return {
     identity,
+    /** Already-loaded active provider only; never loads one for operation wiring. */
+    operationSessionAuthority: () => runtime ?? null,
     controllerEligible: eligibility.controllerEligible,
     providerSessionEligible: eligibility.providerSessionEligible,
     /** Server-owned adapter for converted browser workflows.
