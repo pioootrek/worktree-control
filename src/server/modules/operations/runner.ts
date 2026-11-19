@@ -121,7 +121,10 @@ export interface OperationRuntime {
 
 export interface RunOptions { signal?: AbortSignal; idempotencyKey?: string }
 export type RunResult<T> = { ok: true; value: T; replayed: boolean } | { ok: false; error: PublicOperationError };
-/** A request-scoped release, with no defaults for eligibility, connection or deadline. */
+/**
+ * A request-scoped release, with no defaults for eligibility, connection or deadline.
+ * Callbacks are captured once, before admission, and called with this options object as receiver.
+ */
 export interface ReadReleaseOptions<P> extends RunOptions {
   /** Bootstrap's one current runtime/maintenance/configuration policy. Only synchronous true allows release. */
   eligible(): boolean;
@@ -642,12 +645,12 @@ export class OperationRunner {
       const check = (now: number) => {
         // Throwing predicates, like thenables and non-booleans, give no answer (decision W).
         let allowed = false;
-        try { allowed = holds(eligible()); } catch { /* no answer */ }
+        try { allowed = holds(Reflect.apply(eligible, options, [])); } catch { /* no answer */ }
         if (!allowed) throw new OperationError("unavailable", "release_not_eligible");
         if (!Number.isFinite(now)) throw new OperationError("internal", "invalid_input");
         if (now >= deadline) throw new OperationError("unavailable", "release_timed_out", { retry: "retry" });
         let open = false;
-        try { open = holds(connected()); } catch { /* no answer */ }
+        try { open = holds(Reflect.apply(connected, options, [])); } catch { /* no answer */ }
         if (!open || signal?.aborted) throw cancelled();
       };
       const result = await this.readWith(operation, context, raw, { signal, idempotencyKey }, value => {
@@ -656,8 +659,11 @@ export class OperationRunner {
         if (expectedCanonical !== undefined && canonicalJson(value) !== expectedCanonical) {
           throw new OperationError("conflict", "release_payload_changed");
         }
+        const now = this.runtime.now();
+        if (isThenable(now)) absorb(now);
+        if (!Number.isFinite(now) || now >= deadline) throw new OperationError("unavailable", "release_timed_out", { retry: "retry" });
         try {
-          synchronous(commit(value), "release_commit_failed");
+          synchronous(Reflect.apply(commit, options, [value]), "release_commit_failed");
           return { status: "committed" } as const;
         } catch {
           // The write may have partially happened. Never retry or expose its thrown value.

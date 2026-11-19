@@ -46,6 +46,80 @@ describe("read-release inside admission", () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])("calls captured methods with the options object as receiver (reassigned: %s)", async reassign => {
+    const { world, alice, operation } = fixture();
+    class Release implements ReadReleaseOptions<Value> {
+      deadline = Number.MAX_SAFE_INTEGER;
+      calls = { eligible: 0, connected: 0, commit: 0 };
+      values: Value[] = [];
+      eligible() { this.calls.eligible++; return true; }
+      connected() { this.calls.connected++; return true; }
+      commit(value: Value) { this.calls.commit++; this.values.push(value); }
+    }
+    const release = new Release();
+    const gated = gatedAdmission(world);
+    const releasing = new OperationRunner({ ...world.runtime(), admission: gated.admission });
+    const pending = releasing.readRelease(operation, alice.context, {}, release);
+    expect(release.calls).toEqual({ eligible: 0, connected: 0, commit: 0 });
+    const replacements = { eligible: vi.fn(() => false), connected: vi.fn(() => false), commit: vi.fn() };
+    if (reassign) Object.assign(release, replacements);
+    gated.open();
+    expect(await pending).toEqual({ status: "committed" });
+    expect(release.calls).toEqual({ eligible: 1, connected: 1, commit: 1 });
+    expect(release.values).toEqual([{ value: 1, nested: { a: 2, b: 3 } }]);
+    for (const replacement of Object.values(replacements)) expect(replacement).not.toHaveBeenCalled();
+  });
+
+  it.each(["read", "project"] as const)("refuses when the deadline is reached during %s", async step => {
+    for (const validated of [false, true]) {
+      const { world, runner, alice, operation } = fixture();
+      const deadline = world.clock.now + 10;
+      if (step === "read") {
+        const read = operation.read;
+        operation.read = (input, phase) => { const value = read(input, phase); world.clock.now = deadline; return value; };
+      } else {
+        const project = operation.project;
+        operation.project = (value, release) => { const projected = project(value, release); world.clock.now = deadline; return projected; };
+      }
+      const commit = vi.fn();
+      expect(await runner.readRelease(operation, alice.context, {}, options(commit, {
+        deadline, ...(validated ? { expectedCanonical: canonicalJson({ value: 1, nested: { a: 2, b: 3 } }) } : {}),
+      }))).toEqual({ status: "refused", error: publicError("unavailable", 503, "release_timed_out", "retry") });
+      expect(commit).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each<[string, () => unknown]>([
+    ["NaN", () => NaN], ["infinity", () => Infinity], ["negative infinity", () => -Infinity],
+    ["promise", () => Promise.reject(new Error("late secret"))],
+    ["thenable", () => ({ then(_resolve: unknown, reject: (error: unknown) => void) { reject(new Error("late secret")); } })],
+  ])("refuses a %s clock answer immediately before commit", async (_name, answer) => {
+    const { world, alice, operation } = fixture();
+    const now = vi.fn(() => answer() as number).mockImplementationOnce(() => world.clock.now);
+    const releasing = new OperationRunner({ ...world.runtime(), now });
+    const commit = vi.fn();
+    expect(await releasing.readRelease(operation, alice.context, {}, options(commit)))
+      .toEqual({ status: "refused", error: publicError("unavailable", 503, "release_timed_out", "retry") });
+    expect(now).toHaveBeenCalledTimes(2);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it("stays committed when the deadline is reached only after commit returns", async () => {
+    const { world, runner, alice, operation } = fixture();
+    const deadline = world.clock.now + 10;
+    const original = world.admission.run.bind(world.admission);
+    const commit = vi.fn(() => { expect(world.clock.now).toBeLessThan(deadline); });
+    world.admission.run = (callback, opts) => original(() => {
+      const result = callback();
+      expect(commit).toHaveBeenCalledTimes(1);
+      world.clock.now = deadline;
+      return result;
+    }, opts);
+    expect(await runner.readRelease(operation, alice.context, {}, options(commit, { deadline }))).toEqual({ status: "committed" });
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(world.clock.now).toBe(deadline);
+  });
+
   it("reruns session.describe after a grant is removed; direct release drops the project, buffered release refuses", async () => {
     for (const validated of [false, true]) {
       const { world, runner, alice } = setup();

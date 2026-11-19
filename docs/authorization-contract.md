@@ -596,14 +596,22 @@ kind is `internal`/`invalid_operation`.
 The runner takes core admission. One synchronous callback revalidates the
 context and listener, reads the clock, checks eligibility, deadline and
 connection, reads fresh grants, resolves references, decides, reruns `read`,
-projects and applies `releaseValue`. It then calls `commit` before leaving
-admission. No await separates those steps. Bootstrap must supply the same
-current eligibility policy used by the other runtime stages.
+projects and applies `releaseValue`. After any canonical comparison, it reads
+the clock and checks the deadline again immediately before calling `commit`,
+before leaving admission. No await separates those steps. Bootstrap must supply
+the same current eligibility policy used by the other runtime stages.
+
+The runner captures `eligible`, `connected` and `commit` once, before waiting
+for admission, and calls them with the options object as receiver. Reassigning
+these methods while waiting does not replace the captured callbacks.
 
 `eligible` and `connected` are required predicates with no defaults. Only a
 synchronous `true` allows release. A throw, thenable or any other answer
 refuses; thenable rejections are absorbed (decision W). `deadline` is required,
 finite and absolute in the runtime clock's milliseconds; equality is expired.
+The deadline is checked on entering the phase and again immediately before
+commit. A thenable or non-finite clock answer at the second check refuses as
+`release_timed_out` without calling `commit`.
 An aborted `signal` also refuses. The public refusals are
 `unavailable`/`release_not_eligible`, `unavailable`/`release_timed_out`, and
 `unavailable`/`request_cancelled` for a caller that is gone. The last two have
