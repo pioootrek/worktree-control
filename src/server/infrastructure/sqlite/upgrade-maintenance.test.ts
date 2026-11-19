@@ -1373,3 +1373,110 @@ describe("inspection-only owner: a refused reopen of a rollback-journal database
     expect(sha(readFileSync(`${path}-journal`))).toBe(sha(journal));
   }, 30_000);
 });
+
+describe("explicit offline upgrade: Knowledge project ID diagnostics", () => {
+  const PAST = "2025-03-01T10:00:00.000Z";
+  type Entry = readonly [id: string, status: "active" | "archived"];
+  const CONFORMING: Entry[] = [["plain", "active"], ["a.b:c-d", "archived"], ["a".repeat(160), "active"]];
+  const NON_CONFORMING: Entry[] = [
+    ["has space", "active"], ["with/slash", "archived"], [".leading-dot", "active"], ["-leading-hyphen", "archived"], [`${"x".repeat(159)}!`, "active"],
+    ["line\nbreak", "archived"], ["\u001b[31mred", "active"], ['quo"te', "archived"],
+  ];
+  /** The IDs outside the grammar as `inspect` must list them: ascending byte order. */
+  const listed = (entries: readonly Entry[]) => [...entries].sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b))).map(([id, status]) => ({ id, status }));
+  /** Projects written through the store of a schema-49 installation, as Knowledge's own import paths store any ID. */
+  function seed(paths: AppPaths, entries: readonly Entry[]) {
+    const store = openStoreAt49(paths.databasePath);
+    try { entries.forEach(([id, status], index) => store.saveKnowledgeProject({ id, name: `Fixture ${index}`, status, revision: 1, createdAt: PAST, updatedAt: PAST }, "fixture")); } finally { store.close(); }
+    return paths;
+  }
+  const projects = (paths: AppPaths) => read(paths, db => db.prepare("SELECT * FROM knowledge_projects ORDER BY rowid").all());
+  const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
+  it("reports nothing and adds no line when every ID conforms; the plan is exactly the plan it was", () => {
+    const paths = seed(installation(true), CONFORMING);
+    const status = inspect(paths);
+    expect(status.projectIds).toEqual({ grammar: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$", count: 0, limit: 100, truncated: false, projects: [] });
+    expect(status.acts).toEqual([]);
+    // The report is beside the plan: the plan keeps its fields and its hash is the hash of exactly those.
+    expect(Object.keys(status.plan!).sort()).toEqual(["acts", "base", "binding", "decisions", "format", "installation", "kind", "review", "source", "steps", "target"]);
+    expect(status.planHash).toBe(sha(canonicalJson(status.plan)));
+    expect(readFileSync(planFile(paths), "utf8")).not.toContain("projectIds");
+  });
+
+  it("lists active and archived IDs outside the grammar, with their status, in a stable order; the line names none and the plan holds none", () => {
+    const paths = seed(installation(true), [...CONFORMING, ...NON_CONFORMING]);
+    const status = inspect(paths);
+    expect(status.state).toBe("upgrade_needed");
+    expect(status.projectIds).toMatchObject({ count: NON_CONFORMING.length, limit: 100, truncated: false, projects: listed(NON_CONFORMING) });
+    // One fixed line (the count and fixed text); no raw control character and no copy of any listed ID.
+    expect(status.acts).toEqual([status.projectIds!.notice]);
+    expect(status.acts![0]).toBe(`${NON_CONFORMING.length} Knowledge project ID(s) do not match the contract grammar (listed in projectIds, active and archived alike): these projects will not be reachable through the new authorization until their IDs conform; there is no supported rename yet, and the release is blocked on it.`);
+    for (const line of status.acts!) {
+      expect(line).not.toMatch(CONTROL);
+      for (const [id] of NON_CONFORMING) expect(line).not.toContain(id);
+    }
+    // The structured list is JSON: it parses back to the exact IDs.
+    expect(JSON.parse(JSON.stringify(status.projectIds)).projects).toEqual(listed(NON_CONFORMING));
+    // The same plan hash rule as without them: the plan holds none of it.
+    const stored = readFileSync(planFile(paths), "utf8");
+    expect(stored).not.toContain("projectIds");
+    for (const [id] of NON_CONFORMING) expect(stored).not.toContain(JSON.stringify(id));
+    expect(status.planHash).toBe(sha(canonicalJson(status.plan)));
+    expect(inspect(paths).planHash).toBe(status.planHash);
+  });
+
+  it("bounds the list at 100 with the complete count and the truncated flag", () => {
+    const many: Entry[] = Array.from({ length: 130 }, (_, index) => [`bad id ${String(index).padStart(3, "0")}`, index % 2 ? "archived" : "active"]);
+    const paths = seed(installation(), [...many, ...CONFORMING]);
+    const status = inspect(paths);
+    expect(status.projectIds).toMatchObject({ count: 130, limit: 100, truncated: true, projects: listed(many).slice(0, 100) });
+    expect(status.acts).toEqual([status.projectIds!.notice]);
+    expect(status.projectIds!.notice).toContain("130 Knowledge project ID(s)");
+  });
+
+  it("reports them also when the database is current, and in no other state", () => {
+    const paths = fresh50();
+    const db = unmanagedFixtureDatabase(paths.databasePath);
+    try {
+      const insert = db.prepare("INSERT INTO knowledge_projects(id,name,status,revision,created_at,updated_at) VALUES(?,?,?,1,?,?)");
+      for (const [id, status] of [...CONFORMING, ...NON_CONFORMING]) insert.run(id, "Fixture", status, PAST, PAST);
+      SecurityFence.attach(canonical(paths), db, true);
+    } finally { db.close(); }
+    const status = inspect(paths);
+    expect(status).toMatchObject({ state: "current", nextStep: "none", projectIds: { count: NON_CONFORMING.length, truncated: false, projects: listed(NON_CONFORMING) } });
+    expect(status.plan).toBeUndefined(); expect(status.acts).toBeUndefined();
+    expect(existsSync(planFile(paths))).toBe(false);
+    expect(inspect(fresh50()).projectIds).toMatchObject({ count: 0, projects: [] });
+    // A database that is not trusted or not at the explicit upgrade's schema reports no list.
+    expect(inspect(preFence()).projectIds).toBeUndefined();
+    const fenced = installation(); rmSync(witnessPath(fenced));
+    expect(inspect(fenced)).toMatchObject({ state: "fenced" });
+    expect(inspect(fenced).projectIds).toBeUndefined();
+  });
+
+  it("does not change apply: it succeeds as on a database without them, writes the same things and leaves every ID as it was; a later inspect still lists them", async () => {
+    const without = seed(installation(true), NON_CONFORMING.map(([, status], index): Entry => [`project-${index}`, status]));
+    const withIds = seed(installation(true), NON_CONFORMING);
+    const tables = (paths: AppPaths) => read(paths, db => all(db).rows);
+    const changed = (before: ReturnType<typeof tables>, after: ReturnType<typeof tables>) => Object.keys({ ...before, ...after }).filter(name => JSON.stringify(before[name]) !== JSON.stringify(after[name])).sort();
+    const cleanStatus = inspect(without), status = inspect(withIds);
+    expect(cleanStatus.projectIds!.count).toBe(0);
+    expect(status.projectIds!.count).toBe(NON_CONFORMING.length);
+    // The plan is the same for both: the same steps, decisions, acts and review.
+    for (const key of ["source", "target", "steps", "decisions", "acts", "review"] as const) expect(status.plan![key]).toEqual(cleanStatus.plan![key]);
+    const previous = recovery(withIds), beforeWith = tables(withIds), beforeWithout = tables(without), idsBefore = projects(withIds);
+    expect(idsBefore.map(row => (row as { id: string }).id).sort()).toEqual(NON_CONFORMING.map(([id]) => id).sort());
+    const cleanResult = await apply(without, cleanStatus.planHash!), result = await apply(withIds, status.planHash!);
+    assertUpgraded(withIds, result, previous);
+    expect({ ...result, planHash: null, receipt: null, backup: null }).toEqual({ ...cleanResult, planHash: null, receipt: null, backup: null });
+    // The same tables change, and the Knowledge projects are not among them.
+    const changedWith = changed(beforeWith, tables(withIds));
+    expect(changedWith).toEqual(changed(beforeWithout, tables(without)));
+    expect(changedWith).not.toContain("knowledge_projects");
+    expect(projects(withIds)).toEqual(idsBefore);
+    // After the upgrade they are still named, and the plan file is gone.
+    expect(inspect(withIds)).toMatchObject({ state: "current", projectIds: { count: NON_CONFORMING.length, projects: listed(NON_CONFORMING) } });
+    expect(inspect(without)).toMatchObject({ state: "current", projectIds: { count: 0, projects: [] } });
+  });
+});

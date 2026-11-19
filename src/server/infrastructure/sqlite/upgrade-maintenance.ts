@@ -17,6 +17,7 @@ import {
   type UpgradeAct, type UpgradeNextStep, type UpgradePlan, type UpgradeState,
 } from "./upgrade-plan";
 import { readUpgradeMarker, UPGRADE_NEXT_STEP, upgradeState, type UpgradeMarkerState } from "./upgrade-state";
+import { inspectProjectIds, type ProjectIdReport } from "./upgrade-project-ids";
 
 /**
  * The explicit offline upgrade: `upgrade inspect` writes the plan the operator
@@ -56,6 +57,12 @@ export interface UpgradeInspection extends UpgradeStatus {
   decisions?: Record<string, unknown>;
   acts?: string[];
   review?: Record<string, unknown>;
+  /**
+   * Present in `upgrade_needed` and `current` only: the Knowledge project IDs
+   * outside the contract grammar, beside the plan and outside its hash (see
+   * `upgrade-project-ids.ts`). `apply` does not read it.
+   */
+  projectIds?: ProjectIdReport;
 }
 /** The upgrade's names for the shared maintenance backup (see `backup-binding.ts`). */
 export type UpgradeBackupSource = MaintenanceBackupSource;
@@ -162,7 +169,8 @@ function reusableActs(path: string, header: Omit<UpgradePlan, "acts" | "review">
  * state; only in `upgrade_needed` it writes the plan (replacing any earlier
  * one) and returns it with its hash, its normalised decisions, the operator's
  * lines and the review. In every other state it writes nothing and reports the
- * operator's next step. SQLite's read-only open may still create an empty WAL
+ * operator's next step. In `upgrade_needed` and `current` it also reports the
+ * Knowledge project IDs outside the contract grammar, beside the plan. SQLite's read-only open may still create an empty WAL
  * and its shared-memory file beside a database that has none.
  *
  * `decisions` are the operator's (see `mapping-upgrade-acts.ts`); their shape is
@@ -178,6 +186,7 @@ export function inspectSqliteUpgrade(paths: AppPaths, target?: number, decisions
   try {
     const path = owner.canonicalPath, source = owner.inspection.version;
     const status = recognize(path, owner.database, source, version);
+    if (status.state === "current") return { ...status, projectIds: inspectProjectIds(owner.database) };
     if (status.state !== "upgrade_needed") return status;
     const header = {
       kind: UPGRADE_PLAN_KIND, format: UPGRADE_PLAN_FORMAT, binding: securityFenceBinding(path), installation: checkpoint(owner.database).installation,
@@ -189,8 +198,10 @@ export function inspectSqliteUpgrade(paths: AppPaths, target?: number, decisions
     if (Buffer.byteLength(canonicalJson(plan), "utf8") + 256 > UPGRADE_PLAN_LIMITS.bytes) {
       throw new UpgradeError("upgrade_plan_bounds", "upgrade inspect", false, undefined, { findings: [{ table: "plan", id: "bytes", problem: `the plan exceeds ${UPGRADE_PLAN_LIMITS.bytes} bytes` }], count: 1, truncated: false });
     }
+    // Read before the plan is written, so a failure leaves no plan. It is not part of the plan, so it cannot move the hash.
+    const projectIds = inspectProjectIds(owner.database);
     const planHash = writeUpgradePlan(path, plan);
-    return { ...status, plan, planHash, decisions: normalised, acts: describeUpgradeActs(plan), review: proposal.review };
+    return { ...status, plan, planHash, decisions: normalised, acts: [...describeUpgradeActs(plan), ...(projectIds.notice === undefined ? [] : [projectIds.notice])], review: proposal.review, projectIds };
   } finally { release(lock, owner); }
 }
 

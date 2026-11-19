@@ -218,6 +218,7 @@ describe("SQLite resolver: projects", () => {
       "src/server/infrastructure/sqlite/security-fence-migration.ts",
       "src/server/infrastructure/sqlite/security-maintenance.ts",
       "src/server/infrastructure/sqlite/sqlite-state-store.ts",
+      "src/server/infrastructure/sqlite/upgrade-project-ids.ts",
       "src/server/modules/operations/adapters/sqlite-resolver.ts",
     ]);
   });

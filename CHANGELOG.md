@@ -7,6 +7,16 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
 
 ### Changed
 
+- **Unreleased authorization integration:** `upgrade inspect` names every
+  Knowledge project ID outside the contract grammar
+  `^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$`, active and archived alike, as
+  `projectIds` (count, the first 100 in a stable order, a `truncated` flag and
+  each project's status), in "upgrade needed" and in "current". IDs are written
+  as inert JSON strings, and one fixed line in the operator's lines names no ID.
+  The report is beside the plan: the plan hash and `upgrade apply` are
+  unchanged, and no ID is changed. Prevention in create and import and a repair
+  procedure are still missing.
+
 - **Unreleased authorization integration:** mount `session.describe` at
   `POST /api/operations/session.describe` on the API and private unix socket.
   Reads use current authorization inside admission, bounded JSON and request

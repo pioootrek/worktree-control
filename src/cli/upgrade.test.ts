@@ -5,12 +5,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAppPaths, type AppPaths } from "../server/paths";
-import { createFencedAt49 } from "../server/infrastructure/sqlite/fixtures/released-schema";
+import { createFencedAt49, openStoreAt49 } from "../server/infrastructure/sqlite/fixtures/released-schema";
 import { SecurityFenceBackupError, SecurityFenceError } from "../server/infrastructure/sqlite/security-fence";
 import { boundedFindings, UpgradeError } from "../server/infrastructure/sqlite/upgrade-contract";
 import { ProviderAdminError } from "../server/modules/authentication";
 import * as composition from "../server/bootstrap/upgrade-maintenance";
-import { parseUpgradeArguments, runUpgradeCommand, UPGRADE_DECISIONS_FILE_BYTES, UPGRADE_FAILED, upgradeErrorBody } from "./upgrade";
+import { projectIdNotice } from "../server/infrastructure/sqlite/upgrade-project-ids";
+import { parseUpgradeArguments, runUpgradeCommand, terminalSafeJson, UPGRADE_DECISIONS_FILE_BYTES, UPGRADE_FAILED, upgradeErrorBody } from "./upgrade";
 
 // Spyable `node:fs`, for the descriptor open of the decisions reader.
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>() }));
@@ -161,7 +162,7 @@ describe("upgrade CLI runner: through the composition", () => {
     const inspected = await run(["upgrade", "inspect"], paths);
     expect(inspected.body).toBeNull();
     const output = JSON.parse(inspected.lines.join("\n"));
-    expect(Object.keys(output).sort()).toEqual(["acts", "appliedPlan", "decisions", "marker", "nextStep", "planHash", "preflight", "review", "schemaVersion", "state", "target"]);
+    expect(Object.keys(output).sort()).toEqual(["acts", "appliedPlan", "decisions", "marker", "nextStep", "planHash", "preflight", "projectIds", "review", "schemaVersion", "state", "target"]);
     expect(output).toMatchObject({ state: "upgrade_needed", schemaVersion: 49, target: TARGET, planHash: expect.stringMatching(/^[0-9a-f]{64}$/), acts: expect.any(Array) });
     // The plan stays in its file: none of its own fields is printed.
     const plan = inspectUpgrade.mock.results[0]!.value.plan as Record<string, unknown>;
@@ -173,6 +174,49 @@ describe("upgrade CLI runner: through the composition", () => {
     expect(applyUpgrade).toHaveBeenCalledWith(paths, { expect: output.planHash }, { directory: backups, applicationVersion: "0.0.0-fixture" }, TARGET);
     expect(JSON.parse(applied.lines.join("\n"))).toMatchObject({ state: "current", alreadyApplied: false, planHash: output.planHash, backup: expect.stringContaining(join(backups, "pre-upgrade-v49-")) });
   }, 30_000);
+
+  it("prints the Knowledge project IDs outside the contract grammar as inert JSON strings, before and after the upgrade, and adds one fixed line", async () => {
+    const paths = resolveAppPaths(join(temporary(), "data")), backups = join(temporary(), "operator-backups");
+    createFencedAt49(paths.databasePath);
+    const outside: Array<[string, "active" | "archived"]> = [
+      ["has space", "active"], ["with/slash", "archived"], [".leading-dot", "active"], ["-leading-hyphen", "archived"], [`${"x".repeat(159)}!`, "active"],
+      ["line\nbreak", "archived"], ["\u001b[31mred", "active"], ['quo"te', "archived"], ["c1\u009bsequence", "active"], ["rtl\u202eid", "archived"], ["sep\u2028arator", "active"],
+    ];
+    const store = openStoreAt49(paths.databasePath);
+    try {
+      [...outside, ["plain", "active"] as [string, "active"]].forEach(([id, status], index) => store.saveKnowledgeProject({ id, name: `Fixture ${index}`, status, revision: 1, createdAt: "2025-03-01T10:00:00.000Z", updatedAt: "2025-03-01T10:00:00.000Z" }, "fixture"));
+    } finally { store.close(); }
+    const expected = [...outside].sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b))).map(([id, status]) => ({ id, status }));
+    const inert = (text: string) => {
+      // Only the indentation's line feeds are raw: no other control character, no DEL or C1, no line or bidirectional control.
+      expect(text.replace(/\n/g, "")).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/);
+    };
+    const inspected = await run(["upgrade", "inspect"], paths);
+    expect(inspected.body).toBeNull();
+    const text = inspected.lines.join("\n"), output = JSON.parse(text);
+    inert(text);
+    expect(text).toContain("\\u001b[31mred");
+    expect(output.state).toBe("upgrade_needed");
+    expect(output.projectIds).toMatchObject({ count: outside.length, limit: 100, truncated: false, projects: expected });
+    expect(output.acts.at(-1)).toBe(projectIdNotice(outside.length));
+    expect(output.acts.filter((line: string) => line === projectIdNotice(outside.length))).toHaveLength(1);
+    for (const line of output.acts) for (const [id] of outside) expect(line).not.toContain(id);
+    const applied = await run(["upgrade", "apply", "--expect", output.planHash, "--backup-dir", backups, "--data-dir", paths.dataDirectory], paths);
+    expect(applied.body).toBeNull();
+    const after = await run(["upgrade", "inspect"], paths);
+    const afterText = after.lines.join("\n"), current = JSON.parse(afterText);
+    inert(afterText);
+    expect(current).toMatchObject({ state: "current", nextStep: "none", projectIds: { count: outside.length, truncated: false, projects: expected } });
+    expect(current.acts).toBeUndefined();
+  }, 60_000);
+
+  it("terminalSafeJson writes DEL, C1, separators and bidirectional marks as escapes that parse back to the same text", () => {
+    const value = { id: "a\u007fb\u009bc\u2028d\u2029e\u202ef\u2066g\u200eh\u061ci", ok: "caf\u00e9 \u0105" };
+    const text = terminalSafeJson(JSON.stringify(value, null, 2));
+    expect(text).not.toMatch(/[\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/);
+    expect(text).toContain("\\u009b");
+    expect(JSON.parse(text)).toEqual(value);
+  });
 
   it("prints the error body of a refused apply without the paths involved", async () => {
     const paths = resolveAppPaths(join(temporary(), "data-sentinel")), blocked = join(temporary(), "backup-sentinel");

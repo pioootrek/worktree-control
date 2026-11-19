@@ -1415,9 +1415,16 @@ mounts remain for later steps.
   of an account before it answers. One grant on a non-conforming project
   therefore makes `accountKind` and `grantsFor` answer `internal`
   (`invalid_stored_grant`) for the whole account, which then reaches no
-  project at all. IDs on an installation that do not conform are migrated by
-  hand, and that has to be finished before the grants snapshot is mounted.
-  The upgrade does not remap them, and the grammar is not widened.
+  project at all. `upgrade inspect` now names such IDs, active and archived
+  alike, in "upgrade needed" and in "current" (see
+  [the explicit upgrade](authentication.md#the-explicit-upgrade-unreleased-integration-build));
+  `upgrade apply` neither refuses on them nor changes them. Still missing are
+  prevention in the Knowledge create path and the Hub import, and an approved
+  repair procedure: there is no supported way to rename a project ID. The
+  owner decided on 2026-11-19 that hand migration is due before the release,
+  not before the grants snapshot is mounted, and the release stays blocked on
+  conforming IDs, prevention and an approved repair procedure. The upgrade does
+  not remap them, and the grammar is not widened.
 - Coordination-session issuance and storage (`coordination.*`), any
   transport, and every product operation of the catalogue except
   `session.describe`. The extensions of slice 4 are exercised by test
