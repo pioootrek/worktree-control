@@ -68,6 +68,9 @@ export function mountOperationsProtocolEvents(server: Server, operations: Return
     const response = new ServerResponse(request);
     response.shouldKeepAlive = false;
     response.assignSocket(socket);
+    // The ordinary server response-finish hook is absent on handed-off sockets.
+    response.once("finish", () => { response.detachSocket(socket); socket.end(); });
+    response.once("close", () => { socket.destroy(); });
     dispatch(request, response);
   });
 }

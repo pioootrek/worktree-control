@@ -144,7 +144,7 @@ describe("real API and unix acceptance", () => {
   it("preserves duplicate and mixed raw credentials", async () => {
     const f = await fixture("token");
     for (const headers of [
-      ["Content-Type", "application/json", "Authorization", `Bearer ${f.installation}`, "Authorization", `Bearer ${f.installation}`],
+      ["Host", "localhost", "Content-Type", "application/json", "Content-Length", "2", "Authorization", `Bearer ${f.installation}`, "Authorization", `Bearer ${f.installation}`],
       { ...auth(f.installation), "X-Worktree-Control-Token": f.installation },
       { ...auth(f.installation), "X-Worktree-Switcher-Token": f.installation },
     ]) expect((await f.send("api", { headers }).reply).body).toEqual(refusal("mixed_credentials"));
@@ -213,6 +213,8 @@ describe("real API and unix acceptance", () => {
       for (const method of ["CONNECT", "GET"]) {
         const raw = await new Promise<string>((resolve, reject) => {
           const socket = listener === "unix" ? createConnection(f.socketPath) : createConnection((f.controller.server.address() as AddressInfo).port, "127.0.0.1");
+          cleanups.push(() => { socket.destroy(); });
+          socket.setTimeout(1000, () => { socket.destroy(); reject(new Error(`${listener} ${method} protocol response timed out`)); });
           const chunks: Buffer[] = []; socket.on("data", c => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c))); socket.on("error", reject);
           socket.on("end", () => resolve(Buffer.concat(chunks).toString()));
           socket.on("connect", () => socket.write(`${method} ${route} HTTP/1.1\r\nHost: localhost\r\n${method === "GET" ? "Connection: Upgrade\r\nUpgrade: websocket\r\n" : ""}\r\n`));
