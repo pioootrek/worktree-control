@@ -1261,9 +1261,17 @@ const workerGuard = (reply: Reply, reason: string) => {
 };
 
 describe("body cancellation through mounted HTTP listeners", () => {
+  async function target(listener: "api" | "worker") {
+    if (listener === "worker") {
+      const f = await workerFixture();
+      return { driver: f.driver, stop: async () => { f.worker.stopOperations(); } };
+    }
+    const f = await fixture();
+    return { driver: f.drivers.api, stop: () => f.controller.close() };
+  }
+
   it.each(["api", "worker"] as const)("%s stop during a partial body returns the exact retryable cancellation", async listener => {
-    const f = listener === "worker" ? await workerFixture() : await fixture();
-    const driver = "driver" in f ? f.driver : f.drivers.api;
+    const { driver, stop } = await target(listener);
     const received = pause();
     let end!: ReturnType<typeof vi.spyOn>;
     driver.server.prependOnceListener("request", (request, response) => {
@@ -1271,9 +1279,7 @@ describe("body cancellation through mounted HTTP listeners", () => {
     });
     const pending = driver.send({ slow: true }); await received.promise;
     expect(pending.call.writableEnded).toBe(false);
-    let closing: Promise<void> | undefined;
-    if ("worker" in f) f.worker.stopOperations();
-    else closing = f.controller.close();
+    const closing = stop();
     const reply = await pending.reply;
     expect(reply.status).toBe(503); expect(reply.headers["retry-after"]).toBe("1");
     expect(reply.body).toEqual(refusal("request_cancelled", "unavailable", 503, "retry"));
@@ -1284,16 +1290,12 @@ describe("body cancellation through mounted HTTP listeners", () => {
     ["api", "oversized"], ["api", "strict JSON"],
     ["worker", "oversized"], ["worker", "strict JSON"],
   ] as const)("%s preserves the examined %s refusal when stop also aborts the request", async (listener, kind) => {
-    const f = listener === "worker" ? await workerFixture() : await fixture();
-    const driver = "driver" in f ? f.driver : f.drivers.api;
+    const { driver, stop } = await target(listener);
     let closing: Promise<void> | undefined;
     driver.server.prependOnceListener("request", request => {
-      const stop = () => {
-        if ("worker" in f) f.worker.stopOperations();
-        else closing = f.controller.close();
-      };
-      if (kind === "oversized") queueMicrotask(stop);
-      else request.once("end", () => queueMicrotask(stop));
+      const cancel = () => { closing = stop(); };
+      if (kind === "oversized") queueMicrotask(cancel);
+      else request.once("end", () => queueMicrotask(cancel));
     });
     const oversized = kind === "oversized";
     const reply = await driver.send({ body: oversized ? JSON.stringify({ padding: "x".repeat(65536) }) : '{"x":1,"x":2}' }).reply;
