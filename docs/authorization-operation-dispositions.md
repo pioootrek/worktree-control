@@ -1676,11 +1676,43 @@ the shared 16-slot budget (four reserved for browser completions). Bounded body
 read and provider resolution precede in-request admitted stage/mint and fresh
 `readRelease`. Capacity lasts through response finish/close and real settlement.
 Contention and cancellation keep their retryable operations error categories;
-missing sessions and mixed credentials never fall back. Unix keeps its fixed
+missing sessions and mixed credentials never fall back. Unix and worker keep the fixed
 `provider_cookie_not_supported` refusal. Open and token API refusals come from
 `resolveAcceptance`. See the [mounted cookie contract](authorization-contract.md#mounted-api-cookie-boundary)
 for exact public errors and limits. Installed-artifact checks now cover every
 mounted listener and supported mode; D1a-10 retains the final full matrix.
+D1a-6 also mounts this adapter on the configured HTTPS worker listener with
+`listener=worker`. TLS precedes HTTP dispatch; the raw namespace claim precedes
+legacy routing/authentication; the shared peer and Origin checks precede the
+adapter, including its fixed cookie refusal. Fetch Metadata alone remains
+allowed. The server retains its 32 connections, request/header timeouts and
+shutdown owner; operations retain their 32-request owner through response
+completion and started-work settlement. Poll and report keep their original
+worker-token authentication and protocol behavior. No listener configuration
+means no mount.
+
+On this port open mode now accepts no credential and returns installation
+authority; token mode accepts the installation token with that authority;
+account mode accepts an agent token and returns its account permissions and
+projects where it has a role. The description contains actor kind, mode,
+listener, fullAuthority, installation permissions, up to 500 project IDs and
+permission sets, projectsTruncated and freshLogin, with no names, paths, secrets
+or history. Stored owner/worker machine tokens answer `invalid_credential` in
+account mode, `credential_not_accepted_here` in token mode and
+`credential_in_open_mode` in open mode. Cookies always answer
+`provider_cookie_not_supported`; mixed/duplicate bearers answer
+`mixed_credentials`. The new namespace calls neither the legacy authenticator
+nor its usage writer. Synthetic-fixture acceptance does not approve live-host
+exposure. See the [worker boundary](authorization-contract.md#mounted-worker-boundary)
+for exact checks, limits, public refusals and executable evidence.
+
+Open release blocker, decision 4(b): decide whether `open` mode may serve the
+worker listener on a non-loopback address at all, or only with an explicit
+operator acknowledgement. Recommend: refuse a non-loopback worker binding in
+`open` mode unless the operator explicitly acknowledges the disclosed authority
+and data exposure; settle this before the release. This step does not implement
+that restriction.
+
 The other three reads and every mutation keep their prerequisites below.
 
 

@@ -36,10 +36,11 @@ export function createRemoteVerificationRuntime(config: RemoteVerificationConfig
     listenerOpen: () => listener?.server.listening === true,
     stopOperations: () => listener?.stopOperations(),
     async start(operations?: OperationsHttpRuntime) {
-      listener = createListener(operations);
-      if (listener && config.listener) await new Promise<void>((resolve, reject) => {
-        listener.server.once("error", reject);
-        listener.server.listen(config.listener!.port, config.listener!.host, () => { listener.server.off("error", reject); resolve(); });
+      const startedListener = createListener(operations);
+      listener = startedListener;
+      if (startedListener && config.listener) await new Promise<void>((resolve, reject) => {
+        startedListener.server.once("error", reject);
+        startedListener.server.listen(config.listener!.port, config.listener!.host, () => { startedListener.server.off("error", reject); resolve(); });
       });
       worker?.start();
     },

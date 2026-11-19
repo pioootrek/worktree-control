@@ -42,7 +42,7 @@ export function createBoundaryDriver(options: {
   return {
     ...options, capacity: 32, send,
     capacityProbe: () => send().reply,
-    connection: () => options.tls ? tlsConnect({ host: "127.0.0.1", port: (options.server.address() as AddressInfo).port, ...options.tls, allowHalfOpen: true }) : createConnection(options.socketPath ? { path: options.socketPath, allowHalfOpen: true }
+    connection: () => options.tls ? tlsConnect({ host: "127.0.0.1", port: (options.server.address() as AddressInfo).port, ...options.tls }) : createConnection(options.socketPath ? { path: options.socketPath, allowHalfOpen: true }
       : { port: (options.server.address() as AddressInfo).port, host: "127.0.0.1", allowHalfOpen: true }),
     wire(path: string, method = "GET", upgrade = false): Promise<WireReply> {
       return new Promise((resolve, reject) => {
