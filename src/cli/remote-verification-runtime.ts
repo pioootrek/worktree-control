@@ -8,6 +8,7 @@ import type { SqliteStateStore } from "@/server/sqlite-store";
 import { ProjectTestCommandResolver } from "@/server/test-command";
 import type { TestJobManager } from "@/server/test-job-manager";
 import { createRemoteVerificationServer, HttpRemoteWorkerTransport } from "@/server/transports/remote-verification-http";
+import type { OperationsHttpRuntime } from "@/server/transports/operations-http";
 import { readRemoteWorkerToken, type RemoteVerificationConfig } from "./remote-verification";
 
 export function createRemoteVerificationRuntime(config: RemoteVerificationConfig | null, dependencies: {
@@ -18,7 +19,9 @@ export function createRemoteVerificationRuntime(config: RemoteVerificationConfig
   jobs.configurePathAdmission(paths => recovery.assertPathsAvailable(paths));
   const controller = new RemoteVerificationController(store, store.remoteConnection, identity);
   controller.recover();
-  const listener = config.listener ? createRemoteVerificationServer({
+  let listener: ReturnType<typeof createRemoteVerificationServer> | null = null;
+  const createListener = (operations?: OperationsHttpRuntime) => config.listener ? createRemoteVerificationServer({
+    operations,
     controller, identity, allowLoopbackHttpFixture: config.listener.allowLoopbackHttpFixture, admission: store.admission,
     ...(config.listener.keyFile && config.listener.certFile ? { tls: { key: readFileSync(config.listener.keyFile), cert: readFileSync(config.listener.certFile) } } : {}),
   }) : null;
@@ -30,13 +33,16 @@ export function createRemoteVerificationRuntime(config: RemoteVerificationConfig
     new HttpRemoteWorkerTransport(workerConfig.origin, workerConfig.workerId, () => readRemoteWorkerToken(workerConfig.tokenFile), workerConfig.allowLoopbackHttpFixture), receipt => recovery.isReconciled(receipt), store.admission) : null;
   return {
     controller,
-    async start() {
+    listenerOpen: () => listener?.server.listening === true,
+    stopOperations: () => listener?.stopOperations(),
+    async start(operations?: OperationsHttpRuntime) {
+      listener = createListener(operations);
       if (listener && config.listener) await new Promise<void>((resolve, reject) => {
         listener.server.once("error", reject);
         listener.server.listen(config.listener!.port, config.listener!.host, () => { listener.server.off("error", reject); resolve(); });
       });
       worker?.start();
     },
-    async close() { await worker?.close(); await listener?.close(); },
+    async close() { listener?.stopOperations(); await worker?.close(); await listener?.close(); },
   };
 }

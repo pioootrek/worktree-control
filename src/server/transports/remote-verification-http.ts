@@ -6,6 +6,8 @@ import type { RemoteVerificationController, RemoteWorkerTransport } from "@/serv
 import { remotePollResultSchema, remotePollSchema, remoteReportEnvelopeSchema, type RemoteWorkerReport } from "@/shared/contracts/remote-verification";
 import { createHttpServerCloser } from "@/server/http-server-lifecycle";
 
+import { createOperationsHttp, operationsFailure, type OperationsHttpRuntime } from "./operations-http";
+
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
@@ -24,6 +26,12 @@ async function body(request: IncomingMessage): Promise<unknown> {
 }
 
 /** Dedicated worker-only listener; HTTPS is mandatory except an explicit loopback fixture. */
+function transportRefusal(request: IncomingMessage, tls: boolean): "loopback_fixture_only" | "origin_forbidden" | null {
+  if (!tls && !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress ?? "")) return "loopback_fixture_only";
+  if (request.headers.origin) return "origin_forbidden";
+  return null;
+}
+
 export function createRemoteVerificationServer(options: {
   controller: RemoteVerificationController;
   identity: Pick<IdentityService, "authenticateBearer">;
@@ -31,6 +39,7 @@ export function createRemoteVerificationServer(options: {
   allowLoopbackHttpFixture?: boolean;
   /** Authentication and each protocol operation are admitted; the body read is not. */
   admission?: DatabaseAdmission;
+  operations?: OperationsHttpRuntime;
 }) {
   const admission = options.admission ?? directAdmission;
   const busy = (response: ServerResponse, error: unknown) => {
@@ -41,9 +50,18 @@ export function createRemoteVerificationServer(options: {
     return true;
   };
   if (!options.tls && !options.allowLoopbackHttpFixture) throw new Error("remote_https_required");
+  const operations = options.operations ? createOperationsHttp({ runtime: options.operations, listener: "worker" }) : null;
   const handle = async (request: IncomingMessage, response: ServerResponse) => {
-    if (!options.tls && !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress ?? "")) return json(response, 403, { error: "loopback_fixture_only" });
-    if (request.headers.origin) return json(response, 403, { error: "origin_forbidden" });
+    // Claim the raw namespace before protocol routing/authentication; both surfaces
+    // use precisely the same peer and Origin policy. TLS precedes HTTP dispatch.
+    const claimed = operations?.claims(request) === true;
+    const refusal = transportRefusal(request, !!options.tls);
+    if (refusal) {
+      if (claimed) operationsFailure(response, { category: "forbidden", status: 403, reason: refusal, retry: "none", effect: null });
+      else json(response, 403, { error: refusal });
+      return;
+    }
+    if (claimed) { await operations!.handle(request, response); return; }
     if (request.method !== "POST") return json(response, 405, { error: "method_not_allowed" });
     if (request.url !== "/remote-verification/v1/poll" && request.url !== "/remote-verification/v1/report") return json(response, 404, { error: "protocol_not_found" });
     let actor;
@@ -73,7 +91,13 @@ export function createRemoteVerificationServer(options: {
   server.requestTimeout = 15_000;
   server.headersTimeout = 10_000;
   server.maxConnections = 32;
-  return { server, close: createHttpServerCloser(server) };
+  const closeServer = createHttpServerCloser(server);
+  let completion: Promise<void> | undefined;
+  const stopOperations = () => operations?.stop();
+  return { server, stopOperations, close() {
+    stopOperations();
+    return completion ??= Promise.all([closeServer(), operations?.drain()]).then(() => undefined);
+  } };
 }
 
 export class HttpRemoteWorkerTransport implements RemoteWorkerTransport {

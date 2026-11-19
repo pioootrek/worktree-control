@@ -14,7 +14,7 @@ import type { PublicOperationError } from "@/shared/contracts/operations";
 import { BoundaryError, parseStrictJson, readBoundedBody, requestCookies, SESSION_COOKIE } from "./authentication-http-boundary";
 import { parseOperationsPath } from "./operations-path";
 
-type Mint = (listener: "api" | "unix", presented: PresentedCredentials, session: VerifiedProviderSession | null, options: DatabaseAdmissionOptions) => Promise<
+type Mint = (listener: "api" | "unix" | "worker", presented: PresentedCredentials, session: VerifiedProviderSession | null, options: DatabaseAdmissionOptions) => Promise<
   { readonly ok: true; readonly context: AuthenticationContext } | { readonly ok: false; readonly error: PublicOperationError }>;
 /** Value supplied by the one bootstrap composition. No boundary is constructed here. */
 export type OperationsHttpRuntime = { supported: false; mint: Mint } | {
@@ -71,7 +71,7 @@ const failure = (category: ConstructorParameters<typeof OperationError>[0], reas
  * Lifetime includes Node response completion AND all started application work.
  */
 export function createOperationsHttp(options: {
-  runtime: OperationsHttpRuntime; listener: "api" | "unix";
+  runtime: OperationsHttpRuntime; listener: "api" | "unix" | "worker";
   cookieBoundary?: { origin: string; cookieBytes: number };
   originAllowed?(request: IncomingMessage): boolean;
   /** Unix passes its existing owner; it must never acquire a second slot here. */
@@ -85,7 +85,7 @@ export function createOperationsHttp(options: {
   const path = (request: IncomingMessage) => parseOperationsPath(request.url ?? "", runtime.supported ? runtime.registry.idsOn(listener) : ["session.describe"]);
   const preflight = (request: IncomingMessage, response: ServerResponse): boolean => {
     // One fixed refusal, independent of mode, method, malformed path or other credentials.
-    if (presentedCredentials(request).providerSession && (listener === "unix" || !runtime.supported)) {
+    if (presentedCredentials(request).providerSession && (listener !== "api" || !runtime.supported)) {
       operationsFailure(response, failure("unauthenticated", "provider_cookie_not_supported")); return false;
     }
     return true;
