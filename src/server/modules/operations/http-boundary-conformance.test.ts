@@ -273,6 +273,10 @@ async function disconnectedCapacity(f: Fixture, driver: BoundaryDriver, mutant: 
     for (const pending of held) pending.call.destroy();
     for (const pending of held) await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
     await disconnected.promise;
+    if (driver.kind === "worker" && !mutant) {
+      const cookie = await driver.send({ slow: true, headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply;
+      expect(cookie.body).toEqual(refusal("provider_cookie_not_supported"));
+    }
     const reply = await driver.capacityProbe();
     expect(started - settled).toBe(mutant ? 33 : 32);
     expect(settled).toBe(0);
@@ -1271,6 +1275,7 @@ describe("worker HTTPS boundary conformance", () => {
         expect(reply.headers["cache-control"]).toBe("no-store");
       } else expect(reply.body).toEqual(refusal(mode === "legacy" ? "unknown_mode" : reason!));
     }
+    expect((await f.driver.send({ slow: true, headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("provider_cookie_not_supported"));
     expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
     expect(f.poll).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled(); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
     await f.store.admission.run(() => {
@@ -1411,11 +1416,30 @@ describe("worker HTTPS boundary conformance", () => {
     release.done(); const reply = await pending.reply; expect(reply.status).toBeGreaterThanOrEqual(400); expect(reply.body).not.toHaveProperty("actor"); await draining; expect(released).toHaveBeenCalledOnce();
   }, 15_000);
 
+  it("response completion retains capacity and the response ceiling commits one refusal", async () => {
+    const f = await workerFixture(), reached = pause(); let finish!: () => void;
+    f.worker.server.prependOnceListener("request", (_req, response) => {
+      const end = response.end.bind(response);
+      response.end = ((...args: Parameters<ServerResponse["end"]>) => { finish = () => { end(...args); }; reached.done(); return response; }) as ServerResponse["end"];
+    });
+    const pending = f.driver.send(); await reached.promise; let drained = false;
+    const closing = f.worker.close().then(() => { drained = true; });
+    await new Promise<void>(r => setImmediate(r)); expect(drained).toBe(false); finish(); await pending.reply; await closing;
+    const oversized = await workerFixture(); if (!oversized.built.supported) throw new Error("supported fixture");
+    vi.spyOn(oversized.built.runner, "readRelease").mockImplementation(async (_operation, _context, _raw, options) => {
+      options.commit({ fixture: "x".repeat(OPERATIONS_HTTP_LIMITS.responseBytes) }); return { status: "committed" };
+    });
+    expect((await oversized.driver.send().reply).body).toEqual(refusal("response_too_large", "payload_too_large", 413, "none"));
+  });
+
   it("without listener configuration no server or namespace is mounted", async () => {
     const f = await fixture();
     expect(createRemoteVerificationRuntime(null, {} as never)).toBeNull();
-    const runtime = await f.store.admission.run(() => createRemoteVerificationRuntime({ version: 1 }, { store: f.store, identity: new IdentityService(f.store), jobs: { configurePathAdmission() {} }, recovery: {} } as never)!);
-    expect(runtime.listenerOpen()).toBe(false); await runtime.start(f.runtime); expect(runtime.listenerOpen()).toBe(false); await runtime.close();
+    // No operations option means no mount even when the protocol listener exists.
+    const protocolOnly = createRemoteVerificationServer({ controller: {} as never, identity: new IdentityService(f.store), allowLoopbackHttpFixture: true });
+    await new Promise<void>(r => protocolOnly.server.listen(0, "127.0.0.1", r)); cleanups.push(protocolOnly.close);
+    const driver = createBoundaryDriver({ kind: "worker", server: protocolOnly.server, close: protocolOnly.close, legacyPath: "/remote-verification/v1/poll", acceptedCredentials: [] });
+    expect((await driver.send().reply).body).toEqual({ error: "protocol_not_found" });
     const minted = f.built.supported ? await f.built.mint("worker", { bearers: [], providerSession: null, browserHeaders: false, legacySecret: false }, null, {}) : undefined;
     expect(minted).toMatchObject({ ok: false, error: { reason: "listener_closed" } });
   });

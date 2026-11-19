@@ -25,13 +25,14 @@ async function body(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-/** Dedicated worker-only listener; HTTPS is mandatory except an explicit loopback fixture. */
+/** Shared byte-for-byte transport policy for the protocol and operations mount. */
 function transportRefusal(request: IncomingMessage, tls: boolean): "loopback_fixture_only" | "origin_forbidden" | null {
   if (!tls && !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress ?? "")) return "loopback_fixture_only";
   if (request.headers.origin) return "origin_forbidden";
   return null;
 }
 
+/** HTTPS is mandatory except an explicit loopback fixture. */
 export function createRemoteVerificationServer(options: {
   controller: RemoteVerificationController;
   identity: Pick<IdentityService, "authenticateBearer">;
@@ -50,7 +51,7 @@ export function createRemoteVerificationServer(options: {
     return true;
   };
   if (!options.tls && !options.allowLoopbackHttpFixture) throw new Error("remote_https_required");
-  const operations = options.operations ? createOperationsHttp({ runtime: options.operations, listener: "worker" }) : null;
+  let operations = options.operations ? createOperationsHttp({ runtime: options.operations, listener: "worker" }) : null;
   const handle = async (request: IncomingMessage, response: ServerResponse) => {
     // Claim the raw namespace before protocol routing/authentication; both surfaces
     // use precisely the same peer and Origin policy. TLS precedes HTTP dispatch.
@@ -94,10 +95,16 @@ export function createRemoteVerificationServer(options: {
   const closeServer = createHttpServerCloser(server);
   let completion: Promise<void> | undefined;
   const stopOperations = () => operations?.stop();
-  return { server, stopOperations, close() {
-    stopOperations();
-    return completion ??= Promise.all([closeServer(), operations?.drain()]).then(() => undefined);
-  } };
+  return { server, stopOperations,
+    mountOperations(runtime: OperationsHttpRuntime) {
+      if (server.listening || operations || completion) throw new Error("worker_operations_already_configured");
+      operations = createOperationsHttp({ runtime, listener: "worker" });
+    },
+    close() {
+      stopOperations();
+      return completion ??= Promise.all([closeServer(), operations?.drain()]).then(() => undefined);
+    },
+  };
 }
 
 export class HttpRemoteWorkerTransport implements RemoteWorkerTransport {

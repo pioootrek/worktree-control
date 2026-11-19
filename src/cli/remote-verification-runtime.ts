@@ -19,9 +19,7 @@ export function createRemoteVerificationRuntime(config: RemoteVerificationConfig
   jobs.configurePathAdmission(paths => recovery.assertPathsAvailable(paths));
   const controller = new RemoteVerificationController(store, store.remoteConnection, identity);
   controller.recover();
-  let listener: ReturnType<typeof createRemoteVerificationServer> | null = null;
-  const createListener = (operations?: OperationsHttpRuntime) => config.listener ? createRemoteVerificationServer({
-    operations,
+  const listener = config.listener ? createRemoteVerificationServer({
     controller, identity, allowLoopbackHttpFixture: config.listener.allowLoopbackHttpFixture, admission: store.admission,
     ...(config.listener.keyFile && config.listener.certFile ? { tls: { key: readFileSync(config.listener.keyFile), cert: readFileSync(config.listener.certFile) } } : {}),
   }) : null;
@@ -36,11 +34,10 @@ export function createRemoteVerificationRuntime(config: RemoteVerificationConfig
     listenerOpen: () => listener?.server.listening === true,
     stopOperations: () => listener?.stopOperations(),
     async start(operations?: OperationsHttpRuntime) {
-      const startedListener = createListener(operations);
-      listener = startedListener;
-      if (startedListener && config.listener) await new Promise<void>((resolve, reject) => {
-        startedListener.server.once("error", reject);
-        startedListener.server.listen(config.listener!.port, config.listener!.host, () => { startedListener.server.off("error", reject); resolve(); });
+      if (operations) listener?.mountOperations(operations);
+      if (listener && config.listener) await new Promise<void>((resolve, reject) => {
+        listener.server.once("error", reject);
+        listener.server.listen(config.listener!.port, config.listener!.host, () => { listener.server.off("error", reject); resolve(); });
       });
       worker?.start();
     },

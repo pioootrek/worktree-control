@@ -579,7 +579,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     authenticationProvider: providerAdministration,
     stopping: () => {
       providerAdministration.stop();
-    remoteVerification?.stopOperations();
+      remoteVerification?.stopOperations();
       process.removeListener("SIGINT", handleSignal);
       process.removeListener("SIGTERM", handleSignal);
       writeCliLine(translate(locale, "cli.stopping"));
