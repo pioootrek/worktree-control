@@ -654,6 +654,61 @@ rejection as handled and reports `outcome_unknown` with reason
 returns a promise is `internal`/`read_not_synchronous`. Neither leaves an
 unhandled rejection.
 
+### Release inside admission
+
+Transports must use `OperationRunner.readRelease` for every successful read
+response. `run()` still returns a value without committing a response.
+`ReadOperation` is unchanged. The new entry point accepts reads only; another
+kind is `internal`/`invalid_operation`.
+
+The runner takes core admission. One synchronous callback revalidates the
+context and listener, reads the clock, checks eligibility, deadline and
+connection, reads fresh grants, resolves references, decides, reruns `read`,
+projects and applies `releaseValue`. After any canonical comparison, it reads
+the clock and checks the deadline again immediately before calling `commit`,
+before leaving admission. No await separates those steps. Bootstrap must supply
+the same current eligibility policy used by the other runtime stages.
+
+The runner captures `eligible`, `connected` and `commit` once, before waiting
+for admission, and calls them with the options object as receiver. Reassigning
+these methods while waiting does not replace the captured callbacks.
+
+`eligible` and `connected` are required predicates with no defaults. Only a
+synchronous `true` allows release. A throw, thenable or any other answer
+refuses; thenable rejections are absorbed (decision W). `deadline` is required,
+finite and absolute in the runtime clock's milliseconds; equality is expired.
+The deadline is checked on entering the phase and again immediately before
+commit. A thenable or non-finite clock answer at the second check refuses as
+`release_timed_out` without calling `commit`.
+An aborted `signal` also refuses. The public refusals are
+`unavailable`/`release_not_eligible`, `unavailable`/`release_timed_out`, and
+`unavailable`/`request_cancelled` for a caller that is gone. The last two have
+retry disposition `retry`; the first has `none`. Read errors have effect
+`null`. Existing read refusals use the same path as `run()`.
+
+There are two commit shapes:
+
+- Direct: `commit(value)` receives the fresh released value. HTTP serializes
+  and writes it synchronously there.
+- Validated payload: `expectedCanonical` supplies `canonicalJson` of an earlier
+  `run()` public value for the same operation and input. The transport has
+  already built and bounded its buffered response from that value. Inside
+  admission the runner compares it with `canonicalJson` of the fresh released
+  value. This helper applies strict serialization and sorts object keys by
+  code unit. Key order alone does not change equality; changed or added fields
+  do. The supplied string must itself be canonical. A mismatch is
+  `conflict`/`release_payload_changed`, retry `none`, with no commit call.
+  MCP can then write its validated buffer synchronously in `commit`.
+
+The result is `committed`, `refused` with a public error before commit, or
+`commit_failed` with `internal`/`release_commit_failed`, retry `none`. A commit
+that throws or returns a thenable is failed and is never retried. A synchronous
+void callback may return an ordinary value; it is ignored. Commit runs at most
+once per call. Failed commit confirms no successful release, though it may
+have written some bytes. Admission never spans asynchronous SDK work or
+network drain. Committing bytes to Node promises neither client receipt nor
+revocation of bytes already committed. This entry point remains unmounted.
+
 ### Commit point
 
 Decision N. The operation definition fixes the commit point through
