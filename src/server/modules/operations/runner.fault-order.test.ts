@@ -74,8 +74,8 @@ function world() {
 
 const outcome = (result: RunResult<unknown> | { ok: false; error: unknown } | { ok: true }) => (result.ok ? "allowed" : result.error);
 
-type Path = "mutation" | "keyed" | "read" | "stream_open" | "replay" | "stream_event";
-const PATHS: readonly Path[] = ["mutation", "keyed", "read", "stream_open", "replay", "stream_event"];
+type Path = "mutation" | "keyed" | "read" | "read_release" | "stream_open" | "replay" | "stream_event";
+const PATHS: readonly Path[] = ["mutation", "keyed", "read", "read_release", "stream_open", "replay", "stream_event"];
 
 /** The public answer of one path with the fault armed, and how often the resolver ran after the fault was armed. */
 async function answer(fault: Fault, target: Target, path: Path) {
@@ -105,6 +105,13 @@ async function answer(fault: Fault, target: Target, path: Path) {
   if (path === "mutation") result = outcome(await w.runner.run(w.mutation, w.alice.context, input));
   else if (path === "keyed") result = outcome(await w.runner.run(w.mutation, w.alice.context, input, { idempotencyKey: "k-1" }));
   else if (path === "read") result = outcome(await w.runner.run(w.read, w.alice.context, input));
+  else if (path === "read_release") {
+    const released = await w.runner.readRelease(w.read, w.alice.context, input, {
+      eligible: () => true, connected: () => true, deadline: Number.MAX_SAFE_INTEGER,
+      commit: () => { throw new Error("must not commit a refused read"); },
+    });
+    result = released.status === "refused" ? released.error : "allowed";
+  }
   else result = outcome(await w.runner.stream(w.stream, w.alice.context, input));
   expect(w.counts).toEqual({ effects: 0, reads: 0, opens: 0 });
   expect(w.idempotency.states()).toEqual([]);
