@@ -245,7 +245,8 @@ describe("operation runner on the real admission gate", () => {
     })).toEqual({ status: "committed" });
     expect(committed).toBe(1);
     expect(microtaskRan).toBe(true);
-    expect(phases).toEqual(["authority", "clock", "eligible", "connected", "grants", "read", "commit"]);
+    // The clock is read twice: on entering the phase and again immediately before the commit.
+    expect(phases).toEqual(["authority", "clock", "eligible", "connected", "grants", "read", "clock", "commit"]);
     expect(() => store.listProjects()).toThrow();
   });
 
