@@ -48,28 +48,39 @@ export interface ProjectIdReport {
 export const projectIdNotice = (count: number): string =>
   `${count} Knowledge project ID(s) do not match the contract grammar (listed in projectIds, active and archived alike): these projects will not be reachable through the new authorization until their IDs conform; there is no supported rename yet, and the release is blocked on it.`;
 
-interface Row { head: string | null; size: number | null; status: unknown }
+interface Row { head: Buffer | null; bytes: number | null; status: unknown }
+
+/** The most bytes read of one ID: enough for the shown code points plus one, at four bytes each. */
+const HEAD_BYTES = (PROJECT_ID_REPORT_LIMITS.idCodePoints + 1) * 4;
 
 /**
  * Reads `knowledge_projects` (read-only, any schema from 49 on) and reports the
  * IDs outside the grammar. A stored value that is not text is outside it. Only
- * the first characters of an ID are read into memory.
+ * the first bytes of an ID are read into memory.
+ *
+ * The ID is read as bytes, never through SQLite's text functions: `substr()`
+ * and `length()` on text stop at the first U+0000, so `valid\0suffix` would
+ * look like the conforming `valid`. The grammar is ASCII, so a conforming ID
+ * has as many bytes as characters, at most 160, and no NUL.
  */
 export function inspectProjectIds(database: Database.Database): ProjectIdReport {
-  const rows = database.prepare(`SELECT CASE WHEN typeof(id)='text' THEN substr(id,1,${PROJECT_ID_REPORT_LIMITS.idCodePoints + 1}) END AS head,
-      CASE WHEN typeof(id)='text' THEN length(id) END AS size, status FROM knowledge_projects ORDER BY id, rowid`).iterate() as IterableIterator<Row>;
+  const rows = database.prepare(`SELECT CASE WHEN typeof(id)='text' THEN substr(CAST(id AS BLOB),1,${HEAD_BYTES}) END AS head,
+      CASE WHEN typeof(id)='text' THEN length(CAST(id AS BLOB)) END AS bytes, status FROM knowledge_projects ORDER BY id, rowid`).iterate() as IterableIterator<Row>;
   const projects: NonConformingProjectId[] = [];
   let count = 0;
   for (const row of rows) {
-    // A longer ID never matches, whatever its first characters; `length` counts code points as the store's own bound does.
-    const conforming = row.head !== null && row.size !== null && row.size <= 160 && PROJECT_ID_GRAMMAR.test(row.head);
+    const whole = row.head !== null && row.bytes !== null && row.head.length === row.bytes;
+    const text = row.head === null ? null : row.head.toString("utf8");
+    const conforming = whole && text !== null && row.bytes! <= 160 && PROJECT_ID_GRAMMAR.test(text);
     if (conforming) continue;
     count++;
     if (projects.length >= PROJECT_ID_REPORT_LIMITS.entries) continue;
     const status = row.status === "active" || row.status === "archived" ? row.status : null;
-    if (row.head === null) { projects.push({ id: null, status }); continue; }
-    const cut = (row.size ?? 0) > PROJECT_ID_REPORT_LIMITS.idCodePoints;
-    projects.push({ id: cut ? [...row.head].slice(0, PROJECT_ID_REPORT_LIMITS.idCodePoints).join("") : row.head, status, ...(cut ? { idCut: true as const } : {}) });
+    if (text === null) { projects.push({ id: null, status }); continue; }
+    // A prefix cut by bytes may end inside a character; that fragment decodes to U+FFFD and is dropped.
+    const points = [...(whole ? text : text.replace(/\uFFFD$/u, ""))];
+    const cut = !whole || points.length > PROJECT_ID_REPORT_LIMITS.idCodePoints;
+    projects.push({ id: cut ? points.slice(0, PROJECT_ID_REPORT_LIMITS.idCodePoints).join("") : text, status, ...(cut ? { idCut: true as const } : {}) });
   }
   return {
     grammar: PROJECT_ID_GRAMMAR.source, count, limit: PROJECT_ID_REPORT_LIMITS.entries, truncated: count > projects.length, projects,

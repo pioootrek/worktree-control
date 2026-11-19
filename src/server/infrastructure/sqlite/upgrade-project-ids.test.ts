@@ -33,6 +33,24 @@ describe("inspectProjectIds", () => {
     expect(inspectProjectIds(table([]))).toMatchObject({ count: 0, projects: [] });
   });
 
+  it("reports an ID with an embedded NUL after a conforming prefix, whole and uncut (SQLite's text functions stop at the NUL)", () => {
+    const report = inspectProjectIds(table([["valid\u0000suffix", "active"], ["valid", "archived"], ["\u0000", "active"], [`${"y".repeat(159)}\u0000`, "archived"]]));
+    expect(report.count).toBe(3);
+    expect(report.projects).toEqual([
+      { id: "\u0000", status: "active" }, { id: "valid\u0000suffix", status: "active" }, { id: `${"y".repeat(159)}\u0000`, status: "archived" },
+    ]);
+    // The JSON an operator sees carries the NUL escaped, and parses back to the stored ID.
+    const printed = JSON.stringify(report);
+    expect(printed).not.toContain("\u0000");
+    expect((JSON.parse(printed) as typeof report).projects[1]!.id).toBe("valid\u0000suffix");
+  });
+
+  it("cuts a long ID with multi-byte characters and an embedded NUL at the code point limit", () => {
+    const long = `${"ż".repeat(150)}\u0000${"ż".repeat(150)}`;
+    const report = inspectProjectIds(table([[long, "active"]]));
+    expect(report.projects).toEqual([{ id: [...long].slice(0, PROJECT_ID_REPORT_LIMITS.idCodePoints).join(""), status: "active", idCut: true }]);
+  });
+
   it("lists active and archived IDs outside the grammar with their status, in ascending byte order, and nothing else", () => {
     const outside: Array<[string, "active" | "archived"]> = [
       ["has space", "active"], ["with/slash", "archived"], [".leading-dot", "active"], ["-leading-hyphen", "archived"],
