@@ -27,7 +27,7 @@ const pause = () => { let done!: () => void; const promise = new Promise<void>(r
 type Headers = Record<string, string> | string[];
 type Reply = { status: number; body: Record<string, any>; headers: IncomingMessage["headers"] }; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-async function fixture(mode = "open", limits?: Parameters<typeof createOperationsHttp>[0]["limits"], fault?: "omit_guard" | "early_release") {
+async function fixture(mode = "open", limits?: Parameters<typeof createOperationsHttp>[0]["limits"], fault?: "omit_guard" | "early_release" | "unmounted") {
   const root = mkdtempSync(join(tmpdir(), "operations-http-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict", admissionTimeoutMs: 100 });
@@ -64,10 +64,10 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const controller = createControllerServer({ service: { addProject } as unknown as ControlService, directoryBrowser: new DirectoryBrowser(root),
     events: new EventStream(), webRoot: root, host: "127.0.0.1", port: 0, accessToken: "synthetic-pairing",
     mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "none", activeSessions: 0 }),
-    authentication: oldAuthentication, operations: runtime, maintenance: () => state.maintenance, admission: store.admission });
+    authentication: oldAuthentication, operations: fault === "unmounted" ? undefined : runtime, maintenance: () => state.maintenance, admission: store.admission });
   await new Promise<void>(r => controller.server.listen(0, "127.0.0.1", r));
   cleanups.push(() => { apiOpen = false; return controller.close(); });
-  const admin = await listenAdminSocket(socketPath, legacy, runtime);
+  const admin = await listenAdminSocket(socketPath, legacy, fault === "unmounted" ? undefined : runtime);
   cleanups.push(() => { unixOpen = false; return admin.close(); });
   // A short-limit adapter uses the actual API listener too, never calls handle directly.
   if (limits) {
@@ -104,6 +104,34 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const grant = () => store.admission.run(() => db.prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('agent','reader','project','project-a',?)").run(iso(NOW)));
   return { store, state, db, built, runtime, send, hooks, oldAuthentication, legacy, controller, admin, installation, agent, credentialId, grant, clock, socketPath, provider, addProject };
 }
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+const h2c = { Connection: "Upgrade, HTTP2-Settings", Upgrade: "h2c", "HTTP2-Settings": "" };
+async function wire(f: Fixture, listener: "api" | "unix", path: string, method = "GET", upgrade = false) {
+  return new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const call = request({ ...(listener === "unix" ? { socketPath: f.socketPath }
+      : { hostname: "127.0.0.1", port: (f.controller.server.address() as AddressInfo).port }),
+      path, method, headers: { "Content-Type": "application/json", ...(upgrade ? h2c : {}) } }, res => {
+      const chunks: Buffer[] = [];
+      res.on("data", c => chunks.push(c)); res.on("error", reject);
+      res.on("end", () => resolve({ status: res.statusCode!, body: Buffer.concat(chunks).toString() }));
+    });
+    call.setTimeout(2000, () => call.destroy(new Error("Wire response timed out")));
+    call.on("error", reject); call.end(method === "POST" ? '{"command":"status"}' : undefined);
+  });
+}
+async function protocolWire(f: Fixture, listener: "api" | "unix", path: string, method: "CONNECT" | "GET") {
+  return new Promise<string>((resolve, reject) => {
+    const socket = listener === "unix" ? createConnection(f.socketPath)
+      : createConnection((f.controller.server.address() as AddressInfo).port, "127.0.0.1");
+    cleanups.push(() => { socket.destroy(); });
+    socket.setTimeout(2000, () => { socket.destroy(); reject(new Error("Protocol response timed out")); });
+    const chunks: Buffer[] = [];
+    socket.on("data", c => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    socket.on("error", reject); socket.on("close", () => resolve(Buffer.concat(chunks).toString()));
+    socket.on("connect", () => socket.write(`${method} ${path} HTTP/1.1\r\nHost: localhost\r\nConnection: close${method === "GET" ? ", Upgrade, HTTP2-Settings\r\nUpgrade: h2c\r\nHTTP2-Settings:" : ""}\r\n\r\n`));
+  });
+}
+
 const auth = (secret: string) => ({ "Content-Type": "application/json", Authorization: `Bearer ${secret}` });
 const refusal = (reason: string, category = "unauthenticated", status = 401, retry = "reauthenticate") => ({ error: { category, status, reason, retry, effect: null } });
 
@@ -149,6 +177,96 @@ describe("real API and unix acceptance", () => {
     }
     expect(f.oldAuthentication.authenticateInstallation.mock.calls.length).toBe(0); expect(f.oldAuthentication.anonymousInstallation.mock.calls.length).toBe(0); expect(f.legacy).not.toHaveBeenCalled();
     await f.store.admission.run(() => expect(f.store.getCredentialForAuthentication(f.credentialId)?.lastUsedAt).toBeNull());
+  });
+
+  it("preserves legacy h2c status and bodies against listeners without the operations mount", async () => {
+    const old = await fixture("open", undefined, "unmounted"), mounted = await fixture();
+    for (const listener of ["api", "unix"] as const) {
+      const targets = listener === "api" ? [["/", "GET"], ["/index.html", "GET"], ["/api/auth/status", "GET"], ["/api/status", "GET"]]
+        : [["/auth", "POST"], ["/api/status", "GET"], ["/unknown", "GET"]];
+      for (const [path, method] of targets) {
+        const baseline = await wire(old, listener, path, method);
+        expect(await wire(old, listener, path, method, true)).toEqual(baseline);
+        expect(await wire(mounted, listener, path, method)).toEqual(baseline);
+        expect(await wire(mounted, listener, path, method, true)).toEqual(baseline);
+      }
+      for (const path of ["/auth", "/api/status", "example.invalid:443"]) {
+        expect(await protocolWire(old, listener, path, "CONNECT")).toBe("");
+        expect(await protocolWire(mounted, listener, path, "CONNECT")).toBe("");
+      }
+      const response = await protocolWire(mounted, listener, route, "GET");
+      expect(response).toContain("400 Bad Request");
+      expect(response).toContain(JSON.stringify(refusal("method_not_allowed", "invalid_request", 400, "none")));
+    }
+  });
+
+  it.each(["api", "unix"] as const)("negative control: the old %s Upgrade listener fails legacy parity", async listener => {
+    const f = await fixture();
+    const path = listener === "api" ? "/api/auth/status" : "/auth", method = listener === "api" ? "GET" : "POST";
+    const baseline = await wire(f, listener, path, method);
+    // Reproduce the old listener exactly for unclaimed targets, on the real mount.
+    f[listener === "api" ? "controller" : "admin"].server.on("upgrade", (_request, socket) => socket.destroy());
+    const broken = await wire(f, listener, path, method, true).catch(() => null);
+    expect(() => expect(broken).toEqual(baseline)).toThrow();
+  });
+
+  it("refuses normalized aliases before all legacy work, with cookie refusal first", async () => {
+    const f = await fixture("better-auth");
+    const admission = vi.spyOn(f.store.admission, "run"), mint = vi.spyOn(f.runtime, "mint");
+    let reads = 0;
+    for (const server of [f.controller.server, f.admin.server]) server.prependListener("request", req => {
+      req.on("newListener", event => { if (event === "data") reads++; });
+    });
+    const aliases: string[] = [];
+    for (const namespace of ["/api/operations", "/mcp/operations"]) {
+      aliases.push(`/./${namespace.slice(1)}`, `/x/../${namespace.slice(1)}`, `/${namespace}`, `/\\${namespace.slice(1)}`,
+        namespace.replace("/operations", "//operations"), namespace.replace("/operations", "\\operations"),
+        namespace.replace("/operations", "%2foperations"), namespace.replace("/operations", "%5Coperations"),
+        namespace.replace("operations", "%6fperations"), `${namespace}/%2e`, `${namespace}/x/%2e%2e`);
+      for (const dot of [".", "%2e", "%2E"]) {
+        aliases.push(`/${dot}/${namespace.slice(1)}`, namespace.replace("/operations", `/${dot}/operations`),
+          `/\\${dot}%2f${namespace.slice(1).replace("/", "//")}`);
+      }
+      for (const dots of ["..", ".%2e", "%2e.", "%2e%2E"]) {
+        aliases.push(`/x/${dots}/${namespace.slice(1)}`, namespace.replace("/operations", `/x/${dots}/operations`));
+      }
+    }
+    for (const listener of ["api", "unix"] as const) for (const alias of aliases) {
+      for (const method of ["GET", "POST", "OPTIONS"]) for (const cookie of [false, true]) {
+        const headers = { "Content-Type": "application/json", ...(cookie ? { Cookie: "wtc.session=x" } : {}) };
+        const reply = await f.send(listener, { path: alias + "/session.describe", method, headers }).reply;
+        expect(reply.status, `${listener} ${method} ${alias} cookie=${cookie}`).toBe(cookie ? 401 : 404);
+        expect(reply.body).toEqual(cookie ? refusal("provider_cookie_not_supported") : refusal("operation_not_found", "not_found", 404, "none"));
+      }
+    }
+    expect(admission).not.toHaveBeenCalled(); expect(mint).not.toHaveBeenCalled(); expect(reads).toBe(0);
+    expect(f.oldAuthentication.authenticateInstallation).not.toHaveBeenCalled();
+    expect(f.oldAuthentication.anonymousInstallation).not.toHaveBeenCalled(); expect(f.legacy).not.toHaveBeenCalled();
+    expect(f.provider.isSessionAuthorityEligible).not.toHaveBeenCalled();
+  }, 30000);
+
+  it("keeps near-prefix legacy targets identical to the unmounted listeners", async () => {
+    const old = await fixture("open", undefined, "unmounted"), mounted = await fixture();
+    const targets = ["/api/operationsX", "/api/operations.json", "/api/operations-old/session.describe", "/api/operations_",
+      "/api/operation", "/api/status", "/mcp/operationsX", "/mcp/operations.json", "/mcp/operations-old", "/mcp/operation",
+      "/./api/operationsX", "/api/x/../operations.json", "/%2e/api/operationsX", "//api/operationsX", "/api%2foperationsX"];
+    for (const listener of ["api", "unix"] as const) for (const path of targets) {
+      expect(parseOperationsPath(path, ["session.describe"])).toEqual({ claimed: false });
+      for (const method of ["GET", "POST", "OPTIONS"]) {
+        expect(await wire(mounted, listener, path, method)).toEqual(await wire(old, listener, path, method));
+      }
+    }
+  });
+
+  it("always answers unsupported mode even if mint unexpectedly succeeds", async () => {
+    const f = await fixture("legacy");
+    const mint = vi.spyOn(f.runtime, "mint").mockResolvedValue({ ok: true, context: {} } as never);
+    for (const listener of ["api", "unix"] as const) {
+      expect((await f.send(listener).reply).body).toEqual(refusal("unknown_mode"));
+    }
+    expect(mint).toHaveBeenCalledTimes(2); expect(f.legacy).not.toHaveBeenCalled();
+    expect(f.oldAuthentication.authenticateInstallation).not.toHaveBeenCalled();
+    expect(f.oldAuthentication.anonymousInstallation).not.toHaveBeenCalled();
   });
 
   it("preserves duplicate and mixed raw credentials", async () => {
@@ -278,6 +396,22 @@ describe("boundary conformance through real listeners", () => {
     const f = await fixture("open", { deadlineMs: 50, responseBytes: 32 });
     expect((await f.send("api", { slow: true }).reply).status).toBeGreaterThanOrEqual(400);
     expect((await f.send("api").reply).body).toEqual(refusal("response_too_large", "payload_too_large", 413, "none"));
+  });
+
+  it("commits exactly one 413 envelope for an oversized response", async () => {
+    const f = await fixture("open", { responseBytes: 32 });
+    if (!f.runtime.supported) throw new Error("Expected a supported fixture");
+    const runner = vi.spyOn(f.runtime.runner, "readRelease");
+    const writes: ReturnType<typeof vi.spyOn>[] = [], ends: ReturnType<typeof vi.spyOn>[] = [];
+    f.controller.server.prependListener("request", (_req, res) => {
+      writes.push(vi.spyOn(res, "writeHead")); ends.push(vi.spyOn(res, "end"));
+    });
+    const reply = await f.send("api").reply;
+    expect(reply.status).toBe(413);
+    expect(reply.body).toEqual(refusal("response_too_large", "payload_too_large", 413, "none"));
+    expect(writes).toHaveLength(1); expect(writes[0]).toHaveBeenCalledOnce();
+    expect(ends).toHaveLength(1); expect(ends[0]).toHaveBeenCalledOnce();
+    expect(runner).toHaveBeenCalledOnce(); expect(await runner.mock.results[0].value).toMatchObject({ status: "committed" });
   });
 
   it.each(["grant", "revoke", "rotate", "maintenance", "shutdown", "disconnect", "deadline"])("revalidates %s between mint and actual write", async change => {

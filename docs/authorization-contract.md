@@ -9,7 +9,12 @@ status: "active"
 
 **Status: unreleased breaking change.** Only `session.describe` is mounted,
 through `POST /api/operations/session.describe` on the API listener and private
-unix socket. Other routes and tools retain their existing authentication.
+unix socket. Only the exact raw operation path can succeed. Aliases entering
+`/api/operations` or `/mcp/operations` through dot segments, encoded path syntax,
+backslashes or duplicate slashes receive the new not-found envelope on both
+listeners, for every method. Cookie refusal still comes first. Upgrade headers
+keep normal request dispatch; unclaimed CONNECT targets retain socket closure.
+Other routes and tools retain their existing authentication.
 Cookies on this route receive the fixed `unauthenticated` /
 `provider_cookie_not_supported` refusal before body reads or capacity admission.
 The import guard permits only the explicit composition and transport consumers

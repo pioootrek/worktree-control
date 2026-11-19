@@ -57,13 +57,16 @@ function write(response: ServerResponse, status: number, body: string): void {
 }
 const failure = (category: ConstructorParameters<typeof OperationError>[0], reason: string) => publicError(new OperationError(category, reason));
 
-/** Node sends CONNECT and Upgrade through separate events. They must not escape
- * terminal namespace dispatch. Other targets keep Node's default socket refusal.
+/** CONNECT bypasses request dispatch; unclaimed targets retain Node's socket refusal.
+ * Do not register an upgrade listener: on every supported Node 22/24 release,
+ * its absence keeps Upgrade requests in normal request dispatch (including bodies).
+ * That preserves legacy responses and terminal operations refusals alike, without
+ * depending on shouldUpgradeCallback (added in 22.21 / 24.9).
  */
 export function mountOperationsProtocolEvents(server: Server, operations: ReturnType<typeof createOperationsHttp> | undefined,
   dispatch: (request: IncomingMessage, response: ServerResponse) => void): void {
   if (!operations) return;
-  for (const event of ["connect", "upgrade"] as const) server.on(event, (request, socket) => {
+  server.on("connect", (request, socket) => {
     if (!operations.claims(request) || !(socket instanceof Socket)) { socket.destroy(); return; }
     const response = new ServerResponse(request);
     response.shouldKeepAlive = false;
@@ -121,8 +124,8 @@ export function createOperationsHttp(options: {
         operationsFailure(response, failure("invalid_request", "method_not_allowed")); return;
       }
       if (!runtime.supported) {
-        const result = await runtime.mint(listener, presentedCredentials(request), null, { signal: abort.signal });
-        if (!result.ok) operationsFailure(response, result.error);
+        await runtime.mint(listener, presentedCredentials(request), null, { signal: abort.signal });
+        operationsFailure(response, failure("unauthenticated", "unknown_mode"));
         return;
       }
       if (closing || !runtime.eligible()) { operationsFailure(response, failure("unavailable", "release_not_eligible")); return; }
@@ -151,6 +154,8 @@ export function createOperationsHttp(options: {
         commit(value) {
           const serialized = JSON.stringify(value);
           if (Buffer.byteLength(serialized) > limits.responseBytes) {
+            // This refusal is itself committed inside admission. Returning normally
+            // reports `committed` to the runner, preventing a second, outside-phase write.
             operationsFailure(response, failure("payload_too_large", "response_too_large")); return;
           }
           write(response, 200, serialized);
@@ -171,7 +176,7 @@ export function createOperationsHttp(options: {
     }
   };
   return {
-    claims(request: IncomingMessage) { const parsed = path(request); return parsed.claimed && parsed.surface === "api"; },
+    claims(request: IncomingMessage) { const parsed = path(request); return parsed.claimed; },
     preflight,
     handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
       if (!preflight(request, response)) return Promise.resolve();
