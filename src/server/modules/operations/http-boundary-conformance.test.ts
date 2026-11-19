@@ -981,6 +981,7 @@ describe("operations cookie listener conformance", () => {
     await f.store.admission.run(() => f.db.prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('human','reader','project','project-a',?)").run(iso(NOW)));
     const runner = f.built.runner, entered = pause(), release = pause(), real = runner.readRelease.bind(runner);
     vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
+      if (operation.kind === "stream") throw new Error("read required");
       const prior = await runner.run(operation, context, raw); expect(prior.ok).toBe(true);
       entered.done(); await release.promise; return real(operation, context, raw, options);
     });
@@ -1026,6 +1027,7 @@ describe("cookie conformance negative controls", () => {
     const f = await fixture("better-auth", undefined, undefined, true); if (!f.built.supported) throw new Error("supported fixture required");
     const runner = f.built.runner, entered = pause(), release = pause();
     vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
+      if (operation.kind === "stream") throw new Error("read required");
       const prior = await runner.run(operation, context, raw); if (!prior.ok) throw new Error("successful control read required");
       entered.done(); await release.promise; options.commit(prior.value); return { status: "committed" };
     });
@@ -1039,8 +1041,8 @@ describe("cookie cancellation ownership", () => {
   it("deadline aborts resolution and admission but retains real unsettled work and response drain", async () => {
     const f = await fixture("better-auth", undefined, undefined, true), release = pause();
     const cancelled = vi.fn();
-    vi.spyOn(f.runtime, "resolveSession").mockImplementation((_headers, { signal }) => ({
-      result: new Promise((_resolve, reject) => signal.addEventListener("abort", () => { cancelled(); reject(new Error("cancelled provider result")); }, { once: true })),
+    vi.spyOn(f.runtime, "resolveSession").mockImplementation((_headers, { signal } = {}) => ({
+      result: new Promise((_resolve, reject) => signal!.addEventListener("abort", () => { cancelled(); reject(new Error("cancelled provider result")); }, { once: true })),
       settled: release.promise,
     }));
     try {

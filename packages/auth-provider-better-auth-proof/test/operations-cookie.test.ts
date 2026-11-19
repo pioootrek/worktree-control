@@ -107,6 +107,7 @@ describe("operations cookies through production bootstrap and real Better Auth",
     const f = await fixture(); await f.ready(); await f.login(); if (!f.operations.supported) throw new Error("supported runtime required");
     const runner = f.operations.runner, release = gate(), entered = gate(), readRelease = runner.readRelease.bind(runner);
     vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, input, options) => {
+      if (operation.kind === "stream") throw new Error("read required");
       const prior = await runner.run(operation, context, input); expect(prior.ok).toBe(true); entered.open(); await release.promise;
       return readRelease(operation, context, input, options);
     });

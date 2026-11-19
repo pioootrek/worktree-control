@@ -390,7 +390,7 @@ async function main() {
     check(status.enabled === false && status.pending === 0 && status.error === null && status.lastConfirmed === null && status.recovery === "not-measured", "Installed package unexpectedly enables remote backups.");
   });
   await step("operations-installed-token-and-local", async () => {
-    const response = await fetch(`${origin}/api/operations/session.describe`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: "{}" });
+    const response = await fetch(`http://127.0.0.1:${dashboardPort}/api/operations/session.describe`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: "{}" });
     check(response.status === 200 && (await response.json()).actor.kind === "installation", "Installed operations token path failed.");
     const body = await new Promise((accept, reject) => {
       const call = httpRequest({ socketPath: join(state, "admin.sock"), path: "/api/operations/session.describe", method: "POST", headers: { "Content-Type": "application/json" } }, response => {
