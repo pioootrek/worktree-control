@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { request, type ClientRequest, type IncomingMessage } from "node:http";
+import { request, type ClientRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -26,7 +26,7 @@ const pause = () => { let done!: () => void; const promise = new Promise<void>(r
 type Headers = Record<string, string> | string[];
 type Reply = { status: number; body: Record<string, any>; headers: IncomingMessage["headers"] }; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-async function fixture(mode = "open", limits?: Parameters<typeof createOperationsHttp>[0]["limits"]) {
+async function fixture(mode = "open", limits?: Parameters<typeof createOperationsHttp>[0]["limits"], fault?: "omit_guard" | "early_release") {
   const root = mkdtempSync(join(tmpdir(), "operations-http-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict", admissionTimeoutMs: 100 });
@@ -43,7 +43,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   });
   const socketPath = join(root, "admin.sock");
   let apiOpen = true, unixOpen = true;
-  const eligibility = createControllerOperationEligibility({ maintenance: () => state.maintenance, stopping: () => state.stopping,
+  const eligibility = createControllerOperationEligibility({ maintenance: () => fault === "omit_guard" ? false : state.maintenance, stopping: () => state.stopping,
     configurationRestartRequired: () => state.configChanged, runtime: () => undefined });
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs: { controller() {} },
     eligibility, provider: null, listeners: { api: () => apiOpen, unix: () => unixOpen } });
@@ -64,7 +64,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   cleanups.push(() => { unixOpen = false; return admin.close(); });
   // A short-limit adapter uses the actual API listener too, never calls handle directly.
   if (limits) {
-    const adapter = createOperationsHttp({ runtime, listener: "api", limits });
+    const adapter = createOperationsHttp({ runtime, listener: "api", limits, externallyOwned: fault === "early_release" });
     controller.server.removeAllListeners("request");
     controller.server.on("request", (req, res) => { void adapter.handle(req, res); });
     cleanups.push(async () => { adapter.stop(); await adapter.drain(); });
@@ -281,10 +281,63 @@ describe("boundary conformance through real listeners", () => {
     await stopping; expect(closedStore).toHaveBeenCalledOnce(); expect(releasedLock).toHaveBeenCalledOnce();
   });
 
-  it("negative controls detect an omitted refusal, early slot release and premature success", () => {
-    const success = { status: 200, body: { actor: { kind: "operator" } }, headers: {} };
-    expect(() => assertRefused(success, 1)).toThrow();
-    expect(() => assertOwned(false)).toThrow();
-    expect(() => assertRefused(success, 0)).toThrow();
+  it("negative control: the same maintenance assertion fails when eligibility is omitted", async () => {
+    const f = await fixture("open", undefined, "omit_guard");
+    f.state.maintenance = true;
+    const reply = await f.send("api").reply;
+    expect(() => assertRefused(reply, reply.status === 200 ? 1 : 0)).toThrow();
   });
+
+  async function disconnectedCapacity(f: Awaited<ReturnType<typeof fixture>>) {
+    const entered = pause(), release = pause(); let first = true;
+    f.hooks.afterMint = async () => { if (first) { first = false; entered.done(); await release.promise; } };
+    const pending = f.send("api"); await entered.promise;
+    pending.call.destroy(); await new Promise<void>(done => setImmediate(done));
+    try { expect((await f.send("api").reply).status).toBe(503); }
+    finally { release.done(); }
+  }
+  it("retains API capacity until disconnected work settles", async () => {
+    await disconnectedCapacity(await fixture("open", { maxInFlight: 1 }));
+  });
+  it("negative control: the same capacity assertion fails with an unowned early release", async () => {
+    await expect(disconnectedCapacity(await fixture("open", { maxInFlight: 1 }, "early_release"))).rejects.toThrow();
+  });
+
+  it("negative control: the same release assertion fails on a buffered premature success", async () => {
+    const f = await fixture(), entered = pause(), release = pause();
+    if (!f.built.supported) throw new Error("supported runtime required");
+    const runner = f.built.runner;
+    vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
+      const result = await runner.run(operation, context, raw, { signal: options.signal });
+      entered.done(); await release.promise;
+      if (!result.ok) return { status: "refused", error: result.error };
+      options.commit(result.value); return { status: "committed" };
+    });
+    const pending = f.send("api"); await entered.promise;
+    f.state.maintenance = true; release.done();
+    const reply = await pending.reply;
+    expect(() => assertRefused(reply, 0)).toThrow();
+  });
+
+  it("holds capacity through response completion, after admitted work returns", async () => {
+    const f = await fixture("open", { maxInFlight: 1 }), intercepted = pause();
+    let finish: (() => void) | undefined;
+    const hold = (_req: IncomingMessage, response: ServerResponse) => {
+      f.controller.server.off("request", hold);
+      const end = response.end.bind(response);
+      response.end = ((...args: Parameters<ServerResponse["end"]>) => { finish = () => { end(...args); }; intercepted.done(); return response; }) as ServerResponse["end"];
+    };
+    f.controller.server.prependListener("request", hold);
+    const pending = f.send("api"); await intercepted.promise;
+    try { expect((await f.send("api").reply).status).toBe(503); }
+    finally { finish?.(); }
+    expect((await pending.reply).status).toBe(200);
+    expect((await f.send("api").reply).status).toBe(200);
+  });
+
+  it("uses the socket's real ten second deadline for a slow operations body", async () => {
+    const f = await fixture(), mint = vi.spyOn(f.runtime, "mint");
+    const reply = await f.send("unix", { slow: true }).reply;
+    assertRefused(reply, mint.mock.calls.length);
+  }, 15_000);
 });
