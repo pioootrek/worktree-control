@@ -66,3 +66,8 @@ export class ConformanceFailure extends Error {
 export function conform(assertion: string, observed: unknown, expected: unknown): void {
   if (JSON.stringify(observed) !== JSON.stringify(expected)) throw new ConformanceFailure(assertion, observed, expected);
 }
+
+/** Shared by browser and operations cookie listener scenarios, including mutants. */
+export function assertCookieOrigin(reply: Pick<Reply, "status">): void { conform("cookie origin boundary", reply.status, 403); }
+export function assertCookieCapacity(reply: Pick<Reply, "status">): void { conform("cookie capacity until settlement", reply.status, 503); }
+export function assertCookieRelease(reply: Pick<Reply, "status">): void { conform("cookie maintenance release", reply.status, 401); }

@@ -57,7 +57,6 @@ export function authenticationJson(response: ServerResponse, status: number, bod
 /** Explicit HTTPS boundary. Mounting this adapter does not select or enable a product mode. */
 export class AuthenticationHttp {
   readonly #origin: string;
-  readonly #authority: string;
   readonly #limits: AuthenticationTransportLimits;
   readonly #budget: AuthenticationRequestBudget;
   readonly #parsers: BodyParsers;
@@ -88,7 +87,7 @@ export class AuthenticationHttp {
     this.#limits = validateTransportLimits(deps.limits, maxInFlight);
     this.#budget = deps.budget ?? new AuthenticationRequestBudget(maxInFlight, this.#limits.reservedCompletionSlots);
     if (this.#budget.maxInFlight !== maxInFlight || this.#budget.reservedCompletionSlots !== this.#limits.reservedCompletionSlots) throw new Error("Invalid authentication capacity.");
-    this.#origin = origin.origin; this.#authority = origin.host;
+    this.#origin = origin.origin;
     this.#parsers = this.parsers();
   }
 
@@ -280,25 +279,10 @@ export class AuthenticationHttp {
   private boundary(request: IncomingMessage): void {
     const path = request.url ?? "";
     if (!/^\/[A-Za-z0-9/_-]+$/.test(path) || path.includes("//") || path.endsWith("/")) fail(400, "invalid_request");
-    if (request.headers.host !== this.#authority || countHeader(request, "host") > 1) fail(421, "invalid_authority");
-    if (countHeader(request, "origin") > 1 || (request.headers.origin !== undefined && request.headers.origin !== this.#origin)
-      || (request.headers["sec-fetch-site"] !== undefined && request.headers["sec-fetch-site"] !== "same-origin")) fail(403, "origin_forbidden");
-    for (const name of SINGLE_HEADERS) if (countHeader(request, name) > 1) fail(name.startsWith("sec-fetch") ? 403 : 400, name.startsWith("sec-fetch") ? "origin_forbidden" : "invalid_request");
-    const mode = request.headers["sec-fetch-mode"], destination = request.headers["sec-fetch-dest"];
-    if ((mode !== undefined && mode !== "cors" && mode !== "same-origin") || (destination !== undefined && destination !== "empty")) fail(403, "origin_forbidden");
-    if (request.method === "GET" && (request.headers["transfer-encoding"] || (request.headers["content-length"] && request.headers["content-length"] !== "0"))) fail(400, "invalid_request");
-    if (Buffer.byteLength(request.headers.cookie ?? "") > this.#limits.cookieBytes) fail(400, "invalid_request");
+    authenticationRequestBoundary(request, { origin: this.#origin, cookieBytes: this.#limits.cookieBytes });
   }
   private headers(request: IncomingMessage): Headers {
-    const peer = this.deps.trustedFixturePeer ?? request.socket.remoteAddress;
-    if (!peer || !isIP(peer)) fail(503, "database_unavailable");
-    // Rebuild from an allowlist; Authorization, product tokens, internal IP and all forwarding headers disappear.
-    const canonicalPeer = isIP(peer) === 6 ? (peer.toLowerCase().startsWith("::ffff:") && isIP(peer.slice(7)) === 4 ? peer.slice(7) : new URL(`http://[${peer}]/`).hostname.slice(1, -1)) : peer;
-    const headers = new Headers({ "x-worktree-control-client-ip": canonicalPeer, "content-type": "application/json" });
-    for (const name of ["origin", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"] as const) {
-      const value = request.headers[name]; if (typeof value === "string") headers.set(name, value);
-    }
-    return headers;
+    return authenticationProviderHeaders(request, this.deps.trustedFixturePeer);
   }
 }
 
@@ -343,4 +327,29 @@ function countHeader(request: IncomingMessage, name: string): number {
   let count = 0;
   for (let index = 0; index < (request.rawHeaders?.length ?? 0); index += 2) if (request.rawHeaders[index].toLowerCase() === name) count++;
   return count;
+}
+
+/** Shared browser wire policy. Path ownership belongs to each surface's one parser. */
+export function authenticationRequestBoundary(request: IncomingMessage, options: { origin: string; cookieBytes: number }): void {
+  if (request.headers.host !== new URL(options.origin).host || countHeader(request, "host") > 1) fail(421, "invalid_authority");
+  if (countHeader(request, "origin") > 1 || (request.headers.origin !== undefined && request.headers.origin !== options.origin)
+    || (request.headers["sec-fetch-site"] !== undefined && request.headers["sec-fetch-site"] !== "same-origin")) fail(403, "origin_forbidden");
+  for (const name of SINGLE_HEADERS) if (countHeader(request, name) > 1) fail(name.startsWith("sec-fetch") ? 403 : 400, name.startsWith("sec-fetch") ? "origin_forbidden" : "invalid_request");
+  const mode = request.headers["sec-fetch-mode"], destination = request.headers["sec-fetch-dest"];
+  if ((mode !== undefined && mode !== "cors" && mode !== "same-origin") || (destination !== undefined && destination !== "empty")) fail(403, "origin_forbidden");
+  if (request.method === "GET" && (request.headers["transfer-encoding"] || (request.headers["content-length"] && request.headers["content-length"] !== "0"))) fail(400, "invalid_request");
+  if (Buffer.byteLength(request.headers.cookie ?? "") > options.cookieBytes) fail(400, "invalid_request");
+}
+
+/** The provider sees only these headers and the selected managed cookies. */
+export function authenticationProviderHeaders(request: IncomingMessage, trustedFixturePeer?: string): Headers {
+  const peer = trustedFixturePeer ?? request.socket.remoteAddress;
+  if (!peer || !isIP(peer)) fail(503, "database_unavailable");
+  // Rebuild from an allowlist; Authorization, product tokens, internal IP and all forwarding headers disappear.
+  const canonicalPeer = isIP(peer) === 6 ? (peer.toLowerCase().startsWith("::ffff:") && isIP(peer.slice(7)) === 4 ? peer.slice(7) : new URL(`http://[${peer}]/`).hostname.slice(1, -1)) : peer;
+  const headers = new Headers({ "x-worktree-control-client-ip": canonicalPeer, "content-type": "application/json" });
+  for (const name of ["origin", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"] as const) {
+    const value = request.headers[name]; if (typeof value === "string") headers.set(name, value);
+  }
+  return headers;
 }

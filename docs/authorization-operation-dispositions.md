@@ -1668,7 +1668,19 @@ remains.
 Approved exception, owner decision 5 (2026-11-18): `session.describe` moves
 from the first vertical family into the D1a adapter step. For this one read
 only, transports may mount before all boundaries exist. D1a-5a mounts it on
-the API listener and private unix socket; cookies remain refused until 5b.
+the API listener and private unix socket. D1a-5b-2 mounts the provider-cookie
+path on API only. The same raw parser claims the namespace first. Controller
+eligibility and the browser's shared Host, singleton-header, Fetch Metadata,
+cookie-size, alias, duplicate and Origin checks precede an initiating slot in
+the shared 16-slot budget (four reserved for browser completions). Bounded body
+read and provider resolution precede in-request admitted stage/mint and fresh
+`readRelease`. Capacity lasts through response finish/close and real settlement.
+Contention and cancellation keep their retryable operations error categories;
+missing sessions and mixed credentials never fall back. Unix keeps its fixed
+`provider_cookie_not_supported` refusal. Open and token API refusals come from
+`resolveAcceptance`. See the [mounted cookie contract](authorization-contract.md#mounted-api-cookie-boundary)
+for exact public errors and limits. Installed-artifact checks now cover every
+mounted listener and supported mode; D1a-10 retains the final full matrix.
 The other three reads and every mutation keep their prerequisites below.
 
 

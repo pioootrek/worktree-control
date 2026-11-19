@@ -373,9 +373,11 @@ export function createControllerServer(options: {
    */
   admission?: DatabaseAdmission;
   operations?: OperationsHttpRuntime;
+  operationsCookieBoundary?: { origin: string; cookieBytes: number };
 }): ControllerServer {
   const operations = options.operations && createOperationsHttp({ runtime: options.operations, listener: "api",
-    originAllowed: request => hasValidOrigin(request, options.publicOrigin) });
+    originAllowed: request => hasValidOrigin(request, options.publicOrigin),
+    cookieBoundary: options.operationsCookieBoundary });
   const admission = options.admission ?? directAdmission;
   const readBody = (request: IncomingMessage, limit?: number) => admission.idle(() => readRequestJson(request, limit));
   const readJson = async (request: IncomingMessage, limit?: number): Promise<unknown> => {

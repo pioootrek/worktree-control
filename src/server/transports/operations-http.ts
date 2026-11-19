@@ -6,15 +6,20 @@ import {
   type AuthenticationContext, type OperationRegistry, type OperationRunner, type OperationRuntime, type PresentedCredentials,
 } from "../modules/operations";
 import type { DatabaseAdmissionOptions } from "../database-admission";
+import type { VerifiedProviderSession, AuthenticationProviderRuntime } from "../modules/authentication";
+import type { AuthenticationRequestBudget, AuthenticationRequestSlot } from "../bootstrap/authentication-request-budget";
+import { authenticationRequestBoundary, authenticationProviderHeaders } from "./authentication-http";
 import type { PublicOperationError } from "@/shared/contracts/operations";
-import { BoundaryError, parseStrictJson, readBoundedBody } from "./authentication-http-boundary";
+import { BoundaryError, parseStrictJson, readBoundedBody, requestCookies, SESSION_COOKIE } from "./authentication-http-boundary";
 import { parseOperationsPath } from "./operations-path";
 
-type Mint = (listener: "api" | "unix", presented: PresentedCredentials, session: null, options: DatabaseAdmissionOptions) => Promise<
+type Mint = (listener: "api" | "unix", presented: PresentedCredentials, session: VerifiedProviderSession | null, options: DatabaseAdmissionOptions) => Promise<
   { readonly ok: true; readonly context: AuthenticationContext } | { readonly ok: false; readonly error: PublicOperationError }>;
 /** Value supplied by the one bootstrap composition. No boundary is constructed here. */
 export type OperationsHttpRuntime = { supported: false; mint: Mint } | {
   supported: true; mint: Mint; eligible(): boolean;
+  requestBudget: AuthenticationRequestBudget;
+  resolveSession: AuthenticationProviderRuntime["resolveRequest"];
   runtime: Pick<OperationRuntime, "now">;
   registry: Pick<OperationRegistry, "get" | "idsOn">;
   runner: Pick<OperationRunner, "readRelease">;
@@ -65,6 +70,7 @@ const failure = (category: ConstructorParameters<typeof OperationError>[0], reas
  */
 export function createOperationsHttp(options: {
   runtime: OperationsHttpRuntime; listener: "api" | "unix";
+  cookieBoundary?: { origin: string; cookieBytes: number };
   originAllowed?(request: IncomingMessage): boolean;
   /** Unix passes its existing owner; it must never acquire a second slot here. */
   externallyOwned?: boolean;
@@ -77,7 +83,7 @@ export function createOperationsHttp(options: {
   const path = (request: IncomingMessage) => parseOperationsPath(request.url ?? "", runtime.supported ? runtime.registry.idsOn(listener) : ["session.describe"]);
   const preflight = (request: IncomingMessage, response: ServerResponse): boolean => {
     // One fixed refusal, independent of mode, method, malformed path or other credentials.
-    if (presentedCredentials(request).providerSession) {
+    if (presentedCredentials(request).providerSession && (listener === "unix" || !runtime.supported)) {
       operationsFailure(response, failure("unauthenticated", "provider_cookie_not_supported")); return false;
     }
     return true;
@@ -89,12 +95,15 @@ export function createOperationsHttp(options: {
       if (response.writableEnded && !response.writableFinished) response.destroy();
     };
     cancellations.add(cancel);
+    let slot: AuthenticationRequestSlot | null = null;
+    const started: Promise<void>[] = [];
     let complete!: () => void;
     const completed = new Promise<void>(resolve => { complete = resolve; });
-    const finished = () => { complete(); };
-    const closed = () => { if (!response.writableFinished) cancel(); complete(); };
+    const finished = () => { slot?.responseFinished(); complete(); };
+    const closed = () => { if (!response.writableFinished) cancel(); finished(); };
     request.once("aborted", cancel); request.once("error", cancel);
     response.once("finish", finished); response.once("close", closed);
+    if (response.writableFinished || response.destroyed) closed();
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; cancel(); }, limits.deadlineMs); timer.unref();
     const connected = () => !abort.signal.aborted && !response.destroyed && !response.writableEnded;
@@ -113,7 +122,29 @@ export function createOperationsHttp(options: {
         return;
       }
       if (closing || !runtime.eligible()) { operationsFailure(response, failure("unavailable", "release_not_eligible")); return; }
-      if (options.originAllowed && !options.originAllowed(request)) { operationsFailure(response, failure("forbidden", "origin_forbidden")); return; }
+      const presented = presentedCredentials(request);
+      const cookie = presented.providerSession !== null;
+      let nativeHeaders: Headers | undefined;
+      if (cookie) {
+        // Without a configured browser origin this mode cannot accept a session.
+        // Let the existing acceptance table choose its exact public refusal.
+        if (!options.cookieBoundary) {
+          const minted = await runtime.mint(listener, presented, null, { signal: abort.signal });
+          if (!minted.ok) operationsFailure(response, minted.error);
+          else operationsFailure(response, failure("unauthenticated", "invalid_credential"));
+          return;
+        }
+        authenticationRequestBoundary(request, options.cookieBoundary);
+        const cookies = requestCookies(request.headers.cookie);
+        if (request.headers.origin !== options.cookieBoundary.origin) throw new BoundaryError(403, "origin_forbidden");
+        nativeHeaders = authenticationProviderHeaders(request);
+        const session = cookies.get(SESSION_COOKIE);
+        if (session !== undefined) nativeHeaders.set("cookie", `${SESSION_COOKIE}=${session}`);
+        slot = runtime.requestBudget.acquire("initiating");
+        if (!slot) { operationsFailure(response, failure("busy", "listener_capacity")); return; }
+        if (response.writableFinished || response.destroyed) slot.responseFinished();
+      }
+      if (!cookie && options.originAllowed && !options.originAllowed(request)) { operationsFailure(response, failure("forbidden", "origin_forbidden")); return; }
       // Do not let Node collapse singleton transport fields into an accepted value.
       const single = new Set(["host", "origin", "content-type", "content-length", "content-encoding", "transfer-encoding"]);
       const seen = new Set<string>();
@@ -129,7 +160,13 @@ export function createOperationsHttp(options: {
         timeoutMs: limits.deadlineMs, signal: abort.signal,
       }), limits.json);
       if (!body || typeof body !== "object" || Array.isArray(body)) throw new BoundaryError(400, "invalid_request");
-      const minted = await runtime.mint(listener, presentedCredentials(request), null, { signal: abort.signal });
+      let session: VerifiedProviderSession | null = null;
+      if (nativeHeaders) {
+        const resolution = runtime.resolveSession(nativeHeaders, { signal: abort.signal });
+        started.push(resolution.settled);
+        session = (await resolution.result)?.session ?? null;
+      }
+      const minted = await runtime.mint(listener, presented, session, { signal: abort.signal });
       if (!minted.ok) { operationsFailure(response, minted.error); return; }
       const operation = runtime.registry.get(parsed.operation);
       if (!operation) { operationsFailure(response, failure("not_found", "operation_not_found")); return; }
@@ -148,11 +185,14 @@ export function createOperationsHttp(options: {
       if (result.status !== "committed") operationsFailure(response, result.error);
     } catch (error) {
       operationsFailure(response, timedOut ? publicError(new OperationError("unavailable", "request_timed_out", { retry: "retry" })) : error instanceof BoundaryError
-        ? failure(error.status === 413 ? "payload_too_large" : "invalid_request", error.code)
+        ? failure(error.status === 413 ? "payload_too_large" : error.status === 403 ? "forbidden" : "invalid_request", error.code)
         : publicError(error));
     } finally {
       // Never relinquish ownership merely because the handler returned or the client disconnected.
-      await completed;
+      // settle is called once; failed cleanup retains capacity. No race against
+      // result cancellation: the provider's settled promise owns its real work.
+      try { if (slot) await slot.settle(Promise.all(started)); else await Promise.all(started); }
+      finally { await completed; }
       clearTimeout(timer);
       cancellations.delete(cancel);
       request.off("aborted", cancel); request.off("error", cancel);

@@ -12,13 +12,18 @@ through `POST /api/operations/session.describe` on the API listener and private
 unix socket. Only the exact raw operation path can succeed. Aliases entering
 `/api/operations` or `/mcp/operations` through dot segments, encoded path syntax,
 backslashes or duplicate slashes receive the new not-found envelope on both
-listeners through normal request dispatch, for every method. Cookie refusal
-still comes first. Neither listener registers CONNECT or Upgrade handlers. Node
+listeners through normal request dispatch, for every method. On unix the fixed
+cookie refusal still comes first. Neither listener registers CONNECT or Upgrade handlers. Node
 closes every CONNECT connection without a response or dispatch, including targets
 inside the namespace. Upgrade headers keep normal HTTP request dispatch.
 Other routes and tools retain their existing authentication.
-Cookies on this route receive the fixed `unauthenticated` /
-`provider_cookie_not_supported` refusal before body reads or capacity admission.
+Provider cookies are mounted on the API listener in account mode. Unix keeps
+its fixed `unauthenticated` / `provider_cookie_not_supported` refusal before
+body reads or capacity admission. Unsupported modes keep that preflight refusal.
+For supported API modes the acceptance table decides: open refuses a cookie as
+`credential_in_open_mode`, token as `credential_not_accepted_here`, and account
+mode accepts only a current provider session. Mixed credentials always remain
+mixed, including when cookie resolution returns null.
 The import guard permits only the explicit composition and transport consumers
 (see [Unmounted guard](#unmounted-guard)). Current operator behaviour is in
 [authentication](authentication.md).
@@ -230,7 +235,7 @@ same-ID principal recreation, and retained contexts need a separate review.
 existing `CredentialVerifier` for the `provider_session` path. It answers
 `null` for every other path. `CompositeCredentialVerifier` can dispatch that
 path to it alongside the installation and agent verifiers. Bootstrap constructs it when a provider is present. The operations cookie
-transport remains unmounted until D1a-5b. It reads committed authority and writes no usage
+transport is mounted on the API listener for `session.describe`. It reads committed authority and writes no usage
 state.
 
 **Handoff.** The provider verifies its cookie asynchronously and outside this
@@ -352,6 +357,65 @@ from the real `AccountProtection` and `SessionIssuance`. The fixture writes
 the rows below them by hand: an in-memory double of the SQLite row adapter,
 native users, sessions, TOTP secrets, passkey rows, challenges, refresh,
 revocation and the changes listed above.
+
+### Mounted API cookie boundary
+
+The raw operations parser claims the namespace before legacy authentication or
+browser dispatch. The API adapter then checks the operation and POST method,
+controller eligibility, and the browser's shared canonical Host, singleton
+headers, Fetch Metadata and cookie-size checks. It parses managed cookies with
+the same alias and duplicate checks and requires the canonical Origin. It
+rebuilds provider headers through the browser's allowlist using the socket peer,
+forwarding only the session cookie. Forwarding and internal-IP headers, bearer
+secrets, unrelated cookies and ceremony cookies do not reach the provider.
+
+It acquires one initiating slot from administration's aggregate 16-slot budget
+before reading the body or starting provider work. Twelve slots are available
+to initiating requests; browser completions retain four. Saturation answers
+`busy` / `listener_capacity` with `Retry-After: 1`. Operations also retain the
+API's 32-request owner. It checks JSON content type, reads at most 65536 bytes,
+and parses strict JSON with depth 8 and 128 fields. The body must be an object;
+`session.describe` itself rejects unknown actor or session fields. This read's
+body limit deliberately differs from the browser password and Knowledge limits.
+
+The adapter calls `resolveSession` outside admission with the request abort
+signal, then passes the resolved session and the original raw presented
+credentials to `mint`. Stage, verification and mint share one admitted phase.
+`runner.readRelease` performs the fresh admitted read and Node write. It checks
+current authority, grants, directory, clock, deadline, connection and controller
+eligibility. No successful DTO or usage timestamp is written outside that phase.
+
+All refusals use the operations five-field error envelope. Browser authority
+failures map to `invalid_request` / `invalid_authority` (400); origin and fetch
+failures to `forbidden` / `origin_forbidden` (403). Cookie syntax and singleton
+failures use `invalid_request` (400), body excess `payload_too_large` (413).
+An evaluated missing, revoked or ineligible session is `unauthenticated` /
+`invalid_credential`. A mixed request is `unauthenticated` / `mixed_credentials`.
+Contention remains `busy` / `admission_refused`; cancellation remains
+`unavailable` / `request_cancelled`, both retryable. Provider/storage faults
+retain `unavailable` / `database_unavailable`. The total ten-second deadline
+aborts provider resolution and admission and answers retryable
+`unavailable` / `request_timed_out` when that timer causes a caught refusal.
+A runner clock deadline refusal is `release_timed_out`.
+
+The slot receives `responseFinished` on finish or close, including a response
+already closed before acquisition, and exactly one `settle` joining all started
+provider settlement. Cancellation never stands in for real settlement. Listener
+close fences and aborts synchronously, then drains accepted work. Administration
+stops the shared budget before listener drain and disposes the provider before
+SQLite and its owner lock can be released. Provider readiness is checked on each
+request; no boundary rebuild is needed after a late successful provider load.
+Pinned configuration changes, disposal, maintenance and stopping refuse.
+
+The shared listener conformance suite is
+`src/server/modules/operations/http-boundary-conformance.test.ts`, with exact
+negative-control assertion identities in `http-boundary-driver.ts`.
+`packages/auth-provider-better-auth-proof/test/operations-cookie.test.ts` runs
+real Better Auth through production bootstrap under `node:test:auth-provider-proof`.
+Installed API bearer and unix operator checks run under `node:test:package`;
+`node:test:rbac-artifact` extends these to open, token and account modes and
+account cookies. `node:test:package:provider` builds the separate optional
+provider artifact; it does not run listener checks itself.
 
 ## Permissions and roles
 
@@ -623,7 +687,7 @@ conjunctions, invalid public keys, malformed effects, transition lists,
 secret hooks, wait bounds and listener exclusions. It registers a frozen copy
 whose requirement, allowlist, effect, transition list, wait bounds and
 exclusions are frozen. The only real operation is `session.describe`, which is
-frozen and registered on no transport. Every other operation in the tests is a
+frozen and mounted only on the API and private unix transports. Every other operation in the tests is a
 fixture.
 
 `OperationRunner` runs a mutation as these admitted phases, built on
@@ -1291,8 +1355,8 @@ outside decision U and listed as notes for slice 4.
 
 These obligations remain for later families and mounts. The API and unix
 `session.describe` mounts already use strict bounded JSON, cancellation, the
-shared composition and admitted read-release. Cookies, worker, MCP and CLI
-mounts remain for later steps.
+shared composition and admitted read-release. The API cookie path also shares
+the browser boundary and budget. Worker, MCP and CLI mounts remain for later steps.
 
 - **Transport handling of streams.** A transport must call `return()` when its
   consumer goes away or stops reading (abandonment). The runner provides no
@@ -1334,8 +1398,8 @@ mounts remain for later steps.
   `eligible` to the runtime's disposal state, session-authority support and
   storage availability. The runtime exposes `isSessionAuthorityEligible()`
   and request-scoped `resolveRequest()` with `result` and `settled`; bootstrap
-  still must bind the predicate with its maintenance, stopping and pinned
-  configuration guard, and the transport must consume the resolution. It must
+  binds the predicate with its maintenance, stopping and pinned
+  configuration guard, and the API transport consumes the resolution. It must
   call `verify` and `current` where `currentSession` may read: the storage
   requires core admission. It must not release a `credentialId`, because for a
   provider session it is the session's row ID.
@@ -1414,8 +1478,9 @@ mounts remain for later steps.
   `request_cancelled` like every other aborted wait.
   Administration also owns the browser's shared 16-slot request budget, with
   four slots reserved for completions. Its initiating acquisition and release
-  after both response completion and work settlement are ready for the operations
-  cookie path; the mounted operations adapters still refuse provider cookies.
+  after both response completion and work settlement are shared by the API
+  operations cookie path. It counts as initiating work, leaving the four
+  completion slots available to the browser handler.
   Settlement must be called exactly once, with all started work joined.
   Shutdown and listener-start failure stop the budget synchronously before
   listener drain.
@@ -1432,7 +1497,7 @@ mounts remain for later steps.
   retry disposition is `retry`. Method refusals use 400 /
   `invalid_request` / `method_not_allowed`; malformed and unknown operation
   targets use 404 / `not_found` / `operation_not_found`. All replies are no-store.
-  Cookie, worker, MCP and offline CLI mounts, credential usage recording and
+  Worker, MCP and offline CLI mounts, credential usage recording and
   principal-incarnation detection remain unimplemented.
 - Enforcement of the project ID grammar. A project ID in the contract matches
   `^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$` (`src/shared/contracts/operations.ts`),

@@ -4,6 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -387,6 +388,18 @@ async function main() {
   await step("remote-backup-default-off", async () => {
     const status = JSON.parse((await run(cliCommand, ["backup", "remote", "status", ...common], { cwd: root, env: runtimeEnv })).stdout);
     check(status.enabled === false && status.pending === 0 && status.error === null && status.lastConfirmed === null && status.recovery === "not-measured", "Installed package unexpectedly enables remote backups.");
+  });
+  await step("operations-installed-token-and-local", async () => {
+    const response = await fetch(`${origin}/api/operations/session.describe`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: "{}" });
+    check(response.status === 200 && (await response.json()).actor.kind === "installation", "Installed operations token path failed.");
+    const body = await new Promise((accept, reject) => {
+      const call = httpRequest({ socketPath: join(state, "admin.sock"), path: "/api/operations/session.describe", method: "POST", headers: { "Content-Type": "application/json" } }, response => {
+        const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
+        response.on("end", () => { try { check(response.statusCode === 200, "Installed local operation failed."); accept(JSON.parse(Buffer.concat(chunks))); } catch (error) { reject(error); } });
+      });
+      call.setTimeout(10_000, () => call.destroy(new Error("Installed operation deadline"))); call.on("error", reject); call.end("{}");
+    });
+    check(body.actor.kind === "operator" && body.listener === "unix" && body.mode === "token", "Installed local operation actor failed.");
   });
   await step("backup-monitor-live", async () => {
     const disabled = JSON.parse((await run(cliCommand, ["backup", "monitor", ...common], { cwd: root, env: runtimeEnv })).stdout);
