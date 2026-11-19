@@ -1237,7 +1237,11 @@ async function workerFixture(mode = "open", plain = false, fault?: "early_releas
   f.state.workerOpen = true;
   cleanups.push(() => { f.state.workerOpen = false; return worker.close(); });
   if (fault === "early_release") {
-    // Mutate just operations ownership, keeping the HTTPS server and its policy.
+    // Deliberately broken owner: this replaces the worker request dispatcher
+    // (peer/Origin routing and the closer's listener included) with one that
+    // releases its slot on response close. It proves that the shared capacity
+    // assertion detects early release; the production dispatcher is covered by
+    // the positive test, not by this control.
     const adapter = createOperationsHttp({ runtime: f.runtime, listener: "worker", externallyOwned: true });
     worker.server.removeAllListeners("request"); let active = 0;
     worker.server.on("request", (req, res) => {
@@ -1416,7 +1420,7 @@ describe("worker HTTPS boundary conformance", () => {
     expect(commits).toHaveLength(change === "grant" ? 1 : 0);
   });
 
-  it("deadline aborts pending mint, retains ownership, and shutdown joins work before SQLite and lock release", async () => {
+  it("deadline cancels work held after mint, retains ownership, and shutdown joins work before SQLite and lock release", async () => {
     const f = await workerFixture(), entered = pause(), release = pause(), cancelled = pause();
     const lockPath = join(f.root, "controller.lock"), lock = acquireControllerLock(lockPath);
     cleanups.push(() => lock.release());
