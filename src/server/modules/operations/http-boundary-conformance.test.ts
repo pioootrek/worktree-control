@@ -1288,8 +1288,8 @@ describe("worker HTTPS boundary conformance", () => {
     expect(f.authenticate).toHaveBeenCalledTimes(4); expect(f.poll).toHaveBeenCalledOnce(); expect(f.report).toHaveBeenCalledOnce(); expect(f.usage).toHaveBeenCalledTimes(4);
   });
 
-  it("preserves mixed and duplicate credentials and refuses cookies before any work", async () => {
-    const f = await workerFixture("token"), mint = vi.spyOn(f.runtime, "mint");
+  it.each(["open", "token", "better-auth"])("preserves mixed and duplicate credentials and refuses cookies before any work in %s", async mode => {
+    const f = await workerFixture(mode), mint = vi.spyOn(f.runtime, "mint");
     for (const headers of [
       ["Host", "localhost", "Content-Type", "application/json", "Content-Length", "2", "Authorization", `Bearer ${f.installation}`, "Authorization", `Bearer ${f.installation}`],
       { ...auth(f.installation), "X-Worktree-Control-Token": f.installation },
@@ -1315,16 +1315,12 @@ describe("worker HTTPS boundary conformance", () => {
     expect((await plain.driver.send({ path: plain.driver.legacyPath }).reply).body).toEqual({ error: "loopback_fixture_only" }); expect(plain.authenticate).not.toHaveBeenCalled();
   });
 
-  it.each(["origin_forbidden", "loopback_fixture_only"])("negative control: omitted %s guard has the exact conformance failure", async reason => {
-    const f = await workerFixture("open", reason === "loopback_fixture_only");
-    // Restore the allowed observation, as an omitted guard would do. Peer is
-    // otherwise a controlled socket property; the request still crosses real TLS/HTTP.
-    f.worker.server.prependOnceListener("request", req => {
-      if (reason === "origin_forbidden") delete req.headers.origin;
-      else Object.defineProperty(req.socket, "remoteAddress", { configurable: true, value: "127.0.0.1" });
-    });
-    const reply = await f.driver.send({ headers: { "Content-Type": "application/json", ...(reason === "origin_forbidden" ? { Origin: "https://hostile.test" } : {}) } }).reply;
-    expectFailure(() => workerGuard(reply, reason), `worker ${reason} boundary`, 200, 403);
+  it("negative control: omitted Origin guard has the exact conformance failure", async () => {
+    const f = await workerFixture();
+    // One mutation: erase the hostile Origin before the shared guard sees it.
+    f.worker.server.prependOnceListener("request", req => { delete req.headers.origin; });
+    const reply = await f.driver.send({ headers: { "Content-Type": "application/json", Origin: "https://hostile.test" } }).reply;
+    expectFailure(() => workerGuard(reply, "origin_forbidden"), "worker origin_forbidden boundary", 200, 403);
   });
 
   it("maintenance refusal shares the existing conformance assertion; provider configuration does not disable bearers", async () => {
@@ -1351,6 +1347,25 @@ describe("worker HTTPS boundary conformance", () => {
     }
     expect((await f.driver.send({ headers: { "Content-Type": "application/json", "X-Actor": "operator", "X-Session": "spoof" } }).reply).body.actor.kind).toBe("installation");
     expect(f.authenticate).not.toHaveBeenCalled(); expect(f.poll).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled();
+  });
+
+  it("Node CONNECT closes without dispatch; Upgrade uses the shared raw parser and legacy routing", async () => {
+    const f = await workerFixture();
+    const reply = await f.driver.wire(route, "GET", true); expect(reply.status).toBe(400);
+    expect(JSON.parse(reply.body)).toEqual(refusal("method_not_allowed", "invalid_request", 400, "none"));
+    const legacy = await f.driver.wire(f.driver.legacyPath, "GET", true);
+    expect(legacy).toEqual({ status: 405, body: JSON.stringify({ error: "method_not_allowed" }) });
+    const socket = f.driver.connection();
+    try {
+      const bytes = await new Promise<string>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        socket.setTimeout(2000, () => { socket.destroy(); reject(new Error("CONNECT close timed out")); });
+        socket.on("data", chunk => chunks.push(Buffer.from(chunk))); socket.on("error", reject);
+        socket.on("close", () => resolve(Buffer.concat(chunks).toString()));
+        socket.once("secureConnect", () => socket.write(`CONNECT ${route} HTTP/1.1\r\nHost: localhost\r\n\r\n`));
+      });
+      expect(bytes).toBe(""); expect(f.authenticate).not.toHaveBeenCalled(); expect(f.poll).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled();
+    } finally { socket.destroy(); }
   });
 
   it("real admission contention keeps its retryable public reason", async () => {
@@ -1381,9 +1396,10 @@ describe("worker HTTPS boundary conformance", () => {
   it.each(["maintenance", "credential", "grant", "deadline", "disconnect", "listener"])("fresh release after runner completion rechecks %s", async change => {
     const f = await workerFixture("better-auth"); if (!f.built.supported) throw new Error("supported fixture"); await f.grant();
     const runner = f.built.runner, real = runner.readRelease.bind(runner), entered = pause(), release = pause();
+    const commits: unknown[] = [];
     vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
       if (operation.kind === "stream") throw new Error("read required"); const prior = await runner.run(operation, context, raw); expect(prior.ok).toBe(true);
-      entered.done(); await release.promise; return real(operation, context, raw, options);
+      entered.done(); await release.promise; return real(operation, context, raw, { ...options, commit(value) { commits.push(value); options.commit(value); } });
     });
     const pending = f.driver.send({ headers: auth(f.agent) }); await entered.promise;
     try {
@@ -1396,6 +1412,7 @@ describe("worker HTTPS boundary conformance", () => {
     } finally { release.done(); }
     if (change === "disconnect") await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
     else { const reply = await pending.reply; if (change === "grant") { expect(reply.status).toBe(200); expect(reply.body.projects).toEqual([]); } else { expect(reply.status).toBeGreaterThanOrEqual(400); expect(reply.body).not.toHaveProperty("actor"); } }
+    expect(commits).toHaveLength(change === "grant" ? 1 : 0);
   });
 
   it("deadline aborts pending mint, retains ownership, and shutdown joins work before SQLite and lock release", async () => {

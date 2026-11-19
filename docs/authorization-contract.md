@@ -501,7 +501,7 @@ the singleton lock only after confirmed listener cleanup.
 stored credentials, common peer/Origin policy, connection saturation, request
 limits, namespace aliases, maintenance, admission contention, disconnect,
 deadline, release changes and shutdown ownership. Exact `ConformanceFailure`
-negative controls cover Origin/peer omission, early capacity release and premature
+negative controls cover Origin omission, early capacity release and premature
 success. The peer fixture controls the socket address because the test binds only
 loopback. The older worker tests use plaintext fixtures; this suite generates an
 ephemeral local certificate. Pending provider work and completion reserve are

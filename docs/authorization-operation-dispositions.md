@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
-last_reviewed: "2026-11-14"
+last_reviewed: "2026-11-19"
 source_of_truth: "accepted disposition of every current operation under the unreleased authorization contract; Knowledge task 040062b4, discussion 8a2683b8, replies e06943b7, 42019833, ce8aa214 and 29cf8fa5"
 status: "active"
 ---
