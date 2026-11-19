@@ -3,7 +3,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { canonicalJson, OperationError, publicError } from "../modules/operations";
-import type { PublicOperationError, SessionDescription } from "@/shared/contracts/operations";
+import type { PublicOperationError } from "@/shared/contracts/operations";
 import { BoundaryError, parseStrictJson, readBoundedBody } from "./authentication-http-boundary";
 import { OPERATIONS_HTTP_LIMITS, operationsFailure, presentedCredentials, validateOperationsSingletonHeaders,
   writeOperationsResponse, type OperationsHttpRuntime } from "./operations-http";
@@ -90,11 +90,11 @@ export function createOperationsMcp(options: {
       const releaseOptions = { eligible: () => !closing && runtime.eligible(), connected, deadline, signal: abort.signal };
       // This witness also gates initialize, listing and notifications. It is never
       // sent for those methods, but must still match at the real Node commit.
-      let value!: SessionDescription;
+      let snapshot!: { readonly serialized: string; readonly canonical: string };
       const initial = await runtime.runner.readRelease(operation, minted.context, {}, { ...releaseOptions,
-        commit(dto) { value = dto as SessionDescription; } });
+        commit(dto) { snapshot = Object.freeze({ serialized: JSON.stringify(dto), canonical: canonicalJson(dto) }); } });
       if (initial.status !== "committed") { refuse(initial.error); return; }
-      const context = Object.freeze({ authentication: minted.context, value, canonical: canonicalJson(value) });
+      const context = Object.freeze({ authentication: minted.context, ...snapshot });
       const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       server = new Server({ name: "worktree-control-operations", version: "1" }, { capabilities: { tools: {} } });
       server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: OPERATIONS_MCP_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) }));
@@ -103,7 +103,7 @@ export function createOperationsMcp(options: {
           if (call.params.name !== "session_describe") throw new OperationError("not_found", "operation_not_found");
           // Delegate input validation to the registered operation, not a transport schema.
           operation.parse(call.params.arguments);
-          return { content: [{ type: "text", text: JSON.stringify(context.value) }], structuredContent: context.value };
+          return { content: [{ type: "text", text: context.serialized }], structuredContent: JSON.parse(context.serialized) };
         } catch (error) {
           const payload = { error: publicError(error) };
           return { isError: true, content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };

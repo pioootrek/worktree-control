@@ -195,7 +195,8 @@ describe("unmounted request-scoped MCP adapter", () => {
     if (change === "disconnect") { await expect(pending.reply).rejects.toThrow(); await f.adapter.drain(); expect(response.headersSent).toBe(false); }
     else {
       const reply = await pending.reply;
-      const reason = { maintenance: "release_not_eligible", revoke: "credential_no_longer_valid", grants: "release_payload_changed", deadline: "release_timed_out", stop: "release_not_eligible" }[change];
+      const reasons: Record<string, string | undefined> = { maintenance: "release_not_eligible", revoke: "credential_no_longer_valid", grants: "release_payload_changed", deadline: "release_timed_out", stop: "release_not_eligible" };
+      const reason = reasons[change];
       if (reason) { expect(operationError(reply).reason).toBe(reason); expect(reply.body.result).toBeUndefined(); }
       else expect(reply.body.result.structuredContent.actor.accountId).toBe("agent"); // provider-only configuration does not invalidate agents
     }
@@ -243,8 +244,10 @@ describe("unmounted request-scoped MCP adapter", () => {
 
   it("negative control identifies the exact premature-write failure", async () => {
     const f = await fixture("open", undefined, "premature_write");
-    f.hooks.beforeFinal = response => exactNegative("Node write before release", response.headersSent, false);
+    let observed = false;
+    f.hooks.beforeFinal = response => { observed = response.headersSent; };
     expect((await f.send(call).reply).body).toEqual({ stale: true });
+    await exactNegative("Node write before release", observed, false);
   });
 
   it("negative control identifies the exact early-slot-release failure", async () => {
