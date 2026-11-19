@@ -4,7 +4,7 @@
  * See docs/authorization-contract.md.
  */
 export {
-  acceptanceTable, credentialClasses, credentialClassOf, pathActorKind, resolveAcceptance, unregisteredRouteClasses,
+  acceptanceTable, classifyBearer, credentialClasses, credentialClassOf, pathActorKind, resolveAcceptance, unregisteredRouteClasses,
   type AcceptanceRejection, type AcceptanceResult, type AcceptanceRow, type AcceptedPath, type BearerClass, type CredentialClass,
   type PresentedCredentials,
 } from "./acceptance";
@@ -42,3 +42,6 @@ export {
   type StreamItem,
 } from "./runner";
 export { MAX_DESCRIBED_PROJECTS, sessionDescribe } from "./session-describe";
+export { InstallationVerifier, type InstallationPolicy, type InstallationPolicyReader, type InstallationVerifierOptions } from "./adapters/installation-verifier";
+export { AgentTokenVerifier, type AgentCredentialReader, type AgentCredentialRecord, type AgentTokenVerifierOptions } from "./adapters/agent-token-verifier";
+export { CompositeCredentialVerifier, type CompositeCredentialVerifierOptions } from "./adapters/composite-credential-verifier";

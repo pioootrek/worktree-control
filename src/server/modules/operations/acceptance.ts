@@ -2,10 +2,21 @@ import { authenticationModes, listenerKinds, type ActorKind, type Authentication
 
 /**
  * What an adapter observed on one request, classified but not yet verified.
- * Classification by format happens here once; nothing after acceptance looks
- * at a token prefix or credential kind again.
+ * Classification selects a candidate verifier, never authority. Verifiers
+ * check committed credential and principal kinds. The abstract classes
+ * `legacy_owner_token` and `legacy_worker_token` are unreachable from the wire:
+ * those tokens arrive as `agent_token` and are refused by its verifier.
  */
 export type BearerClass = "installation_token" | "agent_token" | "legacy_owner_token" | "legacy_worker_token" | "unrecognized";
+
+/** Wire syntax only, matching the existing token parsers' ID grammar. No stored facts. */
+export function classifyBearer(secret: string): BearerClass {
+  // Length also refuses a final newline, which JavaScript's `$` would allow.
+  if (typeof secret !== "string" || secret.length !== 105) return "unrecognized";
+  if (/^wsi_[0-9a-f-]{36}_[0-9a-f]{64}$/.test(secret)) return "installation_token";
+  if (/^wts_[0-9a-f-]{36}_[0-9a-f]{64}$/.test(secret)) return "agent_token";
+  return "unrecognized";
+}
 export interface PresentedCredentials {
   /** Every bearer-like credential found (Authorization, token headers). */
   bearers: readonly { class: BearerClass; secret: string }[];
