@@ -66,7 +66,7 @@ import { FileLogWriter } from "../server/log-writer";
 import { ProjectLifecycle } from "../server/modules/lifecycle";
 import { AuthenticationService } from "../server/modules/authentication";
 import { authenticationAdminHandler } from "../server/authentication-admin";
-import { createControllerAuthentication } from "../server/bootstrap/authentication";
+import { CONTROLLER_AUTHENTICATION_POLICY, createControllerAuthentication } from "../server/bootstrap/authentication";
 import { KnowledgeAttachmentService, loadAttachmentLimits, KnowledgeService, KnowledgeError, knowledgeFailure } from "../server/modules/knowledge";
 import { createMcpControllerServer } from "../server/mcp-http-server";
 import { GitCommandAdmission, SystemGitWorktreeReader } from "../server/git-worktrees";
@@ -455,6 +455,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     backups, restores, userSchedules, maintenance: () => maintenance,
     admission: store.admission,
     operations,
+    operationsCookieBoundary: publicOrigin ? { origin: publicOrigin, cookieBytes: CONTROLLER_AUTHENTICATION_POLICY.limits.cookieBytes } : undefined,
   });
   operationListeners.api = controller.server;
   try {

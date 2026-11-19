@@ -111,6 +111,7 @@ async function fixture(mode = "better-auth", withProvider = false, admissionTime
   return { root, store, database, project, grant, agent, installationSecret, provider, providerRuntime, composition, build, options,
     context, read, human, state, eligibility, clock, changeConfiguration, logs };
 }
+const providerUnavailable = { ok: false, error: { category: "unavailable", status: 503, reason: "provider_session_unavailable", retry: "retry", effect: null } };
 const unauthenticated = (reason: string) => ({ ok: false, error: { category: "unauthenticated", reason } });
 
 describe("unmounted real operations composition under strict admission", () => {
@@ -220,7 +221,7 @@ describe("unmounted real operations composition under strict admission", () => {
     expect(c.providerSessionEligible()).toBe(false);
     expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject({ ok: true, value: { actor: { kind: "operator" }, fullAuthority: true } });
     expect(await c.mint("api", { ...none(), providerSession: { secret: "synthetic-cookie" } }, null, {}))
-      .toMatchObject(unauthenticated("invalid_credential"));
+      .toEqual(providerUnavailable);
     f.state.maintenance = true;
     expect(c.eligible()).toBe(false);
     expect(await c.mint("api", presentedBearer(secret), null, {})).toMatchObject(unauthenticated("listener_closed"));
@@ -399,7 +400,7 @@ describe("unmounted real operations composition under strict admission", () => {
     expect(c.eligible()).toBe(!controllerClosed);
     expect(c.providerSessionEligible?.()).toBe(false);
     for (const resolved of [h.session, null]) {
-      expect(await c.mint("api", h.presented, resolved, {})).toMatchObject(unauthenticated(controllerClosed ? "listener_closed" : "invalid_credential"));
+      expect(await c.mint("api", h.presented, resolved, {})).toMatchObject(controllerClosed ? unauthenticated("listener_closed") : providerUnavailable);
     }
     const reason = controllerClosed ? "listener_closed" : "credential_no_longer_valid";
     await f.store.admission.run(() => expect(() => context.revalidate()).toThrowError(expect.objectContaining({ category: "unauthenticated", reason })));

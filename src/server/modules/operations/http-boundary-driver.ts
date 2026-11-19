@@ -13,7 +13,7 @@ export type BoundaryDriver = ReturnType<typeof createBoundaryDriver>;
 /** Only mounted transports belong here. Capacity is observed through saturation,
  * not a second counter or access to the listener's private accepted-work set. */
 export function createBoundaryDriver(options: {
-  kind: "api" | "unix"; server: Server; socketPath?: string; close(): Promise<void>;
+  kind: "api" | "unix"; server: Server; localAddress?: string; socketPath?: string; close(): Promise<void>;
   legacyPath: string; acceptedCredentials: readonly string[];
 }) {
   const address = () => options.socketPath ? { socketPath: options.socketPath }
@@ -22,7 +22,7 @@ export function createBoundaryDriver(options: {
     let call!: ClientRequest;
     const reply = new Promise<Reply>((resolve, reject) => {
       call = request({ ...address(), path: input.path ?? operationRoute, method: input.method ?? "POST",
-        headers: input.headers ?? { "Content-Type": "application/json" } }, response => {
+        localAddress: options.localAddress, headers: input.headers ?? { "Content-Type": "application/json" } }, response => {
         const chunks: Buffer[] = [];
         response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
         response.on("end", () => {
@@ -66,3 +66,9 @@ export class ConformanceFailure extends Error {
 export function conform(assertion: string, observed: unknown, expected: unknown): void {
   if (JSON.stringify(observed) !== JSON.stringify(expected)) throw new ConformanceFailure(assertion, observed, expected);
 }
+
+/** Shared by browser and operations cookie listener scenarios, including mutants. */
+export function assertCookieOrigin(reply: Pick<Reply, "status">): void { conform("cookie origin boundary", reply.status, 403); }
+export function assertCookieRequiredOrigin(reply: Pick<Reply, "status">): void { conform("cookie required Origin boundary", reply.status, 403); }
+export function assertCookieCapacity(reply: Pick<Reply, "status">): void { conform("cookie capacity until settlement", reply.status, 503); }
+export function assertCookieRelease(reply: Pick<Reply, "status">): void { conform("cookie maintenance release", reply.status, 401); }
