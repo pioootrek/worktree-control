@@ -69,8 +69,11 @@ export function inspectProjectIds(database: Database.Database): ProjectIdReport 
   const projects: NonConformingProjectId[] = [];
   let count = 0;
   for (const row of rows) {
-    const whole = row.head !== null && row.bytes !== null && row.head.length === row.bytes;
-    const text = row.head === null ? null : row.head.toString("utf8");
+    // `bytes` is null only for a value that is not text. An empty text ID has zero bytes, and SQLite hands back
+    // its empty prefix as NULL, so the prefix alone cannot tell the two apart.
+    const head = row.bytes === null ? null : row.head ?? Buffer.alloc(0);
+    const whole = head !== null && head.length === row.bytes;
+    const text = head === null ? null : head.toString("utf8");
     const conforming = whole && text !== null && row.bytes! <= 160 && PROJECT_ID_GRAMMAR.test(text);
     if (conforming) continue;
     count++;
