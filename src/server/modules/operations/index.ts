@@ -17,7 +17,7 @@ export {
   decide, durablePrincipal, freshLoginState, INTENT_DIGEST_VERSIONS, intentOriginDigest, projectVisible,
   type Decision, type DecisionInput, type Denial,
 } from "./decide";
-export { classify, classifyBeforeCommit, isOperationError, OperationError, publicError } from "./errors";
+export { admissionFailureOf, classify, classifyBeforeCommit, isOperationError, OperationError, publicError } from "./errors";
 export { effectivePermissions, grantAllowed, type EffectivePermissions, type GrantScope, type GrantsSnapshot, type StoredGrant } from "./grants";
 export {
   listenerAllowed, MAX_WAIT_TIMEOUT_MS, OperationRegistry,
@@ -45,3 +45,6 @@ export { MAX_DESCRIBED_PROJECTS, sessionDescribe } from "./session-describe";
 export { InstallationVerifier, type InstallationPolicy, type InstallationPolicyReader, type InstallationVerifierOptions } from "./adapters/installation-verifier";
 export { AgentTokenVerifier, type AgentCredentialReader, type AgentCredentialRecord, type AgentTokenVerifierOptions } from "./adapters/agent-token-verifier";
 export { CompositeCredentialVerifier, type CompositeCredentialVerifierOptions } from "./adapters/composite-credential-verifier";
+export { sqliteGrants, type AccountGrantsReader } from "./adapters/sqlite-grants";
+export { SqliteResourceResolver } from "./adapters/sqlite-resolver";
+export { ProviderSessionVerifier } from "./adapters/provider-session-verifier";
