@@ -409,8 +409,10 @@ resolution returns null after eligibility is lost in flight. Controller
 maintenance and stopping retain their earlier refusal. A mixed request is
 `unauthenticated` / `mixed_credentials`.
 Contention remains `busy` / `admission_refused`; cancellation remains
-`unavailable` / `request_cancelled`, both retryable. Provider/storage faults
-retain `unavailable` / `database_unavailable`. The total ten-second deadline
+`unavailable` / `request_cancelled`, both retryable. A session resolution that
+the provider itself rejects (a failed plugin, an unavailable or disposed
+provider) is retryable `unavailable` / `provider_session_unavailable`, never
+`internal`. Storage faults retain `unavailable` / `database_unavailable`. The total ten-second deadline
 aborts provider resolution and admission and answers retryable
 `unavailable` / `request_timed_out` when that timer causes a caught refusal.
 A runner clock deadline refusal is `release_timed_out`.

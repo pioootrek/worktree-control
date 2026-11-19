@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { AddressInfo, Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { listenAdminSocket } from "@/server/admin-socket";
-import { AuthenticationService } from "@/server/modules/authentication";
+import { AuthenticationProviderError, AuthenticationService } from "@/server/modules/authentication";
 import { buildOperationsRuntime } from "@/server/bootstrap/operations-runtime";
 import * as authenticationHttp from "@/server/transports/authentication-http";
 import { createControllerOperationEligibility } from "@/server/bootstrap/authentication-provider-lifetime";
@@ -1000,6 +1000,15 @@ describe("operations cookie listener conformance", () => {
     const pending = f.send("api", { headers: cookieHeaders }); await entered.promise;
     try { f.state.configChanged = true; } finally { release.done(); }
     const reply = await pending.reply;
+    expect(reply.status).toBe(503);
+    expect(reply.body).toEqual(refusal("provider_session_unavailable", "unavailable", 503, "retry"));
+    expect(reply.headers["retry-after"]).toBe("1"); expect(f.provider.resolveRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["provider_failed", "provider_unavailable", "provider_disposed"] as const)("cookie resolution rejected by the provider with %s is unavailable, never an internal failure", async code => {
+    const f = await fixture("better-auth", undefined, undefined, true);
+    f.provider.resolveRequest.mockImplementation(() => ({ result: Promise.reject(new AuthenticationProviderError(code, "synthetic provider fault")), settled: Promise.resolve() }));
+    const reply = await f.send("api", { headers: cookieHeaders }).reply;
     expect(reply.status).toBe(503);
     expect(reply.body).toEqual(refusal("provider_session_unavailable", "unavailable", 503, "retry"));
     expect(reply.headers["retry-after"]).toBe("1"); expect(f.provider.resolveRequest).toHaveBeenCalledTimes(1);

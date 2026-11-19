@@ -67,9 +67,12 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
         return error.code === "cancelled" ? new OperationError("unavailable", "request_cancelled", { retry: "retry" })
           : new OperationError("busy", "admission_refused");
       }
-      // The provider reports an abort seen after its borrow was admitted with its own error.
-      if (error instanceof AuthenticationProviderError && error.code === "cancelled") {
-        return new OperationError("unavailable", "request_cancelled", { retry: "retry" });
+      if (error instanceof AuthenticationProviderError) {
+        // The provider reports an abort seen after its borrow was admitted with its own error.
+        if (error.code === "cancelled") return new OperationError("unavailable", "request_cancelled", { retry: "retry" });
+        // Resolution answers "no session" with null. Every other provider error
+        // (failed plugin, unavailable, disposed) is the server's state, not a controller bug.
+        return new OperationError("unavailable", "provider_session_unavailable", { retry: "retry" });
       }
       if (!admissionFailureOf(error)) return error;
       return requestOptions?.signal?.aborted ? new OperationError("unavailable", "request_cancelled", { retry: "retry" })
