@@ -1,7 +1,7 @@
 import type { DatabaseAdmissionOptions } from "../database-admission";
 import type { SqliteStateStore } from "../sqlite-store";
 import type { LogWriter } from "../log-writer";
-import type { AuthenticationProviderRuntime, VerifiedProviderSession } from "../modules/authentication";
+import type { VerifiedProviderSession } from "../modules/authentication";
 import {
   AgentTokenVerifier, CompositeCredentialVerifier, createListenerBoundary, InstallationVerifier,
   OperationError, OperationRegistry, OperationRunner, ProviderSessionVerifier, sessionDescribe,
@@ -9,7 +9,8 @@ import {
   type AuthenticationContext, type ListenerBoundary, type OperationRuntime, type PresentedCredentials,
 } from "../modules/operations";
 import { authenticationModes, type AuthenticationMode, type ListenerKind, type PublicOperationError } from "../../shared/contracts/operations";
-import { CONTROLLER_OPERATION_SESSION_POLICY, type createControllerOperationEligibility } from "./authentication-provider-lifetime";
+import { CONTROLLER_OPERATION_SESSION_POLICY, type ControllerOperationSessionAuthority, type createControllerOperationEligibility } from "./authentication-provider-lifetime";
+import type { AuthenticationRequestBudget } from "./authentication-request-budget";
 
 type ServedListener = Exclude<ListenerKind, "offline">;
 type MintResult = { readonly ok: true; readonly context: AuthenticationContext } | { readonly ok: false; readonly error: PublicOperationError };
@@ -22,11 +23,9 @@ export interface OperationsRuntimeOptions {
   logs: Pick<LogWriter, "controller">;
   listeners: Readonly<Partial<Record<ServedListener, () => boolean>>>;
   eligibility: Pick<ReturnType<typeof createControllerOperationEligibility>, "controllerEligible" | "providerSessionEligible">;
-  /** Null when this boot has no provider with session authority (including
-   * offline CLI). Never use null for a temporarily ineligible existing provider.
-   * No loading here.
-   */
-  provider: Pick<AuthenticationProviderRuntime, "isSessionAuthorityEligible"> | null;
+  /** Administration-owned stable accessor; offline callers may supply null. */
+  provider: ControllerOperationSessionAuthority | null;
+  requestBudget: AuthenticationRequestBudget;
 }
 
 function holds(call: () => unknown): boolean {
@@ -50,16 +49,21 @@ function mintFailure(error: unknown, admissionOptions: DatabaseAdmissionOptions)
 /** One store owner, shared by mounted transports. */
 export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   const { store, activeMode, now, logs, provider, eligibility } = options;
+  const supported = (authenticationModes as readonly string[]).includes(activeMode);
+  const providerSessionEligible = () => supported && provider !== null
+    && holds(eligibility.providerSessionEligible) && holds(() => provider.isSessionAuthorityEligible());
+  const resolveSession: ControllerOperationSessionAuthority["resolveRequest"] = (headers, requestOptions) => {
+    if (!providerSessionEligible()) return { result: Promise.resolve(null), settled: Promise.resolve() };
+    return provider!.resolveRequest(headers, requestOptions);
+  };
   // In particular, legacy boot must not construct a boundary or verifier.
-  if (!(authenticationModes as readonly string[]).includes(activeMode)) {
-    return Object.freeze({ supported: false as const, eligible: () => false, providerSessionEligible: null,
+  if (!supported) {
+    return Object.freeze({ supported: false as const, eligible: () => false, providerSessionEligible, resolveSession, requestBudget: options.requestBudget,
       mint: async (): Promise<MintResult> => refused("unknown_mode"),
       mintOffline: async (): Promise<MintResult> => refused("unknown_mode") });
   }
   const mode = activeMode as AuthenticationMode;
   const controllerEligible = () => holds(eligibility.controllerEligible);
-  const providerSessionEligible = provider === null ? null
-    : () => holds(eligibility.providerSessionEligible) && holds(() => provider.isSessionAuthorityEligible());
   const runtime: OperationRuntime = Object.freeze({
     admission: store.admission,
     resolver: new SqliteResourceResolver(store.projectDirectoryReader()),
@@ -79,8 +83,8 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
     idsOn: registry.idsOn.bind(registry),
   });
   const runner = new OperationRunner(runtime);
-  const sessions = providerSessionEligible === null ? null : new ProviderSessionVerifier({
-    providerId: "better-auth", reader: store.authenticationProviderStorage(), now, eligible: providerSessionEligible,
+  const sessions = provider === null ? null : new ProviderSessionVerifier({
+    providerId: provider.providerId, reader: provider.reader, now, eligible: providerSessionEligible,
     stagedCapacity: CONTROLLER_OPERATION_SESSION_POLICY.stagedCapacity,
     stagedTtlMs: CONTROLLER_OPERATION_SESSION_POLICY.stagedTtlMs,
   });
@@ -100,10 +104,10 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
      * Human contexts also enforce provider eligibility through revalidation.
      */
     eligible: controllerEligible,
-    /** Provider-only gate for cookie transports before provider work; null
-     * when this boot has no provider. Also checked at stage, mint and revalidation.
-     */
+    /** Always callable, including before the provider becomes ready. */
     providerSessionEligible,
+    resolveSession,
+    requestBudget: options.requestBudget,
     /** Offline callers must mint through this composition, never call
      * mintOfflineContext themselves: controller eligibility and the synchronous owner lock
      * must hold at mint and every revalidation, inside core admission.
@@ -132,7 +136,7 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
           if (!boundary) return refused("listener_closed");
           const acceptance = resolveAcceptance(mode, listener, presented);
           if (!acceptance.accepted) return refused(acceptance.reason);
-          if (acceptance.path === "provider_session" && !providerSessionEligible?.()) return refused("invalid_credential");
+          if (acceptance.path === "provider_session" && !providerSessionEligible()) return refused("invalid_credential");
           const at: unknown = now();
           if (typeof at !== "number" || !Number.isFinite(at)) {
             Promise.resolve(at).catch(() => undefined);

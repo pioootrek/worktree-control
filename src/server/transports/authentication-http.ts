@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { AuthenticationRequestBudget, type AuthenticationRequestSlot } from "../bootstrap/authentication-request-budget";
 import { isIP } from "node:net";
 import { containsProviderCookie, browserChangePasswordSchema, browserFactorSchemas, browserSignInSchema, browserSignOutSchema, browserTotpEnableSchema, browserTotpVerifySchema, type BrowserAuthenticationStatus } from "@/shared/contracts/authentication";
 import { IdentityError, type ProviderSessionActor } from "@/server/modules/identity";
@@ -58,9 +59,8 @@ export class AuthenticationHttp {
   readonly #origin: string;
   readonly #authority: string;
   readonly #limits: AuthenticationTransportLimits;
-  readonly #maxInFlight: number;
+  readonly #budget: AuthenticationRequestBudget;
   readonly #parsers: BodyParsers;
-  #active = 0;
   constructor(private readonly deps: {
     origin: string;
     runtime: AuthenticationProviderRuntime;
@@ -77,14 +77,17 @@ export class AuthenticationHttp {
     /** Finite proof fixtures only; production derives peer exclusively from socket.remoteAddress. */
     trustedFixturePeer?: string;
     maxInFlight?: number;
+    budget?: AuthenticationRequestBudget;
     limits: AuthenticationTransportLimits;
   }) {
     const origin = new URL(deps.origin);
     if (origin.protocol !== "https:" || origin.origin !== deps.origin || origin.username || origin.password) throw new Error("Authentication requires a canonical HTTPS origin.");
-    this.#maxInFlight = deps.maxInFlight ?? 8;
-    if (!Number.isInteger(this.#maxInFlight) || this.#maxInFlight < 1 || this.#maxInFlight > 64) throw new Error("Invalid authentication capacity.");
+    const maxInFlight = deps.maxInFlight ?? 8;
+    if (!Number.isInteger(maxInFlight) || maxInFlight < 1 || maxInFlight > 64) throw new Error("Invalid authentication capacity.");
     if (deps.trustedFixturePeer && !isIP(deps.trustedFixturePeer)) throw new Error("Invalid fixture peer.");
-    this.#limits = validateTransportLimits(deps.limits, this.#maxInFlight);
+    this.#limits = validateTransportLimits(deps.limits, maxInFlight);
+    this.#budget = deps.budget ?? new AuthenticationRequestBudget(maxInFlight, this.#limits.reservedCompletionSlots);
+    if (this.#budget.maxInFlight !== maxInFlight || this.#budget.reservedCompletionSlots !== this.#limits.reservedCompletionSlots) throw new Error("Invalid authentication capacity.");
     this.#origin = origin.origin; this.#authority = origin.host;
     this.#parsers = this.parsers();
   }
@@ -114,11 +117,9 @@ export class AuthenticationHttp {
     const cookie = hasProviderCookie(request);
     if (!path.includes("auth") && !RUNTIME_ROUTES.has(path) && !cookie) return false;
     // The slot is held until the response closed AND real provider work ended.
-    let counted = false, operationFinished = false, responseFinished = response.writableFinished || response.destroyed;
-    const release = () => {
-      if (counted && operationFinished && responseFinished) { counted = false; this.#active--; }
-    };
-    const lifetime = new RequestLifetime(request, response, () => { responseFinished = true; release(); });
+    let slot: AuthenticationRequestSlot | null = null;
+    let responseFinished = response.writableFinished || response.destroyed;
+    const lifetime = new RequestLifetime(request, response, () => { responseFinished = true; slot?.responseFinished(); });
     const started: Array<Promise<void>> = [];
     let unreleased: BrowserRelease | null = null, knowledge = false, runtimeRead = false, runtimeMutation = false, verification = false, configuration = false;
     try {
@@ -138,9 +139,9 @@ export class AuthenticationHttp {
       const operation = routed && (!browserOperationRequires(routed, "factor") || this.deps.runtime.factorsEnabled) ? routed : undefined;
       if (!operation && !knowledge && !runtimeRead && !runtimeMutation && !verification && !configuration) fail(401, "invalid_credential");
       if (request.method !== (knowledge || runtimeRead || runtimeMutation || verification || configuration ? "POST" : BROWSER_OPERATIONS[operation!].method)) fail(405, "method_not_allowed");
-      const reserved = operation && browserOperationRequires(operation, "initiating") ? this.#limits.reservedCompletionSlots : 0;
-      if (this.#active >= this.#maxInFlight - reserved) fail(503, "database_busy");
-      this.#active++; counted = true;
+      slot = this.#budget.acquire(operation && browserOperationRequires(operation, "initiating") ? "initiating" : "completion");
+      if (!slot) fail(503, "database_busy");
+      if (responseFinished) slot.responseFinished();
       const cookies = requestCookies(request.headers.cookie);
       if (request.method === "POST" || (operation && browserOperationRequires(operation, "factor"))) {
         // Same-origin browser GETs omit Origin. Only browser Fetch Metadata may
@@ -232,8 +233,8 @@ export class AuthenticationHttp {
     } finally {
       lifetime.detachRequest();
       // No Promise.race: a timed-out borrow's execution keeps this slot until it really ends.
-      await Promise.all(started);
-      operationFinished = true; release();
+      if (slot) await slot.settle(Promise.all(started));
+      else await Promise.all(started);
     }
     return true;
   }

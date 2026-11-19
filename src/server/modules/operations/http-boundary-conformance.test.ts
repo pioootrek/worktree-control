@@ -1,3 +1,4 @@
+import { AuthenticationRequestBudget } from "@/server/bootstrap/authentication-request-budget";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -34,7 +35,7 @@ import { hash, iso, NOW, token } from "./adapters/credential-verifier-fixture";
  * :337 origin                     | %s keeps maintenance refusal and origin policy without application work
  * :630 credential revalidation     | revalidates grant/revoke/rotate/maintenance/shutdown/disconnect/deadline between mint and actual write
  * :236 no-store/JSON/security      | full wire matrix; uses security headers and terminal finite JSON replies
- * provider-lifetime.ts:20 reserve  | DEFERRED D1a-5b: no cookie provider work is admitted in 5a; reserve requires the cookie mount
+ * provider-lifetime.ts:20 reserve  | owner accounting: bootstrap/authentication-request-budget.test.ts; operations cookie path DEFERRED D1a-5b-2
  * :673 SSE lifetime                | uses security headers and terminal finite JSON replies (finite read ends, no SSE owner applies)
  * :952 listener close/drain        | shutdown retains the real open SQLite handle and lock record; half-open and reset protocol clients
  * Unix (9 rows):
@@ -47,7 +48,7 @@ import { hash, iso, NOW, token } from "./adapters/credential-verifier-fixture";
  * :84 provider response ceiling    | controlled adapter: commits exactly one 413 envelope (DTO bound, provider-only ceiling does not apply)
  * :102 disconnect/close drain      | shares the real unix ceiling and drain; real socket backpressure; controlled adapter/end hook
  * shutdown.ts:58 storage/lock       | shutdown retains the real open SQLite handle and lock record until an admitted request settles
- * Total: 21 rows, 20 mapped to assertions, 1 deferred to D1a-5b.
+ * Total: 21 rows, 20 mapped to assertions, 1 owner-tested, with listener conformance deferred to D1a-5b-2.
  * Worker/MCP/CLI drivers are deliberately absent until D1a-6/7/8 mount them.
  */
 const cleanups: (() => unknown | Promise<unknown>)[] = [];
@@ -90,9 +91,10 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   let apiOpen = true, unixOpen = true;
   const eligibility = createControllerOperationEligibility({ maintenance: () => fault === "omit_guard" ? false : state.maintenance, stopping: () => state.stopping,
     configurationRestartRequired: () => state.configChanged, runtime: () => undefined });
-  const provider = { isSessionAuthorityEligible: vi.fn(() => true) };
+  const provider = { isSessionAuthorityEligible: vi.fn(() => true), providerId: "better-auth" as const,
+    reader: store.authenticationProviderStorage(), resolveRequest: () => ({ result: Promise.resolve(null), settled: Promise.resolve() }) };
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs: { controller() {} },
-    eligibility, provider: mode === "better-auth" ? provider : null, listeners: { api: () => apiOpen, unix: () => unixOpen } });
+    eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), provider: mode === "better-auth" ? provider : null, listeners: { api: () => apiOpen, unix: () => unixOpen } });
   const hooks: { beforeMint?: (signal: AbortSignal | undefined) => void; afterMint?: () => void | Promise<void>; legacy?: (body: unknown) => unknown } = {};
   const runtime = { ...built, mint: async (...args: Parameters<Extract<typeof built, { supported: true }>["mint"]>) => {
     hooks.beforeMint?.(args[3].signal);

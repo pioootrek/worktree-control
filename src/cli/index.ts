@@ -428,7 +428,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   });
   const operationListeners: { api?: import("node:http").Server; unix?: import("node:http").Server } = {};
   const operations = buildOperationsRuntime({ store, activeMode: authentication.mode(), now: Date.now, logs,
-    eligibility: providerAdministration, provider: providerAdministration.operationSessionAuthority(),
+    eligibility: providerAdministration, provider: providerAdministration.operationSessionAuthority(), requestBudget: providerAdministration.requestBudget,
     listeners: { api: () => operationListeners.api?.listening === true, unix: () => operationListeners.unix?.listening === true } });
   const controller = createControllerServer({
     service,
@@ -540,7 +540,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   } catch (error) {
     const cleanup = createControllerShutdown({
       service: { closeAdmission: () => { maintenance = true; service.closeAdmission(); }, shutdown: () => service.shutdown() },
-      stopping() {}, userSchedules, backups, remoteVerification, mcp, controller, controllerLock,
+      stopping: providerAdministration.stop, userSchedules, backups, remoteVerification, mcp, controller, controllerLock,
       adminSocket: error instanceof AdminSocketStartupError ? error.owner : { close() {} },
       authenticationProvider: providerAdministration, removeServiceAccess() {},
     });
@@ -575,6 +575,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     userSchedules, backups, remoteVerification, mcp, controller, adminSocket, controllerLock,
     authenticationProvider: providerAdministration,
     stopping: () => {
+      providerAdministration.stop();
       process.removeListener("SIGINT", handleSignal);
       process.removeListener("SIGTERM", handleSignal);
       writeCliLine(translate(locale, "cli.stopping"));

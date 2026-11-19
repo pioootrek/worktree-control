@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { AuthenticationRequestBudget } from "./authentication-request-budget";
 import { FileProviderConfiguration, validateProviderEntry } from "../authentication-provider-configuration";
 import { IdentityService, IdentityError, HumanAccountService, RuntimeMembershipService } from "../modules/identity";
 import {
@@ -86,6 +87,14 @@ export interface ControllerAuthenticationOptions {
   holdLifetime?: () => () => void;
 }
 
+/** Stable, administration-owned ports. No provider load or boot-time snapshot. */
+export interface ControllerOperationSessionAuthority {
+  readonly providerId: "better-auth";
+  readonly reader: Pick<AuthenticationProviderStorage, "currentSession">;
+  isSessionAuthorityEligible(): boolean;
+  resolveRequest: AuthenticationProviderRuntime["resolveRequest"];
+}
+
 interface BrowserAuthenticationInput {
   origin: string; knowledge: KnowledgeService; runtimeReads?: ProviderRuntimeReadPort; runtimeMutations?: ProviderRuntimeMutatePort; verification?: ProviderVerificationPort; configuration?: ProviderConfigurationApplicationPort;
   /** Temporary Unix fixtures only. A real listener derives its peer from the socket. */
@@ -117,6 +126,26 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
     runtime: () => state === "ready" ? runtime : undefined,
   });
   const guard = eligibility.guard;
+  const requestBudget = new AuthenticationRequestBudget(CONTROLLER_AUTHENTICATION_POLICY.maxInFlight,
+    CONTROLLER_AUTHENTICATION_POLICY.limits.reservedCompletionSlots);
+  const operationSessions: ControllerOperationSessionAuthority = Object.freeze({
+    providerId: "better-auth",
+    reader: Object.freeze({ currentSession: (providerId: string, sessionId: string) => storage.currentSession(providerId, sessionId) }),
+    isSessionAuthorityEligible: eligibility.providerSessionEligible,
+    resolveRequest(headers: Headers, options: { signal?: AbortSignal } = {}) {
+      const refused = () => ({ result: Promise.resolve(null), settled: Promise.resolve() });
+      if (!eligibility.providerSessionEligible()) return refused();
+      const current = runtime!;
+      try {
+        const resolution = current.resolveRequest(headers, options);
+        // Own real work even when its public result is cancelled or refused.
+        track(resolution.settled);
+        const result = resolution.result.then(value => eligibility.providerSessionEligible() && runtime === current ? value : null);
+        result.catch(() => undefined);
+        return { result, settled: resolution.settled };
+      } catch { return refused(); }
+    },
+  });
   // Reuse the ONE existing connection gate. New work checks the current config in its actual borrow.
   // Reserved work is runtime-owned cleanup of exact sessions minted here, never new authentication.
   // It must still be able to settle after maintenance/configuration changes fence new work.
@@ -238,8 +267,11 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
   });
   return {
     identity,
-    /** Already-loaded active provider only; never loads one for operation wiring. */
-    operationSessionAuthority: () => runtime ?? null,
+    /** The same facade before, during and after the one permitted provider load. */
+    operationSessionAuthority: () => operationSessions,
+    requestBudget,
+    /** Fence new shared cookie work before listener drain. */
+    stop: () => { stopping = true; requestBudget.stop(); },
     controllerEligible: eligibility.controllerEligible,
     providerSessionEligible: eligibility.providerSessionEligible,
     /** Server-owned adapter for converted browser workflows.
@@ -274,7 +306,7 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
           runtimeMutations: binding.runtimeMutations && new ProviderRuntimeMutateApplication(binding.runtimeMutations),
           maintenance, assertAvailable: guard,
           trustedFixturePeer: binding.trustedFixturePeer,
-          maxInFlight: CONTROLLER_AUTHENTICATION_POLICY.maxInFlight, limits: CONTROLLER_AUTHENTICATION_POLICY.limits,
+          budget: requestBudget, maxInFlight: CONTROLLER_AUTHENTICATION_POLICY.maxInFlight, limits: CONTROLLER_AUTHENTICATION_POLICY.limits,
           status: () => ({ mode: d.authentication.mode(), loginAvailable: !value.disposed }),
         });
         browser = { adapter, binding };
@@ -289,7 +321,7 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
     dispose(): Promise<void> {
       if (disposal) return disposal;
       retainLifetime();
-      stopping = true; state = "disposing";
+      stopping = true; requestBudget.stop(); state = "disposing";
       disposal = Promise.resolve().then(async () => {
         await Promise.allSettled([...accepted]);
         await loaded?.catch(() => undefined);

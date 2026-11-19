@@ -1,3 +1,4 @@
+import { AuthenticationRequestBudget } from "@/server/bootstrap/authentication-request-budget";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -81,7 +82,10 @@ async function fixture(mode = "better-auth", withProvider = false, admissionTime
   const logs = { controller: vi.fn() };
   const options: OperationsRuntimeOptions = { store, activeMode: mode, now: () => clock.now, logs,
     listeners: { api: () => true, mcp: () => true, worker: () => true, unix: () => true },
-    eligibility, provider: withProvider ? providerRuntime : null };
+    eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), provider: withProvider ? {
+      ...providerRuntime, providerId: "better-auth", reader: store.authenticationProviderStorage(),
+      resolveRequest: () => ({ result: Promise.resolve(null), settled: Promise.resolve() }),
+    } : null };
   const build = (override: Partial<OperationsRuntimeOptions> = {}) => {
     const built = buildOperationsRuntime({ ...options, ...override });
     if (!built.supported) throw new Error("expected supported mode");
@@ -201,7 +205,7 @@ describe("unmounted real operations composition under strict admission", () => {
     const offline = await c.mintOffline(() => true, {});
     if (!offline.ok) throw new Error("expected offline operator");
     expect(c.eligible()).toBe(true);
-    expect(c.providerSessionEligible).toBeNull();
+    expect(c.providerSessionEligible()).toBe(false);
     expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject({ ok: true, value: { actor: { kind: "operator" }, fullAuthority: true } });
     expect(await c.mint("api", { ...none(), providerSession: { secret: "synthetic-cookie" } }, null, {}))
       .toMatchObject(unauthenticated("invalid_credential"));
@@ -410,7 +414,7 @@ describe("unmounted real operations composition under strict admission", () => {
       const built = buildOperationsRuntime({ ...f.options, activeMode });
       expect(built.supported).toBe(false);
       expect(built.eligible()).toBe(false);
-      expect(built.providerSessionEligible).toBeNull();
+      expect(built.providerSessionEligible()).toBe(false);
       expect(Object.isFrozen(built)).toBe(true);
       expect("boundaries" in built).toBe(false);
       expect(await built.mint("api", none(), null, {})).toMatchObject(unauthenticated("unknown_mode"));
