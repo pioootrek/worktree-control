@@ -17,7 +17,7 @@ export {
   decide, durablePrincipal, freshLoginState, INTENT_DIGEST_VERSIONS, intentOriginDigest, projectVisible,
   type Decision, type DecisionInput, type Denial,
 } from "./decide";
-export { classify, classifyBeforeCommit, isOperationError, OperationError, publicError } from "./errors";
+export { admissionFailureOf, classify, classifyBeforeCommit, isOperationError, OperationError, publicError } from "./errors";
 export { effectivePermissions, grantAllowed, type EffectivePermissions, type GrantScope, type GrantsSnapshot, type StoredGrant } from "./grants";
 export {
   listenerAllowed, MAX_WAIT_TIMEOUT_MS, OperationRegistry,

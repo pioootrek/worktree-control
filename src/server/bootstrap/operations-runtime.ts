@@ -5,7 +5,7 @@ import type { AuthenticationProviderRuntime, VerifiedProviderSession } from "../
 import {
   AgentTokenVerifier, CompositeCredentialVerifier, createListenerBoundary, InstallationVerifier,
   OperationError, OperationRegistry, OperationRunner, ProviderSessionVerifier, sessionDescribe,
-  sqliteGrants, SqliteResourceResolver, publicError, resolveAcceptance,
+  sqliteGrants, SqliteResourceResolver, admissionFailureOf, publicError, resolveAcceptance,
   type AuthenticationContext, type ListenerBoundary, type OperationRuntime, type PresentedCredentials,
 } from "../modules/operations";
 import { authenticationModes, type AuthenticationMode, type ListenerKind, type PublicOperationError } from "../../shared/contracts/operations";
@@ -115,8 +115,10 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
           return Object.freeze({ ok: true, context });
         }, admissionOptions);
       } catch (error) {
-        return error instanceof OperationError && error.category === "unauthenticated"
-          ? Object.freeze({ ok: false, error: publicError(error) }) : refused("invalid_credential");
+        // Match the runner: an aborted admission is cancellation, not contention.
+        const failure = admissionOptions.signal?.aborted && admissionFailureOf(error)
+          ? new OperationError("unavailable", "request_cancelled", { retry: "retry" }) : error;
+        return Object.freeze({ ok: false, error: publicError(failure) });
       }
     },
   });

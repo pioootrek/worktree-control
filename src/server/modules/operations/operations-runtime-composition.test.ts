@@ -23,9 +23,9 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function fixture(mode = "better-auth", withProvider = false) {
+async function fixture(mode = "better-auth", withProvider = false, admissionTimeoutMs?: number) {
   const root = mkdtempSync(join(tmpdir(), "operations-composition-")); roots.push(root);
-  const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict" }); stores.push(store);
+  const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict", admissionTimeoutMs }); stores.push(store);
   const database = ownedFixtureDatabase(store);
   const clock = { now: NOW };
   const state = { maintenance: false, stopping: false, runtime: true };
@@ -109,6 +109,46 @@ async function fixture(mode = "better-auth", withProvider = false) {
 const unauthenticated = (reason: string) => ({ ok: false, error: { category: "unauthenticated", reason } });
 
 describe("unmounted real operations composition under strict admission", () => {
+  it("gives mint the same contention refusal as run while a provider holds real admission", async () => {
+    const f = await fixture("token", false, 20);
+    const presented = presentedBearer(f.installationSecret), context = await f.context(presented);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const borrowing = f.store.authenticationProviderStorage().borrow(async () => { enter(); await released; });
+    try {
+      await entered;
+      const normal = await f.composition!.runner.run(sessionDescribe, context, {});
+      expect(normal).toEqual({ ok: false, error: { category: "busy", status: 503, reason: "admission_refused", retry: "retry", effect: null } });
+      const minted = await f.composition!.mint("api", presented, null, {});
+      expect(minted).toEqual(normal);
+    } finally {
+      release();
+      await borrowing;
+    }
+    // The same token still works after contention ends.
+    expect(await f.composition!.mint("api", presented, null, {})).toMatchObject({ ok: true });
+  });
+
+  it("gives mint the runner's cancellation error for an already aborted signal", async () => {
+    const f = await fixture("token");
+    const presented = presentedBearer(f.installationSecret), context = await f.context(presented);
+    const controller = new AbortController(); controller.abort(new Error("sensitive synthetic abort"));
+    const normal = await f.composition!.runner.run(sessionDescribe, context, {}, { signal: controller.signal });
+    expect(normal).toEqual({ ok: false, error: { category: "unavailable", status: 503, reason: "request_cancelled", retry: "retry", effect: null } });
+    expect(await f.composition!.mint("api", presented, null, { signal: controller.signal })).toEqual(normal);
+  });
+
+  it("reports an unexpected clock throw inside admitted mint as a sanitized internal error", async () => {
+    const f = await fixture("token");
+    const now = vi.fn(() => { throw new Error("sensitive synthetic clock detail"); });
+    const composition = f.build({ now });
+    expect(await composition.mint("api", presentedBearer(f.installationSecret), null, {})).toEqual({
+      ok: false, error: { category: "internal", status: 500, reason: "unexpected_failure", retry: "none", effect: null },
+    });
+    expect(now).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["open", "token"])("describes the %s installation and each served listener", async mode => {
     const f = await fixture(mode);
     const presented = mode === "token" ? presentedBearer(f.installationSecret) : none();

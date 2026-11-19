@@ -1357,7 +1357,11 @@ These are not implemented here. The slices that mount the contract own them.
   synchronous `true` from the runtime's session-authority predicate. Modes
   without a provider use the controller maintenance and stopping predicate.
   Mint, provider stage and provider verification run in one synchronous core
-  admission callback. Cookie resolution belongs outside it. Staging is bounded
+  admission callback; thrown failures use the runner's public classification:
+  contention is `busy` / `admission_refused`, an aborted admission is
+  `unavailable` / `request_cancelled` with retry `retry`, and an unexpected
+  throw is `internal` / `unexpected_failure`, without exposing thrown details.
+  Cookie resolution belongs outside it. Staging is bounded
   to 16 handles and 5000 ms; no timer or new connection is created. Transports
   must supply the resolution for the current request, retain raw credential
   multiplicity and pass the returned eligibility predicate to read-release.
