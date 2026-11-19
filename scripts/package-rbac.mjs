@@ -4,6 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
+import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -129,10 +130,22 @@ async function stop() {
   children.delete(child); assert.equal(child.exitCode, 0, "Packaged controller must drain and exit normally.");
 }
 const observe = read => { const database = new native.Database(join(directoryArgs[1], "state.sqlite3"), { readonly: true }); try { return read(database); } finally { database.close(); } };
-let currentCli, currentRoot, endpoint, mcpURL;
+let currentCli, currentRoot, endpoint, mcpURL, workerPort, workerCa, storedWorker;
 async function start(cli = currentCli, assets = currentRoot) {
   const port = await freePort(), mcpPort = await freePort(); endpoint = `http://127.0.0.1:${port}`; mcpURL = `http://127.0.0.1:${mcpPort}/mcp`;
-  const child = spawn(process.execPath, [cli, "start", ...directoryArgs, "--service-mode", "--host", "127.0.0.1", "--port", String(port), "--mcp-port", String(mcpPort),
+  const workerArgs = [];
+  if (cli === currentCli) {
+    const key = join(root, "worker.key"), cert = join(root, "worker.crt"), config = join(root, "worker-listener.json");
+    if (!workerCa) {
+      await bounded("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", key, "-out", cert,
+        "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"]);
+      workerCa = await readFile(cert);
+    }
+    workerPort = await freePort();
+    await writeFile(config, JSON.stringify({ version: 1, listener: { host: "127.0.0.1", port: workerPort, keyFile: key, certFile: cert } }));
+    workerArgs.push("--remote-verification-config", config);
+  }
+  const child = spawn(process.execPath, [cli, "start", ...directoryArgs, ...workerArgs, "--service-mode", "--host", "127.0.0.1", "--port", String(port), "--mcp-port", String(mcpPort),
     "--public-url", origin, "--web-root", join(assets, "out"), "--no-open"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   controller = child; children.add(child); let output = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", chunk => { output = (output + chunk).slice(-65536); });
@@ -149,7 +162,24 @@ async function operationSocket(mode) {
   });
   assert.equal(reply.status, 200); assert.equal(reply.body.actor.kind, "operator"); assert.equal(reply.body.listener, "unix"); assert.equal(reply.body.mode, mode);
 }
+async function operationWorker(mode, secret) {
+  const call = secret => new Promise((accept, reject) => {
+    const request = httpsRequest({ hostname: "127.0.0.1", port: workerPort, ca: workerCa, path: "/api/operations/session.describe", method: "POST",
+      headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) } }, response => {
+      const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
+      response.on("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
+    });
+    request.setTimeout(10000, () => request.destroy(new Error("Worker operations deadline"))); request.on("error", reject); request.end("{}");
+  });
+  const reply = await call(secret); assert.equal(reply.status, 200); assert.equal(reply.body.mode, mode); assert.equal(reply.body.listener, "worker");
+  assert.equal(reply.body.actor.kind, mode === "better-auth" ? "agent" : "installation");
+  if (storedWorker) {
+    const refused = await call(storedWorker); assert.equal(refused.status, 401);
+    assert.deepEqual(refused.body, { error: { category: "unauthenticated", status: 401, reason: mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", retry: "reauthenticate", effect: null } });
+  }
+}
 async function operationApi(mode, secret) {
+  await operationWorker(mode, secret);
   const reply = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: "{}" });
   assert.equal(reply.status, 200); const body = await reply.json(); assert.equal(body.mode, mode); assert.equal(body.listener, "api"); assert.equal(body.actor.kind, mode === "better-auth" ? "agent" : "installation");
 }
@@ -414,6 +444,21 @@ try {
       currentAgentCredential = issued;
     });
   }
+  await step("worker-installed-stored-credential-token-mode", async () => {
+    const repo = join(root, "worker-registration"); await mkdir(repo);
+    const gitEnv = { ...env, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@invalid.test", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@invalid.test" };
+    for (const args of [["init", "-b", "main"], ["commit", "--allow-empty", "-m", "worker fixture"]]) await bounded("git", args, { cwd: repo, env: gitEnv });
+    await start();
+    const response = await fetch(endpoint + "/api/projects", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${installation.token}` },
+      body: JSON.stringify({ name: "Worker fixture", repositoryPath: repo, port: await freePort(), launchPreset: "none" }) });
+    assert.equal(response.status, 201); const local = (await response.json()).project; await stop();
+    const tokenFile = join(root, "worker-token"), provision = join(root, "worker-provision.json");
+    await writeFile(provision, JSON.stringify({ project: { id: "worker-fixture", name: "Worker fixture", sourceRemote: "origin" }, worker: { id: "worker-fixture", name: "Worker fixture" },
+      localProjectId: local.id, presetIds: ["node:test"], callerPrincipalIds: [oldAgent.id], workerTokenFile: tokenFile }));
+    await json(currentCli, ["remote-verification", "provision", "--file", provision], currentOwnerEnv);
+    storedWorker = (await readFile(tokenFile, "utf8")).trim(); secretValues.add(storedWorker);
+    await start(); await operationWorker("token", installation.token); await stop();
+  });
   await step("community-open-mode-without-provider", async () => {
     await json(currentCli, ["auth", "mode", "set", "open"]); await start();
     await operationApi("open"); await operationSocket("open");

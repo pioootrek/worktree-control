@@ -1,4 +1,6 @@
 import { request, type ClientRequest, type IncomingMessage, type Server } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { connect as tlsConnect } from "node:tls";
 import { createConnection, type AddressInfo } from "node:net";
 
 export const operationRoute = "/api/operations/session.describe";
@@ -13,15 +15,16 @@ export type BoundaryDriver = ReturnType<typeof createBoundaryDriver>;
 /** Only mounted transports belong here. Capacity is observed through saturation,
  * not a second counter or access to the listener's private accepted-work set. */
 export function createBoundaryDriver(options: {
-  kind: "api" | "unix"; server: Server; localAddress?: string; socketPath?: string; close(): Promise<void>;
+  kind: "api" | "unix" | "worker"; tls?: { ca: Buffer }; server: Server; localAddress?: string; socketPath?: string; close(): Promise<void>;
   legacyPath: string; acceptedCredentials: readonly string[];
 }) {
   const address = () => options.socketPath ? { socketPath: options.socketPath }
     : { hostname: "127.0.0.1", port: (options.server.address() as AddressInfo).port };
+  const http = options.tls ? httpsRequest : request;
   const send = (input: RequestOptions = {}) => {
     let call!: ClientRequest;
     const reply = new Promise<Reply>((resolve, reject) => {
-      call = request({ ...address(), path: input.path ?? operationRoute, method: input.method ?? "POST",
+      call = http({ ...address(), ...options.tls, path: input.path ?? operationRoute, method: input.method ?? "POST",
         localAddress: options.localAddress, headers: input.headers ?? { "Content-Type": "application/json" } }, response => {
         const chunks: Buffer[] = [];
         response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
@@ -39,11 +42,11 @@ export function createBoundaryDriver(options: {
   return {
     ...options, capacity: 32, send,
     capacityProbe: () => send().reply,
-    connection: () => createConnection(options.socketPath ? { path: options.socketPath, allowHalfOpen: true }
+    connection: () => options.tls ? tlsConnect({ host: "127.0.0.1", port: (options.server.address() as AddressInfo).port, ...options.tls }) : createConnection(options.socketPath ? { path: options.socketPath, allowHalfOpen: true }
       : { port: (options.server.address() as AddressInfo).port, host: "127.0.0.1", allowHalfOpen: true }),
     wire(path: string, method = "GET", upgrade = false): Promise<WireReply> {
       return new Promise((resolve, reject) => {
-        const call = request({ ...address(), path, method, headers: { "Content-Type": "application/json",
+        const call = http({ ...address(), ...options.tls, path, method, headers: { "Content-Type": "application/json",
           ...(upgrade ? { Connection: "Upgrade, HTTP2-Settings", Upgrade: "h2c", "HTTP2-Settings": "" } : {}) } }, res => {
           const chunks: Buffer[] = [];
           res.on("data", chunk => chunks.push(chunk)); res.on("error", reject);

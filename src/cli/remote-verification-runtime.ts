@@ -8,6 +8,7 @@ import type { SqliteStateStore } from "@/server/sqlite-store";
 import { ProjectTestCommandResolver } from "@/server/test-command";
 import type { TestJobManager } from "@/server/test-job-manager";
 import { createRemoteVerificationServer, HttpRemoteWorkerTransport } from "@/server/transports/remote-verification-http";
+import type { OperationsHttpRuntime } from "@/server/transports/operations-http";
 import { readRemoteWorkerToken, type RemoteVerificationConfig } from "./remote-verification";
 
 export function createRemoteVerificationRuntime(config: RemoteVerificationConfig | null, dependencies: {
@@ -30,13 +31,16 @@ export function createRemoteVerificationRuntime(config: RemoteVerificationConfig
     new HttpRemoteWorkerTransport(workerConfig.origin, workerConfig.workerId, () => readRemoteWorkerToken(workerConfig.tokenFile), workerConfig.allowLoopbackHttpFixture), receipt => recovery.isReconciled(receipt), store.admission) : null;
   return {
     controller,
-    async start() {
+    listenerOpen: () => listener?.server.listening === true,
+    stopOperations: () => listener?.stopOperations(),
+    async start(operations?: OperationsHttpRuntime) {
+      if (operations) listener?.mountOperations(operations);
       if (listener && config.listener) await new Promise<void>((resolve, reject) => {
         listener.server.once("error", reject);
         listener.server.listen(config.listener!.port, config.listener!.host, () => { listener.server.off("error", reject); resolve(); });
       });
       worker?.start();
     },
-    async close() { await worker?.close(); await listener?.close(); },
+    async close() { listener?.stopOperations(); await worker?.close(); await listener?.close(); },
   };
 }

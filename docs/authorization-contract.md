@@ -1,24 +1,24 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
 last_reviewed: "2026-11-19"
-source_of_truth: "authorization contract with session.describe mounted on API and unix for the unreleased breaking auth unification; Knowledge task 040062b4"
+source_of_truth: "authorization contract with session.describe mounted on API, unix and worker for the unreleased breaking auth unification; Knowledge task 040062b4"
 status: "active"
 ---
 
 # Authorization contract
 
 **Status: unreleased breaking change.** Only `session.describe` is mounted,
-through `POST /api/operations/session.describe` on the API listener and private
-unix socket. Only the exact raw operation path can succeed. Aliases entering
+through `POST /api/operations/session.describe` on the API listener, private
+unix socket and configured HTTPS worker listener. Only the exact raw operation path can succeed. Aliases entering
 `/api/operations` or `/mcp/operations` through dot segments, encoded path syntax,
-backslashes or duplicate slashes receive the new not-found envelope on both
-listeners through normal request dispatch, for every method. On unix the fixed
-cookie refusal still comes first. Neither listener registers CONNECT or Upgrade handlers. Node
+backslashes or duplicate slashes receive the new not-found envelope on all three
+listeners through normal request dispatch, for every method. On unix and worker the fixed
+cookie refusal precedes operation dispatch. Worker peer and Origin checks precede it. No listener registers CONNECT or Upgrade handlers. Node
 closes every CONNECT connection without a response or dispatch, including targets
 inside the namespace. Upgrade headers keep normal HTTP request dispatch.
 Other routes and tools retain their existing authentication.
-Provider cookies are mounted on the API listener in account mode. Unix keeps
-its fixed `unauthenticated` / `provider_cookie_not_supported` refusal before
+Provider cookies are mounted on the API listener in account mode. Unix and worker keep
+the fixed `unauthenticated` / `provider_cookie_not_supported` refusal before
 body reads or capacity admission. Unsupported modes keep that preflight refusal.
 For supported API modes the acceptance table decides: open refuses a cookie as
 `credential_in_open_mode`, token as `credential_not_accepted_here`, and account
@@ -179,7 +179,7 @@ from a token's format to an actor.
 ports on the store owner's admitted connection and open no connection.
 `CompositeCredentialVerifier` dispatches each accepted path to its configured
 verifier, including the existing provider-session verifier, without fallback.
-Installation and agent paths are mounted on API; unix uses operator authority.
+Installation and agent paths are mounted on API and worker; unix uses operator authority.
 They write no usage time or other state, including `last_used_at`.
 
 The agent verifier compares SHA-256 of the entire presented token with the
@@ -436,6 +436,92 @@ Installed API bearer and unix operator checks run under `node:test:package`;
 account cookies. `node:test:package:provider` builds the separate optional
 provider artifact; it does not run listener checks itself.
 
+### Mounted worker boundary
+
+D1a-6 mounts the same `createOperationsHttp` adapter with `listener=worker`
+when the remote-verification configuration includes a listener. Without that
+configuration there is no worker server and no mount. The composition receives
+the listener's current listening state for mint and every revalidation.
+
+TLS, when configured, precedes HTTP dispatch. The raw operations parser claims
+the namespace before protocol routing and authentication. Both surfaces call
+one shared transport refusal function: the explicit plaintext fixture must have
+a loopback peer, and a nonempty Origin is forbidden. The operations refusal uses
+the five-field envelope; poll and report retain their original bodies. In TLS
+mode the existing listener has no additional peer restriction or client-certificate
+requirement. Fetch Metadata alone and unrelated cookies remain permitted.
+Host has no canonical-origin requirement on worker; duplicate singleton headers
+are refused by the operations adapter. Browser cookie-size, alias, managed-cookie
+duplicate and completion-reserve checks do not apply: a recognized provider
+cookie receives `unauthenticated` / `provider_cookie_not_supported` before body
+reads, slots, admission or provider work, in every mode, including mixed requests.
+The peer and Origin checks still precede that refusal.
+
+| Mode | Accepted on worker | Refused credentials |
+| --- | --- | --- |
+| `open` | No credential, installation actor | Credential-shaped bearer: `credential_in_open_mode` |
+| `token` | Installation token, installation actor | Agent, stored owner and stored worker token: `credential_not_accepted_here`; none: `credential_required` |
+| `better-auth` | Current agent token, its own account | Stored owner/worker and unknown machine token: `invalid_credential`; installation: `installation_token_in_account_mode`; none: `credential_required` |
+
+These credential refusals are 401 / `unauthenticated`, retry `reauthenticate`.
+Unrecognized bearer syntax is `unrecognized_credential`; legacy pairing/MCP
+secret headers are `legacy_credential`; duplicate or mixed bearer credentials
+are `mixed_credentials`. Unsupported modes answer `unknown_mode`. The acceptance
+table is the only credential policy. The new surface never calls the worker
+protocol authenticator or writes `last_used_at`. A stored worker token continues
+to authenticate poll and report through the existing handler.
+
+This changes what callers can learn through the worker port. Open mode now
+gives a reachable anonymous caller the actor kind, mode, listener,
+`fullAuthority: true`, installation permissions, up to 500 project IDs with
+permissions, `projectsTruncated` and `freshLogin`. Token mode gives the same
+fields to the installation token. Account mode accepts any current agent token
+and returns that account's installation permissions and projects where it has
+a role. No names, paths, secrets or history are included. The old worker protocol
+required a worker token in every mode. This mount runs on synthetic fixtures;
+acceptance is not approval to expose a live host.
+
+The shared server retains its 32-connection limit, 15000 ms request timeout and
+10000 ms header timeout. There was no accepted-request counter on the protocol
+handler. Operations use the adapter's single 32-request owner, retaining capacity
+through response completion and all started work. Its body ceiling is 65536
+bytes, response ceiling 262144 bytes and total deadline 10000 ms. The legacy
+protocol retains its 2 MiB ceiling. Controller maintenance and shutdown refusal,
+strict JSON, cancellation, no-store, retry headers and admitted fresh Node writes
+are the same as on API. Provider configuration refusal applies only to provider
+sessions; bearer authority survives a provider configuration change.
+
+Shutdown stops operations synchronously with provider administration, before any
+drain. Remote-runtime close also stops them before awaiting its worker loop.
+The server closes connections and joins operations settlement before its close
+promise completes. The controller's existing shutdown order releases SQLite and
+the singleton lock only after confirmed listener cleanup.
+
+`http-boundary-conformance.test.ts` extends the shared driver to real TLS,
+stored credentials, common peer/Origin policy, connection saturation, request
+limits, namespace aliases, maintenance, admission contention, disconnect,
+deadline, release changes and shutdown ownership. Exact `ConformanceFailure`
+negative controls cover Origin omission, early capacity release and premature
+success. The peer fixture controls the socket address because the test binds only
+loopback. The older worker tests use plaintext fixtures; this suite generates an
+ephemeral local certificate. Pending provider work and completion reserve are
+inapplicable here because cookies are refused before work; their executable API
+proofs remain in the same suite. Timeout settings are asserted directly; a full
+slow-header timing test is deferred to D1a-10 to avoid timing-sensitive coverage.
+Installed TLS worker checks run under `node:test:rbac-artifact` in all three modes,
+using a stored token issued through `remote-verification provision`. They start a
+fixture listener only, without a remote execution worker loop. `node:check` runs
+the conformance suite and unchanged legacy worker suites. No additional approved
+module importer is needed: the worker and CLI wiring consume the existing
+transport value API, not the operations module or composition.
+
+**Open release blocker, owner decision 4(b).** Decide whether `open` mode may
+serve the worker listener on a non-loopback address at all, or only with an
+explicit operator acknowledgement. Recommend: refuse a non-loopback worker
+binding in `open` mode unless the operator explicitly acknowledges the disclosed
+authority and data exposure; settle this before the release. D1a-6 does not
+implement that restriction.
+
 ## Permissions and roles
 
 The permission list is closed. Project permissions: `project:read`,
@@ -496,7 +582,7 @@ Slice 3 (C4) adds two read adapters under
 structural read port. The store exposes the SQLite query modules
 (`AccountGrantsQueries`, `ProjectDirectoryQueries`) on its owned core
 connection. The controller composition now wires these adapters for the
-API and unix session description.
+API, worker and unix session description.
 
 - `sqliteGrants` builds the runtime's `grants()`. Each call is one snapshot
   that reads each account at most once, together with its grants, in one
@@ -706,7 +792,7 @@ conjunctions, invalid public keys, malformed effects, transition lists,
 secret hooks, wait bounds and listener exclusions. It registers a frozen copy
 whose requirement, allowlist, effect, transition list, wait bounds and
 exclusions are frozen. The only real operation is `session.describe`, which is
-frozen and mounted only on the API and private unix transports. Every other operation in the tests is a
+frozen and mounted only on the API, worker and private unix transports. Every other operation in the tests is a
 fixture.
 
 `OperationRunner` runs a mutation as these admitted phases, built on
@@ -797,7 +883,7 @@ void callback may return an ordinary value; it is ignored. Commit runs at most
 once per call. Failed commit confirms no successful release, though it may
 have written some bytes. Admission never spans asynchronous SDK work or
 network drain. Committing bytes to Node promises neither client receipt nor
-revocation of bytes already committed. API and unix session descriptions use the direct commit shape.
+revocation of bytes already committed. API, worker and unix session descriptions use the direct commit shape.
 
 ### Commit point
 
@@ -1375,10 +1461,10 @@ outside decision U and listed as notes for slice 4.
 
 ## Obligations of later slices
 
-These obligations remain for later families and mounts. The API and unix
+These obligations remain for later families and mounts. The API, worker and unix
 `session.describe` mounts already use strict bounded JSON, cancellation, the
 shared composition and admitted read-release. The API cookie path also shares
-the browser boundary and budget. Worker, MCP and CLI mounts remain for later steps.
+the browser boundary and budget. MCP and CLI mounts remain for later steps.
 
 - **Transport handling of streams.** A transport must call `return()` when its
   consumer goes away or stops reading (abandonment). The runner provides no
@@ -1506,7 +1592,7 @@ the browser boundary and budget. Worker, MCP and CLI mounts remain for later ste
   Settlement must be called exactly once, with all started work joined.
   Shutdown and listener-start failure stop the budget synchronously before
   listener drain.
-  Controller start builds this once from its immutable active mode. API and
+  Controller start builds this once from its immutable active mode. API, worker and
   unix mounts use it for `session.describe` only. HTTP success serializes and
   ends the response inside `readRelease` admission. The API owns at most 32
   new requests; unix shares its existing 32 accepted-work slots with `/auth`.
@@ -1519,7 +1605,7 @@ the browser boundary and budget. Worker, MCP and CLI mounts remain for later ste
   retry disposition is `retry`. Method refusals use 400 /
   `invalid_request` / `method_not_allowed`; malformed and unknown operation
   targets use 404 / `not_found` / `operation_not_found`. All replies are no-store.
-  Worker, MCP and offline CLI mounts, credential usage recording and
+  MCP and offline CLI mounts, credential usage recording and
   principal-incarnation detection remain unimplemented.
 - Enforcement of the project ID grammar. A project ID in the contract matches
   `^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$` (`src/shared/contracts/operations.ts`),

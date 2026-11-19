@@ -1,3 +1,8 @@
+import { execFileSync } from "node:child_process";
+import { IdentityService } from "@/server/modules/identity";
+import type { RemoteVerificationController } from "@/server/modules/remote-verification";
+import { createRemoteVerificationServer } from "@/server/transports/remote-verification-http";
+import { createRemoteVerificationRuntime } from "@/cli/remote-verification-runtime";
 import { createProviderWorld } from "./adapters/provider-session-fixture";
 import { AuthenticationRequestBudget } from "@/server/bootstrap/authentication-request-budget";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -51,7 +56,7 @@ import { hash, iso, NOW, token } from "./adapters/credential-verifier-fixture";
  * :102 disconnect/close drain      | shares the real unix ceiling and drain; real socket backpressure; controlled adapter/end hook
  * shutdown.ts:58 storage/lock       | shutdown retains the real open SQLite handle and lock record until an admitted request settles
  * Total: 21 rows mapped to executable assertions, including real-provider completion reserve on API.
- * Worker/MCP/CLI drivers are deliberately absent until D1a-6/7/8 mount them.
+ * Worker assertions below extend the shared driver/helpers. MCP/CLI remain deferred.
  */
 const cleanups: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
@@ -69,7 +74,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const admission = store.admission;
   vi.spyOn(store, "admission", "get").mockReturnValue(admission);
   const clock = { offset: 0 };
-  const db = ownedFixtureDatabase(store), state = { maintenance: false, stopping: false, configChanged: false, providerState: "ready" as "ready" | "not_loaded" | "failed" };
+  const db = ownedFixtureDatabase(store), state = { maintenance: false, stopping: false, workerOpen: false, configChanged: false, providerState: "ready" as "ready" | "not_loaded" | "failed" };
   const installation = token("wsi"), agent = token("wts"), credentialId = agent.slice(4, 40);
   const storedLegacy = [
     { principal: "owner", principalKind: "owner", kind: "owner_session", secret: token("wts") },
@@ -99,7 +104,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const provider = { isSessionAuthorityEligible: vi.fn(() => true), providerId: "better-auth" as const,
     reader: cookieMount ? world.store : store.authenticationProviderStorage(), resolveRequest: vi.fn(() => ({ result: Promise.resolve(cookieMount ? { session, principalId: "human" } : null), settled: Promise.resolve() })) };
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs: { controller() {} },
-    eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), provider: mode === "better-auth" ? provider : null, listeners: { api: () => apiOpen, unix: () => unixOpen } });
+    eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), provider: mode === "better-auth" ? provider : null, listeners: { worker: () => state.workerOpen, api: () => apiOpen, unix: () => unixOpen } });
   const hooks: { beforeMint?: (signal: AbortSignal | undefined) => void; afterMint?: () => void | Promise<void>; legacy?: (body: unknown) => unknown } = {};
   const runtime = { ...built, mint: async (...args: Parameters<Extract<typeof built, { supported: true }>["mint"]>) => {
     hooks.beforeMint?.(args[3].signal);
@@ -268,6 +273,10 @@ async function disconnectedCapacity(f: Fixture, driver: BoundaryDriver, mutant: 
     for (const pending of held) pending.call.destroy();
     for (const pending of held) await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
     await disconnected.promise;
+    if (driver.kind === "worker" && !mutant) {
+      const cookie = await driver.send({ slow: true, headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply;
+      expect(cookie.body).toEqual(refusal("provider_cookie_not_supported"));
+    }
     const reply = await driver.capacityProbe();
     expect(started - settled).toBe(mutant ? 33 : 32);
     expect(settled).toBe(0);
@@ -1210,4 +1219,250 @@ it("cookie response completion retains the initiating slot after all provider wo
   } finally { finish(); }
   expect((await pending.reply).status).toBe(200);
   await vi.waitFor(() => expect(f.runtime.requestBudget.active).toBe(0));
+});
+
+// The older worker transport suite uses plaintext loopback fixtures. This mount
+// additionally exercises real TLS with a short-lived, locally generated certificate.
+async function workerFixture(mode = "open", plain = false, fault?: "early_release") {
+  const f = await fixture(mode);
+  const key = join(f.root, "worker.key"), cert = join(f.root, "worker.crt");
+  execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", key, "-out", cert,
+    "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore", timeout: 15_000 });
+  const tls = { key: readFileSync(key), cert: readFileSync(cert) };
+  const identity = new IdentityService(f.store), authenticate = vi.spyOn(identity, "authenticateBearer"), usage = vi.spyOn(f.store, "recordCredentialUsed");
+  const poll = vi.fn(() => ({ version: 1, assignments: [], cancellations: [] })), report = vi.fn(() => ({ acceptedSequence: 1 }));
+  const worker = createRemoteVerificationServer({ identity, controller: { poll, report } as unknown as RemoteVerificationController,
+    admission: f.store.admission, ...(plain ? { allowLoopbackHttpFixture: true } : { tls }), operations: f.runtime });
+  await new Promise<void>(r => worker.server.listen(0, "127.0.0.1", r));
+  f.state.workerOpen = true;
+  cleanups.push(() => { f.state.workerOpen = false; return worker.close(); });
+  if (fault === "early_release") {
+    // Deliberately broken owner: this replaces the worker request dispatcher
+    // (peer/Origin routing and the closer's listener included) with one that
+    // releases its slot on response close. It proves that the shared capacity
+    // assertion detects early release; the production dispatcher is covered by
+    // the positive test, not by this control.
+    const adapter = createOperationsHttp({ runtime: f.runtime, listener: "worker", externallyOwned: true });
+    worker.server.removeAllListeners("request"); let active = 0;
+    worker.server.on("request", (req, res) => {
+      if (active >= 32) { operationsFailure(res, { category: "busy", status: 503, reason: "listener_capacity", retry: "retry", effect: null }); return; }
+      active++; res.once("close", () => { active--; }); void adapter.handle(req, res);
+    });
+    cleanups.push(async () => { adapter.stop(); await adapter.drain(); });
+  }
+  const driver = createBoundaryDriver({ kind: "worker", server: worker.server, close: worker.close, ...(plain ? {} : { tls: { ca: tls.cert } }),
+    legacyPath: "/remote-verification/v1/poll", acceptedCredentials: mode === "open" ? ["none"] : mode === "token" ? ["installation"] : mode === "better-auth" ? ["agent"] : [] });
+  return { ...f, worker, driver, authenticate, usage, poll, report };
+}
+
+const workerGuard = (reply: Reply, reason: string) => {
+  conform(`worker ${reason} boundary`, reply.status, 403);
+  expect(reply.body).toEqual(refusal(reason, "forbidden", 403, "none"));
+};
+
+describe("worker HTTPS boundary conformance", () => {
+  it.each(["open", "token", "better-auth", "legacy"])("stored credential matrix in %s; protocol retains worker authentication", async mode => {
+    const f = await workerFixture(mode);
+    const rows = [
+      [undefined, mode === "open" ? null : "credential_required"],
+      [f.installation, mode === "token" ? null : mode === "open" ? "credential_in_open_mode" : "installation_token_in_account_mode"],
+      [f.agent, mode === "better-auth" ? null : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here"],
+      ...f.storedLegacy.map(row => [row.secret, mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here"]),
+      [f.unknownMachine, mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here"],
+      ["unknown", "unrecognized_credential"],
+    ];
+    for (const [secret, reason] of rows) {
+      const reply = await f.driver.send({ headers: secret ? auth(secret) : undefined }).reply;
+      if (mode !== "legacy" && reason === null) {
+        expect(reply.status).toBe(200); expect(reply.body).toMatchObject({ mode, listener: "worker", actor: mode === "better-auth" ? { kind: "agent", accountId: "agent" } : { kind: "installation" } });
+        expect(Object.keys(reply.body).sort()).toEqual(["actor", "freshLogin", "fullAuthority", "installationPermissions", "listener", "mode", "projects", "projectsTruncated"].sort());
+        expect(reply.headers["cache-control"]).toBe("no-store");
+      } else expect(reply.body).toEqual(refusal(mode === "legacy" ? "unknown_mode" : reason!));
+    }
+    expect((await f.driver.send({ slow: true, headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("provider_cookie_not_supported"));
+    expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
+    expect(f.poll).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled(); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+    await f.store.admission.run(() => {
+      expect(f.store.getCredentialForAuthentication(f.credentialId)?.lastUsedAt).toBeNull();
+      for (const row of f.storedLegacy) expect(f.store.getCredentialForAuthentication(row.secret.slice(4, 40))?.lastUsedAt).toBe(iso(NOW - 1000));
+    });
+    const headers = auth(f.storedLegacy[1].secret);
+    expect((await f.driver.send({ path: f.driver.legacyPath, headers, body: '{"version":1,"workerId":"worker"}' }).reply).body).toEqual({ version: 1, assignments: [], cancellations: [] });
+    expect((await f.driver.send({ path: "/remote-verification/v1/report", headers, body: JSON.stringify({ version: 1, workerId: "worker", report: { attemptId: "attempt", sequence: 1, phase: "running", localRunId: "run" } }) }).reply).body).toEqual({ version: 1, acceptedSequence: 1 });
+    expect(f.authenticate).toHaveBeenCalledTimes(4); expect(f.poll).toHaveBeenCalledOnce(); expect(f.report).toHaveBeenCalledOnce(); expect(f.usage).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(["open", "token", "better-auth"])("preserves mixed and duplicate credentials and refuses cookies before any work in %s", async mode => {
+    const f = await workerFixture(mode), mint = vi.spyOn(f.runtime, "mint");
+    for (const headers of [
+      ["Host", "localhost", "Content-Type", "application/json", "Content-Length", "2", "Authorization", `Bearer ${f.installation}`, "Authorization", `Bearer ${f.installation}`],
+      { ...auth(f.installation), "X-Worktree-Control-Token": f.installation },
+      { ...auth(f.installation), "X-Worktree-Switcher-Token": f.installation },
+    ]) expect((await f.driver.send({ headers }).reply).body).toEqual(refusal("mixed_credentials"));
+    mint.mockClear(); const admission = vi.spyOn(f.store.admission, "run"); let reads = 0;
+    f.worker.server.prependListener("request", req => req.on("newListener", name => { if (name === "data") reads++; }));
+    for (const mode of ["POST", "GET"]) expect((await f.driver.send({ method: mode, slow: true, headers: { ...auth(f.installation), Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("provider_cookie_not_supported"));
+    expect(reads).toBe(0); expect(mint).not.toHaveBeenCalled(); expect(admission).not.toHaveBeenCalled(); expect(f.runtime.requestBudget.active).toBe(0); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+  });
+
+  it("shares peer and Origin refusals with poll/report and keeps Fetch Metadata policy", async () => {
+    const f = await workerFixture(), mint = vi.spyOn(f.runtime, "mint");
+    for (const path of [route, f.driver.legacyPath, "/remote-verification/v1/report"]) {
+      const reply = await f.driver.send({ path, headers: { "Content-Type": "application/json", Origin: "https://controller.test" } }).reply;
+      if (path === route) workerGuard(reply, "origin_forbidden"); else expect(reply.body).toEqual({ error: "origin_forbidden" });
+    }
+    expect(mint).not.toHaveBeenCalled(); expect(f.authenticate).not.toHaveBeenCalled();
+    expect((await f.driver.send({ headers: { "Content-Type": "application/json", "Sec-Fetch-Site": "cross-site" } }).reply).status).toBe(200);
+    const plain = await workerFixture("open", true);
+    plain.worker.server.prependListener("request", req => { Object.defineProperty(req.socket, "remoteAddress", { configurable: true, value: "192.0.2.1" }); });
+    workerGuard(await plain.driver.send().reply, "loopback_fixture_only");
+    expect((await plain.driver.send({ path: plain.driver.legacyPath }).reply).body).toEqual({ error: "loopback_fixture_only" }); expect(plain.authenticate).not.toHaveBeenCalled();
+  });
+
+  it("negative control: omitted Origin guard has the exact conformance failure", async () => {
+    const f = await workerFixture();
+    // One mutation: erase the hostile Origin before the shared guard sees it.
+    f.worker.server.prependOnceListener("request", req => { delete req.headers.origin; });
+    const reply = await f.driver.send({ headers: { "Content-Type": "application/json", Origin: "https://hostile.test" } }).reply;
+    expectFailure(() => workerGuard(reply, "origin_forbidden"), "worker origin_forbidden boundary", 200, 403);
+  });
+
+  it("maintenance refusal shares the existing conformance assertion; provider configuration does not disable bearers", async () => {
+    const f = await workerFixture(); assertMaintenance(await maintenanceObservation(f, f.driver));
+    f.state.maintenance = false; f.state.configChanged = true;
+    expect((await f.driver.send().reply).status).toBe(200); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+  });
+
+  it("raw aliases, methods, JSON and byte limits terminate before poll/report", async () => {
+    const f = await workerFixture();
+    for (const path of [route + "/", route + "?x=1", route.replace("session.", "session%2e"), "/api/operations/../session.describe", "/x/../api/operations/session.describe", "/api%2foperations/session.describe", "//api/operations/session.describe", "/mcp/operations"]) {
+      for (const method of ["POST", "GET", "OPTIONS", "DELETE", "PATCH", "PUT", "HEAD", "TRACE"]) {
+        const reply = await f.driver.send({ path, method }).reply; expect(reply.status).toBe(404);
+        if (method !== "HEAD") expect(reply.body).toEqual(refusal("operation_not_found", "not_found", 404, "none"));
+      }
+    }
+    for (const method of ["GET", "OPTIONS", "DELETE", "PATCH", "PUT", "HEAD", "TRACE"]) expect((await f.driver.send({ method }).reply).status).toBe(400);
+    for (const body of ['{"x":1,"x":2}', '{} {}', '[]', 'null', '{"actor":"operator"}', '{"session":"spoof"}', '{"listener":"unix"}']) expect((await f.driver.send({ body }).reply).status).toBe(400);
+    expect((await f.driver.send({ body: " ".repeat(65537) }).reply).body).toEqual(refusal("request_too_large", "payload_too_large", 413, "none"));
+    expect((await f.driver.send({ headers: { "Content-Type": "text/plain" } }).reply).status).toBe(400);
+    for (const header of ["Host", "Content-Type"]) {
+      const reply = await f.driver.send({ headers: ["Content-Length", "2", "Content-Type", "application/json", header, "localhost", header, "localhost"] }).reply;
+      expect(reply.status).toBe(400);
+    }
+    expect((await f.driver.send({ headers: { "Content-Type": "application/json", "X-Actor": "operator", "X-Session": "spoof" } }).reply).body.actor.kind).toBe("installation");
+    expect(f.authenticate).not.toHaveBeenCalled(); expect(f.poll).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled();
+  });
+
+  it("Node CONNECT closes without dispatch; Upgrade uses the shared raw parser and legacy routing", async () => {
+    const f = await workerFixture();
+    const reply = await f.driver.wire(route, "GET", true); expect(reply.status).toBe(400);
+    expect(JSON.parse(reply.body)).toEqual(refusal("method_not_allowed", "invalid_request", 400, "none"));
+    const legacy = await f.driver.wire(f.driver.legacyPath, "GET", true);
+    expect(legacy).toEqual({ status: 405, body: JSON.stringify({ error: "method_not_allowed" }) });
+    const socket = f.driver.connection();
+    try {
+      const bytes = await new Promise<string>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        socket.setTimeout(2000, () => { socket.destroy(); reject(new Error("CONNECT close timed out")); });
+        socket.on("data", chunk => chunks.push(Buffer.from(chunk))); socket.on("error", reject);
+        socket.on("close", () => resolve(Buffer.concat(chunks).toString()));
+        socket.once("secureConnect", () => socket.write(`CONNECT ${route} HTTP/1.1\r\nHost: localhost\r\n\r\n`));
+      });
+      expect(bytes).toBe(""); expect(f.authenticate).not.toHaveBeenCalled(); expect(f.poll).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled();
+    } finally { socket.destroy(); }
+  });
+
+  it("real admission contention keeps its retryable public reason", async () => {
+    const f = await workerFixture(), entered = pause(), release = pause();
+    const borrowed = f.store.authenticationProviderStorage().borrow(async () => { entered.done(); await release.promise; }); await entered.promise;
+    try { const reply = await f.driver.send().reply; expect(reply.body).toEqual(refusal("admission_refused", "busy", 503, "retry")); expect(reply.headers["retry-after"]).toBe("1"); expect(f.authenticate).not.toHaveBeenCalled(); }
+    finally { release.done(); await borrowed; }
+  });
+
+  it("keeps production connection and request limits for both surfaces", async () => {
+    const f = await workerFixture();
+    expect(f.worker.server.maxConnections).toBe(32); expect(f.worker.server.requestTimeout).toBe(15000); expect(f.worker.server.headersTimeout).toBe(10000);
+    const sockets = Array.from({ length: 32 }, () => f.driver.connection());
+    try {
+      await Promise.all(sockets.map(socket => new Promise<void>((resolve, reject) => { socket.once("secureConnect", resolve); socket.once("error", reject); })));
+      await expect(f.driver.send().reply).rejects.toMatchObject({ code: "ECONNRESET" });
+      await expect(f.driver.send({ path: f.driver.legacyPath }).reply).rejects.toMatchObject({ code: "ECONNRESET" });
+    } finally { for (const socket of sockets) socket.destroy(); }
+  });
+
+  it("disconnect retains capacity until started work settles", async () => { const f = await workerFixture(); await disconnectedCapacity(f, f.driver, false); });
+  it("negative control: early capacity release fails with 200 versus 503", async () => { const f = await workerFixture("open", false, "early_release"); await disconnectedCapacity(f, f.driver, true); });
+  it("negative control: premature success fails the shared maintenance release assertion", async () => {
+    const f = await workerFixture(); const reply = await bufferedRelease(f, f.driver, true);
+    expectFailure(() => assertMaintenanceRelease(reply), "maintenance release status", 200, 401);
+  });
+
+  it.each(["maintenance", "credential", "grant", "deadline", "disconnect", "listener"])("fresh release after runner completion rechecks %s", async change => {
+    const f = await workerFixture("better-auth"); if (!f.built.supported) throw new Error("supported fixture"); await f.grant();
+    const runner = f.built.runner, real = runner.readRelease.bind(runner), entered = pause(), release = pause();
+    const commits: unknown[] = [], disconnected = pause();
+    f.hooks.beforeMint = signal => signal?.addEventListener("abort", disconnected.done, { once: true });
+    vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
+      if (operation.kind === "stream") throw new Error("read required"); const prior = await runner.run(operation, context, raw); expect(prior.ok).toBe(true);
+      entered.done(); await release.promise; return real(operation, context, raw, { ...options, commit(value) { commits.push(value); options.commit(value); } });
+    });
+    const pending = f.driver.send({ headers: auth(f.agent) }); await entered.promise;
+    try {
+      if (change === "maintenance") f.state.maintenance = true;
+      if (change === "credential") await f.store.admission.run(() => f.db.prepare("UPDATE principal_credentials SET status='revoked' WHERE id=?").run(f.credentialId));
+      if (change === "grant") await f.store.admission.run(() => f.db.prepare("DELETE FROM account_grants WHERE account_id='agent'").run());
+      if (change === "deadline") f.clock.offset = OPERATIONS_HTTP_LIMITS.deadlineMs + 1;
+      if (change === "listener") f.state.workerOpen = false;
+      if (change === "disconnect") { pending.call.destroy(); await disconnected.promise; }
+    } finally { release.done(); }
+    if (change === "disconnect") await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
+    else { const reply = await pending.reply; if (change === "grant") { expect(reply.status).toBe(200); expect(reply.body.projects).toEqual([]); } else { expect(reply.status).toBeGreaterThanOrEqual(400); expect(reply.body).not.toHaveProperty("actor"); } }
+    expect(commits).toHaveLength(change === "grant" ? 1 : 0);
+  });
+
+  it("deadline cancels work held after mint, retains ownership, and shutdown joins work before SQLite and lock release", async () => {
+    const f = await workerFixture(), entered = pause(), release = pause(), cancelled = pause();
+    const lockPath = join(f.root, "controller.lock"), lock = acquireControllerLock(lockPath);
+    cleanups.push(() => lock.release());
+    f.hooks.beforeMint = signal => signal?.addEventListener("abort", cancelled.done, { once: true });
+    f.hooks.afterMint = async () => { entered.done(); await release.promise; };
+    const pending = f.driver.send(); await entered.promise;
+    await cancelled.promise;
+    const closed = vi.fn(), released = vi.fn(); let done = false;
+    const shutdown = createControllerShutdown({ service: { closeAdmission() { f.state.stopping = true; }, async shutdown() { f.store.close(); closed(); } },
+      stopping: f.worker.stopOperations, userSchedules: undefined, backups: { close() {} }, remoteVerification: f.worker, mcp: null,
+      controller: f.controller, adminSocket: f.admin, controllerLock: { ...lock, release() { lock.release(); released(); } }, removeServiceAccess() {} });
+    const draining = shutdown().then(() => { done = true; });
+    await new Promise<void>(r => setImmediate(r)); expect(done).toBe(false); expect(closed).not.toHaveBeenCalled(); expect(released).not.toHaveBeenCalled(); expect(existsSync(lockPath)).toBe(true);
+    await f.store.admission.run(() => expect(f.db.prepare("SELECT 1 AS present").get()).toEqual({ present: 1 }));
+    release.done(); const reply = await pending.reply; expect(reply.status).toBeGreaterThanOrEqual(400); expect(reply.body).not.toHaveProperty("actor"); await draining; expect(released).toHaveBeenCalledOnce();
+  }, 15_000);
+
+  it("response completion retains capacity and the response ceiling commits one refusal", async () => {
+    const f = await workerFixture(), reached = pause(); let finish!: () => void;
+    f.worker.server.prependOnceListener("request", (_req, response) => {
+      const end = response.end.bind(response);
+      response.end = ((...args: Parameters<ServerResponse["end"]>) => { finish = () => { end(...args); }; reached.done(); return response; }) as ServerResponse["end"];
+    });
+    const pending = f.driver.send(); await reached.promise; let drained = false;
+    const closing = f.worker.close().then(() => { drained = true; });
+    await new Promise<void>(r => setImmediate(r)); expect(drained).toBe(false); finish(); await pending.reply; await closing;
+    const oversized = await workerFixture(); if (!oversized.built.supported) throw new Error("supported fixture");
+    vi.spyOn(oversized.built.runner, "readRelease").mockImplementation(async (_operation, _context, _raw, options) => {
+      options.commit({ fixture: "x".repeat(OPERATIONS_HTTP_LIMITS.responseBytes) }); return { status: "committed" };
+    });
+    expect((await oversized.driver.send().reply).body).toEqual(refusal("response_too_large", "payload_too_large", 413, "none"));
+  });
+
+  it("without listener configuration no server or namespace is mounted", async () => {
+    const f = await fixture();
+    expect(createRemoteVerificationRuntime(null, {} as never)).toBeNull();
+    // No operations option means no mount even when the protocol listener exists.
+    const protocolOnly = createRemoteVerificationServer({ controller: {} as never, identity: new IdentityService(f.store), allowLoopbackHttpFixture: true });
+    await new Promise<void>(r => protocolOnly.server.listen(0, "127.0.0.1", r)); cleanups.push(protocolOnly.close);
+    const driver = createBoundaryDriver({ kind: "worker", server: protocolOnly.server, close: protocolOnly.close, legacyPath: "/remote-verification/v1/poll", acceptedCredentials: [] });
+    expect((await driver.send().reply).body).toEqual({ error: "protocol_not_found" });
+    const minted = f.built.supported ? await f.built.mint("worker", { bearers: [], providerSession: null, browserHeaders: false, legacySecret: false }, null, {}) : undefined;
+    expect(minted).toMatchObject({ ok: false, error: { reason: "listener_closed" } });
+  });
 });

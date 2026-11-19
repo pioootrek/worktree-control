@@ -429,7 +429,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const operationListeners: { api?: import("node:http").Server; unix?: import("node:http").Server } = {};
   const operations = buildOperationsRuntime({ store, activeMode: authentication.mode(), now: Date.now, logs,
     eligibility: providerAdministration, provider: providerAdministration.operationSessionAuthority(), requestBudget: providerAdministration.requestBudget,
-    listeners: { api: () => operationListeners.api?.listening === true, unix: () => operationListeners.unix?.listening === true } });
+    listeners: { worker: () => remoteVerification?.listenerOpen() === true, api: () => operationListeners.api?.listening === true, unix: () => operationListeners.unix?.listening === true } });
   const controller = createControllerServer({
     service,
     directoryBrowser: new DirectoryBrowser(option("--browse-root") ?? homedir()),
@@ -459,11 +459,12 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   });
   operationListeners.api = controller.server;
   try {
-    await remoteVerification?.start();
+    await remoteVerification?.start(operations);
     await listen(controller.server, port, host);
     if (mcp) await listen(mcp.server, mcpPort, "127.0.0.1");
   } catch (error) {
     providerAdministration.stop();
+    remoteVerification?.stopOperations();
     userSchedules?.close(); await backups.close();
     await mcp?.close();
     await controller.close();
@@ -542,7 +543,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   } catch (error) {
     const cleanup = createControllerShutdown({
       service: { closeAdmission: () => { maintenance = true; service.closeAdmission(); }, shutdown: () => service.shutdown() },
-      stopping: providerAdministration.stop, userSchedules, backups, remoteVerification, mcp, controller, controllerLock,
+      stopping: () => { providerAdministration.stop(); remoteVerification?.stopOperations(); }, userSchedules, backups, remoteVerification, mcp, controller, controllerLock,
       adminSocket: error instanceof AdminSocketStartupError ? error.owner : { close() {} },
       authenticationProvider: providerAdministration, removeServiceAccess() {},
     });
@@ -578,6 +579,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     authenticationProvider: providerAdministration,
     stopping: () => {
       providerAdministration.stop();
+      remoteVerification?.stopOperations();
       process.removeListener("SIGINT", handleSignal);
       process.removeListener("SIGTERM", handleSignal);
       writeCliLine(translate(locale, "cli.stopping"));
