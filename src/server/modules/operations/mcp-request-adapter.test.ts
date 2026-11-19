@@ -85,7 +85,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   cleanups.push(async () => { adapter.stop(); server.closeAllConnections(); await adapter.drain(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); });
   const driver = createBoundaryDriver({ kind: "api", server, legacyPath: "/unused", close: async () => {}, acceptedCredentials: [] });
-  const auth = (secret?: string) => secret ? { Authorization: `Bearer ${secret}` } : {};
+  const auth = (secret?: string): Record<string, string> => secret ? { Authorization: `Bearer ${secret}` } : {};
   const send = (body: unknown = call, secret?: string, headers: Record<string, string> = {}, extra: Parameters<typeof driver.send>[0] = {}) => driver.send({ path: "/mcp/operations", body: JSON.stringify(body), headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...auth(secret), ...headers }, ...extra });
   const client = async (secret?: string) => {
     const c = new Client({ name: "conformance", version: "1" }); cleanups.push(() => c.close());
@@ -166,7 +166,7 @@ describe("unmounted request-scoped MCP adapter", () => {
     expect(operationError(badOrigin)).toMatchObject({ category: "forbidden", reason: "origin_forbidden" });
     expect(operationError(await f.send(call, undefined, {}, { body: '{"method":"tools/list","method":"tools/call"}' }).reply).reason).toBe("invalid_request");
     expect(operationError(await f.send(call, undefined, {}, { body: Buffer.from([0xff]) }).reply).reason).toBe("invalid_request");
-    const duplicate = await f.send(call, undefined, {}, { headers: ["Content-Type", "application/json", "Content-Type", "application/json"] }).reply;
+    const duplicate = await f.send(call, undefined, {}, { headers: ["Host", "localhost", "Content-Length", String(Buffer.byteLength(JSON.stringify(call))), "Content-Type", "application/json", "Content-Type", "application/json"] }).reply;
     expect(operationError(duplicate).reason).toBe("invalid_request");
     expect(f.minted).not.toHaveBeenCalled();
   });
@@ -195,7 +195,7 @@ describe("unmounted request-scoped MCP adapter", () => {
     if (change === "disconnect") { await expect(pending.reply).rejects.toThrow(); await f.adapter.drain(); expect(response.headersSent).toBe(false); }
     else {
       const reply = await pending.reply;
-      const reasons: Record<string, string | undefined> = { maintenance: "release_not_eligible", revoke: "credential_no_longer_valid", grants: "release_payload_changed", deadline: "release_timed_out", stop: "release_not_eligible" };
+      const reasons: Record<string, string | undefined> = { maintenance: "listener_closed", revoke: "credential_no_longer_valid", grants: "release_payload_changed", deadline: "release_timed_out", stop: "request_cancelled" };
       const reason = reasons[change];
       if (reason) { expect(operationError(reply).reason).toBe(reason); expect(reply.body.result).toBeUndefined(); }
       else expect(reply.body.result.structuredContent.actor.accountId).toBe("agent"); // provider-only configuration does not invalidate agents
@@ -223,14 +223,47 @@ describe("unmounted request-scoped MCP adapter", () => {
 
   it("preserves exact retryable admission contention and aborted-admission errors", async () => {
     const f = await fixture(); const held = pause(), release = pause();
-    const borrow = f.admission.run(async () => { held.done(); await release.promise; }); await held.promise;
-    const busy = await f.send(list).reply;
-    expect(operationError(busy)).toMatchObject({ category: "busy", reason: "admission_refused", retry: "retry" });
-    expect(busy.headers["retry-after"]).toBe("1"); release.done(); await borrow;
-    const reached = pause();
-    f.hooks.beforeMint = signal => { reached.done(); return new Promise<void>(resolve => signal!.addEventListener("abort", () => resolve(), { once: true })); };
-    const pending = f.send(list); await reached.promise; f.adapter.stop();
-    expect(operationError(await pending.reply)).toMatchObject({ category: "unavailable", reason: "request_cancelled", retry: "retry" });
+    const borrow = f.store.authenticationProviderStorage().borrow(async () => { held.done(); await release.promise; }); await held.promise;
+    try {
+      const busy = await f.send(list).reply;
+      expect(operationError(busy)).toMatchObject({ category: "busy", reason: "admission_refused", retry: "retry" });
+      expect(busy.headers["retry-after"]).toBe("1");
+    } finally { release.done(); await borrow; }
+    const reached = pause(), heldAgain = pause(), releaseAgain = pause();
+    const borrowed = f.store.authenticationProviderStorage().borrow(async () => { heldAgain.done(); await releaseAgain.promise; }); await heldAgain.promise;
+    f.hooks.beforeMint = () => { reached.done(); };
+    try {
+      const pending = f.send(list); await reached.promise; f.adapter.stop();
+      expect(operationError(await pending.reply)).toMatchObject({ category: "unavailable", reason: "request_cancelled", retry: "retry" });
+    } finally { releaseAgain.done(); await borrowed; }
+  });
+
+  it.each(["open", "token", "better-auth"])("%s preserves duplicate/mixed credentials and fixed cookie refusals", async mode => {
+    const f = await fixture(mode), body = JSON.stringify(call);
+    for (const headers of [
+      ["Authorization", `Bearer ${f.agent}`, "Authorization", `Bearer ${f.agent}`],
+      ["Authorization", `Bearer ${f.agent}`, "X-Worktree-Control-Token", f.installation],
+    ]) {
+      const reply = await f.send(call, undefined, {}, { headers: ["Host", "localhost", "Content-Length", String(Buffer.byteLength(body)), "Content-Type", "application/json", ...headers] }).reply;
+      expect(operationError(reply)).toMatchObject({ category: "unauthenticated", reason: "mixed_credentials" });
+    }
+    for (const message of [initialize, notification, list, call]) {
+      expect(operationError(await f.send(message, f.credential, { Cookie: `${SESSION_COOKIE}=opaque` }).reply).reason).toBe("provider_cookie_not_supported");
+    }
+  });
+
+  it("retains capacity after SDK disposal until the real Node response completes", async () => {
+    const f = await fixture("open", { maxInFlight: 1 }), intercepted = pause();
+    let finish!: () => void;
+    f.server.prependOnceListener("request", (_request, response) => {
+      const end = response.end.bind(response);
+      response.end = ((...args: Parameters<ServerResponse["end"]>) => { finish = () => { end(...args); }; intercepted.done(); return response; }) as ServerResponse["end"];
+    });
+    const pending = f.send(call); await intercepted.promise;
+    try { expect(operationError(await f.send(list).reply).reason).toBe("listener_capacity"); }
+    finally { finish(); }
+    expect((await pending.reply).body.result.structuredContent.listener).toBe("mcp");
+    await f.adapter.drain(); expect((await f.send(list).reply).status).toBe(200);
   });
 
   it("returns safe tool refusals without losing operations reasons", async () => {

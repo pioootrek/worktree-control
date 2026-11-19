@@ -583,8 +583,10 @@ Public refusals preserve the operations category, reason, retry and effect:
 | Adapter refusal after SDK dispatch, including final release and response size | HTTP 200 JSON-RPC error `-32000`, message = reason, data = public operations error | Replaces a buffered success without sending stale content; the original ID is retained. |
 | SDK protocol or negotiation refusal | SDK finite JSON-RPC error and HTTP status, subject to the same buffer and admitted witness check | The SDK owns protocol validation, not authentication. |
 
-Retryable public failures also set `Retry-After: 1`. Maintenance keeps
-`release_not_eligible`; credential revocation keeps `credential_no_longer_valid`;
+Retryable public failures also set `Retry-After: 1`. Maintenance at final
+revalidation keeps `listener_closed` (the runner checks authority first);
+maintenance before work uses `release_not_eligible`. Adapter stop aborts admission
+with `request_cancelled`. Credential revocation keeps `credential_no_longer_valid`;
 a changed projection keeps `release_payload_changed`; admitted deadline checks
 keep `release_timed_out`; an aborted admission keeps `request_cancelled` and
 contention keeps `admission_refused`. A total timer observed by the outer error
