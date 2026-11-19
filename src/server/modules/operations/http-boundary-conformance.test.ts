@@ -1072,8 +1072,8 @@ it("cookie disconnects abort twelve resolutions and retain all initiating slots 
 });
 
 it.each([
-  ['{"actor":{"kind":"installation"}}', "invalid_input"],
-  ['{"session":{"id":"spoof"}}', "invalid_input"],
+  ['{"actor":{"kind":"installation"}}', "unexpected_input"],
+  ['{"session":{"id":"spoof"}}', "unexpected_input"],
   ['{"x":1,"x":2}', "invalid_request"],
   ['[]', "invalid_request"],
   ['{"unterminated":', "invalid_request"],
