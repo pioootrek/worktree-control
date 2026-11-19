@@ -522,6 +522,97 @@ binding in `open` mode unless the operator explicitly acknowledges the disclosed
 authority and data exposure; settle this before the release. D1a-6 does not
 implement that restriction.
 
+### MCP request adapter (built and unmounted, D1a-7a)
+
+`createOperationsMcp` handles the exact raw `/mcp/operations` target through
+`operations-path.ts`. No production listener imports it in this step. D1a-7b
+will mount it before the separate MCP listener's legacy checks, reserve the
+namespace on API and unix, and extend listener and installed-artifact evidence.
+The legacy `/mcp` endpoint and its sessions are unchanged.
+
+Each POST owns a fresh SDK `Server` and
+`WebStandardStreamableHTTPServerTransport`, with `sessionIdGenerator: undefined`
+and `enableJsonResponse: true`. Its context is an immutable request closure.
+Initialize, notifications, `tools/list` and `tools/call` each call the composition's
+admitted `mint("mcp", ...)`. Open accepts no credential, token accepts the
+installation token, and better-auth accepts an agent token. Classification only
+selects the verifier. Supplied session and resumption headers are not forwarded
+to the SDK, confer no authority and bind no session. Cross-request cancellation
+and session binding belong to D1c. There is no usage writer.
+
+The fixed provider-cookie refusal precedes path, method, capacity, body and
+admission checks, matching the HTTP adapter's preflight. This resolves the brief's
+conflicting "method and path first" wording in favour of that established
+preflight. Other requests check the exact path and POST method, current
+eligibility, Origin, raw singleton headers and JSON content type, then read
+strict bounded JSON before mint. Only an absent Origin or the canonical HTTP
+loopback origin at the socket's local port is allowed. Host is not used to
+approve an Origin. Duplicate credentials remain visible to acceptance; duplicate
+transport singleton fields, including Accept and MCP protocol version, fail.
+Batches fail before SDK dispatch. GET and DELETE return 405 with `Allow: POST`.
+
+There is exactly one explicit descriptor, `session_describe`, mapped to
+`session.describe`. A test compares descriptors one to one with the registry's
+MCP operation IDs. The operation parses call arguments. SDK handlers do no
+asynchronous application work: an initial `readRelease` captures the current
+public DTO before SDK dispatch. The same DTO is an authorization witness for
+initialize, listing and notifications. No client bytes are written there.
+After SDK JSON construction, the adapter buffers the response, then invokes
+`readRelease` again with that witness's canonical value. It recomputes authority,
+grants, directory and clock and refuses a changed projection. Only its final
+synchronous commit writes headers and ends the real Node response. This can
+conservatively refuse metadata responses when grants change too. Admission spans
+neither SDK work nor response drain.
+
+Limits reuse HTTP's pattern: 64 KiB request, 256 KiB SDK response, 32 concurrent
+requests and a total ten-second deadline, with strict JSON depth 8 and 128 fields.
+The SDK message is byte-checked before SDK Response allocation, and the actual
+Response body is checked while buffering. Fixed refusal envelopes remain finite
+and independent of a fixture's smaller response ceiling. Disconnect, deadline
+and `stop()` abort the request. Capacity remains owned through awaited admitted
+work, SDK disposal and Node finish/close; `drain()` joins those owners. Repeated
+stop and drain are harmless. All reads are awaited; no detached provider work
+exists because cookies are refused.
+
+Public refusals preserve the operations category, reason, retry and effect:
+
+| Stage or cause | Wire representation | Reason for mapping |
+| --- | --- | --- |
+| Before SDK dispatch, or notification refusal | HTTP operations `{error}` envelope at its public status; method refusal uses 405 with `invalid_request` / `method_not_allowed` | No JSON-RPC exchange exists, or a notification has no response ID. |
+| Tool lookup or argument refusal | HTTP 200 tool result with `isError: true`; `{error}` in structuredContent and JSON text | A tool call completed with an application refusal, preserving the public error. |
+| Adapter refusal after SDK dispatch, including final release and response size | HTTP 200 JSON-RPC error `-32000`, message = reason, data = public operations error | Replaces a buffered success without sending stale content; the original ID is retained. |
+| SDK protocol or negotiation refusal | SDK finite JSON-RPC error and HTTP status, subject to the same buffer and admitted witness check | The SDK owns protocol validation, not authentication. |
+
+Retryable public failures also set `Retry-After: 1`. Maintenance keeps
+`release_not_eligible`; credential revocation keeps `credential_no_longer_valid`;
+a changed projection keeps `release_payload_changed`; admitted deadline checks
+keep `release_timed_out`; an aborted admission keeps `request_cancelled` and
+contention keeps `admission_refused`. A total timer observed by the outer error
+handler uses `request_timed_out`, as HTTP does. Provider-only configuration
+changes leave agent authority eligible, matching the shared policy.
+
+SDK choice was checked against installed `@modelcontextprotocol/sdk` 1.30.0:
+`dist/esm/server/streamableHttp.js` is a Hono wrapper that writes directly to
+Node, so it cannot provide this final release boundary. In
+`dist/esm/server/webStandardStreamableHttp.js`, lines 172-175 reject transport
+reuse in stateless mode, 578-595 construct the finite JSON response promise,
+726-729 disable session validation, and 919-933 serialize a full response without
+a byte ceiling. Lines 771-788 make close idempotent and clear stream/response
+maps, but do not resolve an abandoned JSON promise. Lines 902-917 reject sending
+a JSON response after its stream was removed. This transport has no real Node
+connection to observe; disconnect is therefore enforced by the adapter's signal
+and final `connected` predicate. SDK `dist/esm/shared/protocol.js`, lines 258-262,
+aborts incoming handler controllers on close. These facts require independent
+abort races and adapter-owned limits; SDK send is never treated as release.
+
+The in-process suite uses real HTTP, SDK clients, composition and synthetic
+SQLite fixtures. It covers the mode/method matrix, concurrent identical IDs,
+forged headers, aliases, strict bodies, limits, post-buffer release changes,
+admission refusal, disconnect/deadline ownership and exact negative controls.
+The import guard prohibits every production importer of the new adapter. Its
+one new module-consumer exemption permits the adapter to use the public error,
+release and contract APIs; it grants no production mount.
+
 ## Permissions and roles
 
 The permission list is closed. Project permissions: `project:read`,
@@ -1416,7 +1507,9 @@ imports under `tests/`, and a `src/` importer of such a helper.
 The approved importers of the module and shared contract are
 `src/server/bootstrap/operations-runtime.ts` (store-owner composition) and
 `src/server/transports/operations-http.ts` (the public wire classifier, error
-serializer and runtime types). The exact provider proof importer
+serializer and runtime types), plus the unmounted
+`src/server/transports/operations-mcp.ts` request adapter. A separate import guard
+prohibits production imports of that adapter. The exact provider proof importer
 `packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts`
 reuses the listener driver and conformance assertions under real production
 bootstrap. It is test-only and mounts no additional operation. The adapter receives the built runtime as a

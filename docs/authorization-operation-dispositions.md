@@ -1665,6 +1665,18 @@ remains.
 
 ## 10. Proposed cut of slice 4
 
+D1a-7a builds an unmounted request-scoped MCP adapter for `/mcp/operations`.
+Each POST authenticates through `mint("mcp", ...)` and owns a fresh stateless SDK
+server/transport pair. Its only descriptor is `session_describe`. SDK JSON is
+bounded and buffered before a final admitted recomputation and synchronous Node
+write; request capacity spans response completion and work settlement. The
+[module import guard and request model](authorization-contract.md#mcp-request-adapter-built-and-unmounted-d1a-7a)
+record cookie preflight order, limits, error mapping and SDK source findings.
+D1a-7b retains all mounting, listener-close wiring, API/unix reservation,
+neighbour checklist and installed-artifact checks. D1c retains session binding
+and cross-request cancellation. D1a-7a changes no schema or legacy endpoint and
+writes no credential usage time.
+
 Approved exception, owner decision 5 (2026-11-18): `session.describe` moves
 from the first vertical family into the D1a adapter step. For this one read
 only, transports may mount before all boundaries exist. D1a-5a mounts it on

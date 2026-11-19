@@ -56,6 +56,7 @@ const ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
 const APPROVED_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
   "packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts": "runs cookie listener proofs through production bootstrap and reuses the mounted boundary driver and exact conformance assertions",
   "src/server/bootstrap/operations-runtime.ts": "composes the runtime from the store owner's read ports and controller policies",
+  "src/server/transports/operations-mcp.ts": "unmounted request adapter uses public release and error policy and receives the runtime as a value",
   "src/server/transports/operations-http.ts": "uses the public classifier and error serializer to avoid duplicating wire and failure policy; receives the runtime as a value",
 });
 const COMPOSITION = "src/server/bootstrap/operations-runtime.ts";
@@ -120,11 +121,11 @@ function realOrSelf(path: string): string {
 }
 
 /** Guard over one repository root. Separate so that the self-test can run it on a temporary tree. */
-function createGuard(root: string, composition = false) {
-  const moduleDirectory = realOrSelf(join(root, composition ? COMPOSITION : "src/server/modules/operations"));
-  const contractsFile = realOrSelf(join(root, composition ? COMPOSITION : "src/shared/contracts/operations.ts"));
-  const contractsBase = join(root, composition ? COMPOSITION.slice(0, -3) : "src/shared/contracts/operations");
-  const moduleBase = join(root, composition ? COMPOSITION.slice(0, -3) : "src/server/modules/operations");
+function createGuard(root: string, composition = false, target?: string) {
+  const moduleDirectory = realOrSelf(join(root, target ?? (composition ? COMPOSITION : "src/server/modules/operations")));
+  const contractsFile = realOrSelf(join(root, target ?? (composition ? COMPOSITION : "src/shared/contracts/operations.ts")));
+  const contractsBase = join(root, target ? target.slice(0, -3) : composition ? COMPOSITION.slice(0, -3) : "src/shared/contracts/operations");
+  const moduleBase = join(root, target ? target.slice(0, -3) : composition ? COMPOSITION.slice(0, -3) : "src/server/modules/operations");
 
   const insideTarget = (path: string) => path === moduleDirectory || path.startsWith(moduleDirectory + sep) || path === contractsFile;
 
@@ -151,7 +152,7 @@ function createGuard(root: string, composition = false) {
     return false;
   }
 
-  const exempt = (file: string) => composition ? /\.(test|spec)\.[cm]?[jt]sx?$/.test(file)
+  const exempt = (file: string) => (composition || target) ? /\.(test|spec)\.[cm]?[jt]sx?$/.test(file)
     : file === join(root, "src/shared/contracts/operations.ts") || file.startsWith(moduleBase + sep);
 
   /** The inventory: files to scan and symbolic links found inside it. */
@@ -227,6 +228,17 @@ describe("authorization contract stays unmounted", () => {
     expect(rootSources).toEqual([...ROOT_FILES].sort());
     expect(guard.violations(ALLOWLIST, APPROVED_IMPORTERS)).toEqual([]);
     expect(guard.invalidImporters(APPROVED_IMPORTERS)).toEqual([]);
+  });
+
+  it("keeps the MCP request adapter unmounted, including indirect production importers", () => {
+    const target = "src/server/transports/operations-mcp.ts";
+    expect(createGuard(repository, false, target).violations(ALLOWLIST)).toEqual([]);
+    const root = mkdtempSync(join(tmpdir(), "unmounted-mcp-")); temporary.push(root);
+    for (const name of ["src/server/mcp-http-server.ts", "src/server/http-server.ts", "src/cli/index.ts", "src/server/helper.ts"]) {
+      mkdirSync(dirname(join(root, name)), { recursive: true });
+      writeFileSync(join(root, name), 'import "@/server/transports/operations-mcp";');
+      expect(createGuard(root, false, target).violations(ALLOWLIST)).toContain(`${name}: imports @/server/transports/operations-mcp`);
+    }
   });
 
   it("allows only controller start to import the composition", () => {
