@@ -5,7 +5,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { canonicalJson, OperationError, publicError } from "../modules/operations";
 import type { PublicOperationError } from "@/shared/contracts/operations";
 import { BoundaryError, parseStrictJson, readBoundedBody } from "./authentication-http-boundary";
-import { OPERATIONS_HTTP_LIMITS, operationsFailure, presentedCredentials, validateOperationsSingletonHeaders,
+import { OPERATIONS_HTTP_LIMITS, operationsFailure, operationsRequestFailure, presentedCredentials, validateOperationsSingletonHeaders,
   writeOperationsResponse, type OperationsHttpRuntime } from "./operations-http";
 import { parseOperationsPath } from "./operations-path";
 
@@ -158,8 +158,7 @@ export function createOperationsMcp(options: {
       });
       if (released.status !== "committed") refuse(released.error);
     } catch (error) {
-      refuse(timedOut ? publicError(new OperationError("unavailable", "request_timed_out", { retry: "retry" }))
-        : error instanceof BoundaryError ? failure(error.status === 413 ? "payload_too_large" : "invalid_request", error.code) : publicError(error));
+      refuse(operationsRequestFailure(error, abort.signal, timedOut));
     } finally {
       // All application reads are awaited before SDK dispatch. SDK handlers are
       // finite and perform no async work. close aborts its protocol bookkeeping;

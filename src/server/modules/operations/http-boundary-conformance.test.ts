@@ -1260,6 +1260,50 @@ const workerGuard = (reply: Reply, reason: string) => {
   expect(reply.body).toEqual(refusal(reason, "forbidden", 403, "none"));
 };
 
+describe("body cancellation through mounted HTTP listeners", () => {
+  it.each(["api", "worker"] as const)("%s stop during a partial body returns the exact retryable cancellation", async listener => {
+    const f = listener === "worker" ? await workerFixture() : await fixture();
+    const driver = "driver" in f ? f.driver : f.drivers.api;
+    const received = pause();
+    let end!: ReturnType<typeof vi.spyOn>;
+    driver.server.prependOnceListener("request", (request, response) => {
+      request.once("data", received.done); end = vi.spyOn(response, "end");
+    });
+    const pending = driver.send({ slow: true }); await received.promise;
+    expect(pending.call.writableEnded).toBe(false);
+    let closing: Promise<void> | undefined;
+    if ("worker" in f) f.worker.stopOperations();
+    else closing = f.controller.close();
+    const reply = await pending.reply;
+    expect(reply.status).toBe(503); expect(reply.headers["retry-after"]).toBe("1");
+    expect(reply.body).toEqual(refusal("request_cancelled", "unavailable", 503, "retry"));
+    expect(end).toHaveBeenCalledOnce(); await closing;
+  });
+
+  it.each([
+    ["api", "oversized"], ["api", "strict JSON"],
+    ["worker", "oversized"], ["worker", "strict JSON"],
+  ] as const)("%s preserves the examined %s refusal when stop also aborts the request", async (listener, kind) => {
+    const f = listener === "worker" ? await workerFixture() : await fixture();
+    const driver = "driver" in f ? f.driver : f.drivers.api;
+    let closing: Promise<void> | undefined;
+    driver.server.prependOnceListener("request", request => {
+      const stop = () => {
+        if ("worker" in f) f.worker.stopOperations();
+        else closing = f.controller.close();
+      };
+      if (kind === "oversized") queueMicrotask(stop);
+      else request.once("end", () => queueMicrotask(stop));
+    });
+    const oversized = kind === "oversized";
+    const reply = await driver.send({ body: oversized ? JSON.stringify({ padding: "x".repeat(65536) }) : '{"x":1,"x":2}' }).reply;
+    expect(reply.status).toBe(oversized ? 413 : 400);
+    expect(reply.headers["retry-after"]).toBeUndefined();
+    expect(reply.body).toEqual(oversized ? refusal("request_too_large", "payload_too_large", 413, "none") : refusal("invalid_request", "invalid_request", 400, "none"));
+    await closing;
+  });
+});
+
 describe("worker HTTPS boundary conformance", () => {
   it.each(["open", "token", "better-auth", "legacy"])("stored credential matrix in %s; protocol retains worker authentication", async mode => {
     const f = await workerFixture(mode);

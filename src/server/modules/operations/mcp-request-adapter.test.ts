@@ -184,6 +184,61 @@ describe("unmounted request-scoped MCP adapter", () => {
     expect(originalSend).not.toHaveBeenCalled();
   });
 
+  it.each(["stop", "deadline", "disconnect"] as const)("classifies %s during a partial body and retains its slot through response completion", async kind => {
+    const f = await fixture("open", { maxInFlight: 1, deadlineMs: kind === "deadline" ? 100 : 12_345 });
+    const received = pause(), written = pause();
+    const unhandled = vi.fn(); process.on("unhandledRejection", unhandled);
+    cleanups.push(() => { process.off("unhandledRejection", unhandled); });
+    let finish!: () => void;
+    let end!: ReturnType<typeof vi.spyOn>;
+    f.hooks.beforeHandle = (request, response) => {
+      request.once("data", received.done);
+      if (kind !== "disconnect") {
+        const original = response.end.bind(response);
+        end = vi.spyOn(response, "end").mockImplementation((...args: Parameters<ServerResponse["end"]>) => {
+          finish = () => { original(...args); }; written.done(); return response;
+        });
+      }
+    };
+    const pending = f.send(call, undefined, {}, { slow: true }); await received.promise;
+    expect(pending.call.writableEnded).toBe(false);
+    if (kind === "stop") f.adapter.stop();
+    if (kind === "disconnect") {
+      pending.call.destroy(); await expect(pending.reply).rejects.toThrow();
+    } else {
+      await written.promise;
+      let drained = false;
+      const draining = f.adapter.drain().then(() => { drained = true; });
+      try {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(drained).toBe(false); expect(end).toHaveBeenCalledOnce();
+      } finally { finish(); }
+      const reply = await pending.reply;
+      expect(reply.status).toBe(503); expect(reply.headers["retry-after"]).toBe("1");
+      expect(reply.body).toEqual({ error: { category: "unavailable", reason: kind === "deadline" ? "request_timed_out" : "request_cancelled", retry: "retry", effect: null, status: 503 } });
+      await draining; expect(drained).toBe(true);
+    }
+    await expect(f.handles[0]).resolves.toBeUndefined(); await f.adapter.drain();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(f.minted).not.toHaveBeenCalled(); expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it.each(["oversized", "strict JSON"] as const)("preserves an examined %s refusal when stop also aborts the request", async kind => {
+    const f = await fixture("open", { bodyBytes: 200 });
+    f.hooks.beforeHandle = request => {
+      const stop = () => { f.adapter.stop(); };
+      // The refusal wins settlement; abort before its outer catch runs.
+      if (kind === "oversized") queueMicrotask(stop);
+      else request.once("end", () => queueMicrotask(stop));
+    };
+    const reply = await f.send(call, undefined, {}, { body: kind === "oversized" ? JSON.stringify({ data: "x".repeat(201) }) : '{"method":"tools/list","method":"tools/call"}' }).reply;
+    const oversized = kind === "oversized";
+    expect(reply.status).toBe(oversized ? 413 : 400);
+    expect(reply.headers["retry-after"]).toBeUndefined();
+    expect(reply.body).toEqual({ error: { category: oversized ? "payload_too_large" : "invalid_request", reason: oversized ? "request_too_large" : "invalid_request", status: oversized ? 413 : 400, retry: "none", effect: null } });
+    expect(f.minted).not.toHaveBeenCalled(); await f.adapter.drain();
+  });
+
   it("compares canonical loopback Origins using effective HTTP ports", () => {
     for (const host of ["127.0.0.1", "localhost", "[::1]"]) {
       expect(isOperationsMcpOrigin(`http://${host}`, 80)).toBe(true);

@@ -11,7 +11,7 @@ import type { ProviderSessionEligibility } from "../bootstrap/authentication-pro
 import type { AuthenticationRequestBudget, AuthenticationRequestSlot } from "../bootstrap/authentication-request-budget";
 import { authenticationRequestBoundary, authenticationProviderHeaders, authenticationRequestOrigin, authenticationJsonContentType } from "./authentication-http";
 import type { PublicOperationError } from "@/shared/contracts/operations";
-import { BoundaryError, parseStrictJson, readBoundedBody, requestCookies, SESSION_COOKIE } from "./authentication-http-boundary";
+import { BodyReadAbortedError, BoundaryError, parseStrictJson, readBoundedBody, requestCookies, SESSION_COOKIE } from "./authentication-http-boundary";
 import { parseOperationsPath } from "./operations-path";
 
 type Mint = (listener: "api" | "mcp" | "unix" | "worker", presented: PresentedCredentials, session: VerifiedProviderSession | null, options: DatabaseAdmissionOptions) => Promise<
@@ -63,6 +63,17 @@ export function writeOperationsResponse(response: ServerResponse, status: number
   response.end(body);
 }
 const failure = (category: ConstructorParameters<typeof OperationError>[0], reason: string) => publicError(new OperationError(category, reason));
+
+/** A total deadline wins; cancellation only replaces the reader's explicit abort. */
+export function operationsRequestFailure(error: unknown, signal: AbortSignal, timedOut: boolean): PublicOperationError {
+  if (timedOut) return publicError(new OperationError("unavailable", "request_timed_out", { retry: "retry" }));
+  if (signal.aborted && error instanceof BodyReadAbortedError) {
+    return publicError(new OperationError("unavailable", "request_cancelled", { retry: "retry" }));
+  }
+  return error instanceof BoundaryError
+    ? failure(error.status === 413 ? "payload_too_large" : error.status === 403 ? "forbidden" : error.status === 503 ? "unavailable" : "invalid_request", error.code)
+    : publicError(error);
+}
 
 /** Keep Node's protocol ownership: neither listener registers connect or upgrade.
  * Node closes CONNECT without dispatch or a response. Without an upgrade listener,
@@ -193,9 +204,7 @@ export function createOperationsHttp(options: {
       });
       if (result.status !== "committed") operationsFailure(response, result.error);
     } catch (error) {
-      operationsFailure(response, timedOut ? publicError(new OperationError("unavailable", "request_timed_out", { retry: "retry" })) : error instanceof BoundaryError
-        ? failure(error.status === 413 ? "payload_too_large" : error.status === 403 ? "forbidden" : error.status === 503 ? "unavailable" : "invalid_request", error.code)
-        : publicError(error));
+      operationsFailure(response, operationsRequestFailure(error, abort.signal, timedOut));
     } finally {
       // Never relinquish ownership merely because the handler returned or the client disconnected.
       // settle is called once; failed cleanup retains capacity. No race against

@@ -409,8 +409,10 @@ resolution returns null after eligibility is lost in flight. Controller
 maintenance and stopping retain their earlier refusal. A mixed request is
 `unauthenticated` / `mixed_credentials`.
 Contention remains `busy` / `admission_refused`; cancellation remains
-`unavailable` / `request_cancelled`, both retryable. A session resolution that
-the provider itself rejects (a failed plugin, an unavailable or disposed
+`unavailable` / `request_cancelled`, both retryable. Stopping during an unfinished
+body read also returns retryable `unavailable` / `request_cancelled` (503,
+`Retry-After: 1`); examined input refusals keep their reasons. A session resolution
+that the provider itself rejects (a failed plugin, an unavailable or disposed
 provider) is retryable `unavailable` / `provider_session_unavailable`, never
 `internal`. Storage faults retain `unavailable` / `database_unavailable`. The total ten-second deadline
 aborts provider resolution and admission and answers retryable
@@ -591,7 +593,10 @@ Public refusals preserve the operations category, reason, retry and effect:
 Retryable public failures also set `Retry-After: 1`. Maintenance at final
 revalidation keeps `listener_closed` (the runner checks authority first);
 maintenance before work uses `release_not_eligible`. Adapter stop aborts admission
-with `request_cancelled`. Credential revocation keeps `credential_no_longer_valid`;
+with `request_cancelled`. Stopping during an unfinished body read returns the
+pre-dispatch HTTP envelope `unavailable` / `request_cancelled` (503, retry `retry`,
+`Retry-After: 1`); examined input refusals keep their reasons. Credential revocation
+keeps `credential_no_longer_valid`;
 a changed projection keeps `release_payload_changed`; admitted deadline checks
 keep `release_timed_out`; an aborted admission keeps `request_cancelled` and
 contention keeps `admission_refused`. A total timer observed by the outer error
