@@ -71,11 +71,25 @@ export function readUpgradeDecisions(file: string): unknown {
   try { return readBoundedJson(file, UPGRADE_DECISIONS_FILE_BYTES, false, true); } catch { throw invalid(); }
 }
 
-/** What `upgrade inspect` prints: the status and, when an upgrade is needed, the plan's hash, decisions, operator lines and review; never the plan itself. */
+/**
+ * What `upgrade inspect` prints: the status and, when an upgrade is needed, the plan's hash, decisions, operator lines and review; never the plan itself.
+ * `projectIds` (Knowledge project IDs outside the contract grammar) follows in `upgrade_needed` and in `current`.
+ */
 export function upgradeInspectionOutput(inspection: UpgradeInspection) {
-  const { state, nextStep, schemaVersion, target, preflight, marker, appliedPlan, planHash, decisions, acts, review } = inspection;
+  const { state, nextStep, schemaVersion, target, preflight, marker, appliedPlan, planHash, decisions, acts, review, projectIds } = inspection;
   return { state, nextStep, schemaVersion, target, preflight, marker, appliedPlan,
-    ...(planHash === undefined ? {} : { planHash, decisions, acts, review }) };
+    ...(planHash === undefined ? {} : { planHash, decisions, acts, review }), ...(projectIds === undefined ? {} : { projectIds }) };
+}
+
+/**
+ * The JSON text with the characters `JSON.stringify` leaves raw but a terminal
+ * may act on or be misled by (DEL, C1 controls, line and paragraph separators,
+ * bidirectional marks) written as `\uXXXX`. They occur only inside strings, so
+ * the document parses back to the same values. Stored IDs reach the output as
+ * strings; this keeps them inert on a terminal.
+ */
+export function terminalSafeJson(text: string): string {
+  return text.replace(/[\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 /**
@@ -87,7 +101,7 @@ export async function runUpgradeCommand(args: readonly string[], paths: AppPaths
   const command = parseUpgradeArguments(args);
   if (command.action === "inspect") {
     const decisions = command.decisions === undefined ? undefined : readUpgradeDecisions(command.decisions);
-    write(JSON.stringify(upgradeInspectionOutput(inspectUpgrade(paths, decisions, options.target)), null, 2));
+    write(terminalSafeJson(JSON.stringify(upgradeInspectionOutput(inspectUpgrade(paths, decisions, options.target)), null, 2)));
     return;
   }
   const result = await applyUpgrade(paths, { expect: command.expect }, { directory: command.backupDirectory, applicationVersion: options.applicationVersion }, options.target);

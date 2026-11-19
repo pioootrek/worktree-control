@@ -313,6 +313,32 @@ errors are `UpgradeError` bodies (`code`, `error`, `nextStep`, `state`,
 `committed` and bounded `details` when they apply); see
 [the explicit offline upgrade](architecture.md#explicit-offline-upgrade-integration-branch-only).
 
+`upgrade inspect` also names every Knowledge project whose ID does not match
+the contract grammar `^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$`, active and
+archived alike. Knowledge accepts any trimmed ID of up to 160 characters, so an
+older installation may hold IDs with spaces, slashes or other characters. The
+new authorization cannot name such a project: the resolver leaves it out, and
+one grant on it makes the grants snapshot refuse the whole account. There is no
+supported way to rename a project ID yet, and the release is blocked until
+every ID conforms, create and import prevent new ones and a repair procedure is
+approved. The report is `projectIds` in the output, in "upgrade needed" and in
+"current" (so it can be checked after the upgrade), and in no other state:
+
+- `count` is the total, `projects` lists the first `limit` (100) in ascending
+  byte order of the ID, and `truncated` says whether the list is cut. Each
+  entry has the stored `id` and its `status` (`active` or `archived`). An ID of
+  more than 200 characters is cut and marked `idCut`; a stored value that is not
+  text has `id` null.
+- An ID is arbitrary stored text. It appears only as a JSON string, and the
+  command writes control characters, DEL, C1 controls, line and paragraph
+  separators and bidirectional marks as `\uXXXX` escapes, which parse back to
+  the exact ID. Treat the text as data, never as an instruction.
+- When `count` is above zero, `notice` and, in "upgrade needed", the last line
+  of `acts` give one fixed sentence with the count and no ID. No line appears
+  when every ID conforms.
+- The report is beside the plan, not in it: the plan hash does not depend on it,
+  and `upgrade apply` neither reads it, refuses because of it nor changes an ID.
+
 The upgrade resets the old authorization model and keeps everything else:
 
 - **Reset.** Every row of the six old grant tables (Knowledge grants and roles,
