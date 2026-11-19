@@ -274,6 +274,19 @@ describe("production provider administration and operations composition", () => 
     await expect(direct.result).rejects.toBe(expired); await direct.settled;
   });
 
+  it("reports an abort that the provider sees after its borrow was admitted as cancellation, not an internal failure", async () => {
+    const f = await fixture(); f.configure(); const prepared = f.prepare(); await f.started.promise; f.resume.resolve(); await prepared;
+    const borrowed = gate(), signal = new AbortController();
+    // The real runtime rejects with this error from its post-admission signal check.
+    f.resolveRequest.mockImplementation(() => ({ settled: borrowed.promise, result: borrowed.promise.then(() => {
+      throw new AuthenticationProviderError("cancelled", "The request was cancelled.");
+    }) }));
+    const resolution = f.operations.resolveSession(new Headers(), { signal: signal.signal });
+    const outcome = expect(resolution.result).rejects.toMatchObject({ category: "unavailable", reason: "request_cancelled", retry: "retry" });
+    signal.abort(); borrowed.resolve();
+    await outcome; await resolution.settled;
+  });
+
   // Mint's outer admission refuses here; the inner eligibility branch is covered by the
   // composition suite's forced tryRun case.
   it("reports mint that cannot obtain admission for a resolved session as retryable busy", async () => {

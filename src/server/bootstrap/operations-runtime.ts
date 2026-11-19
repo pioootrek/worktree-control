@@ -1,7 +1,7 @@
 import type { DatabaseAdmissionOptions } from "../database-admission";
 import type { SqliteStateStore } from "../sqlite-store";
 import type { LogWriter } from "../log-writer";
-import type { VerifiedProviderSession } from "../modules/authentication";
+import { AuthenticationProviderError, type VerifiedProviderSession } from "../modules/authentication";
 import {
   AgentTokenVerifier, CompositeCredentialVerifier, createListenerBoundary, InstallationVerifier,
   OperationError, OperationRegistry, OperationRunner, ProviderSessionVerifier, sessionDescribe,
@@ -66,6 +66,10 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
       if (error instanceof ControllerOperationSessionResolutionError) {
         return error.code === "cancelled" ? new OperationError("unavailable", "request_cancelled", { retry: "retry" })
           : new OperationError("busy", "admission_refused");
+      }
+      // The provider reports an abort seen after its borrow was admitted with its own error.
+      if (error instanceof AuthenticationProviderError && error.code === "cancelled") {
+        return new OperationError("unavailable", "request_cancelled", { retry: "retry" });
       }
       if (!admissionFailureOf(error)) return error;
       return requestOptions?.signal?.aborted ? new OperationError("unavailable", "request_cancelled", { retry: "retry" })

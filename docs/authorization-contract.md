@@ -1409,7 +1409,9 @@ mounts remain for later steps.
   operations composition unchanged, which classifies them: contention is
   retryable `busy`; a closed, draining or poisoned store and a provider fault
   such as an expired borrow are `unavailable` / `database_unavailable` without
-  a retry instruction.
+  a retry instruction. The provider's own cancellation, raised when the request
+  is aborted after its borrow was admitted, is `unavailable` /
+  `request_cancelled` like every other aborted wait.
   Administration also owns the browser's shared 16-slot request budget, with
   four slots reserved for completions. Its initiating acquisition and release
   after both response completion and work settlement are ready for the operations
