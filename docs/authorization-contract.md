@@ -1398,7 +1398,8 @@ mounts remain for later steps.
   Body ceilings are 65536 bytes on API and 16384 on unix; the response ceiling
   is 262144 bytes. The total deadline is 10000 ms, including body and admission.
   The error envelope is `{ error: { category, status, reason, retry, effect } }`,
-  with HTTP status taken from the public error. Method refusals use 400 /
+  with HTTP status taken from the public error and `Retry-After: 1` when its
+  retry disposition is `retry`. Method refusals use 400 /
   `invalid_request` / `method_not_allowed`; malformed and unknown operation
   targets use 404 / `not_found` / `operation_not_found`. All replies are no-store.
   Cookie, worker, MCP and offline CLI mounts, credential usage recording and

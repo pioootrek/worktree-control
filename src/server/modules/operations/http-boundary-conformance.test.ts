@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { request, type ClientRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { request, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createConnection, type AddressInfo, type Socket } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { listenAdminSocket } from "@/server/admin-socket";
 import { AuthenticationService } from "@/server/modules/authentication";
@@ -18,28 +18,72 @@ import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
 import { resolveAppPaths } from "@/server/paths";
 import { createOperationsHttp, operationsFailure, OPERATIONS_HTTP_LIMITS } from "@/server/transports/operations-http";
 import { parseOperationsPath } from "@/server/transports/operations-path";
+import { acquireControllerLock } from "@/server/controller-lock";
+import { createBoundaryDriver, conform, ConformanceFailure, operationRoute, type BoundaryDriver, type Reply, type WireReply } from "./http-boundary-driver";
 import { hash, iso, NOW, token } from "./adapters/credential-verifier-fixture";
 
+/** Neighbour checklist from PR #161 (source lines at its mounting review).
+ * Each row names an executable test below; controlled seams are labelled there.
+ * API (12 rows):
+ * :410 raw target                  | strict JSON, content type, path and all method refusals; normalized aliases
+ * :418 mixed credentials           | preserves duplicate and mixed raw credentials
+ * :423 browser/cookie hand-off     | cookie refusal precedes body, admission and even saturated unix capacity
+ * :430 admission/safe failures     | matches legacy Retry-After during real provider-storage contention
+ * :219 body ceiling                | %s enforces production byte ceilings before mint
+ * :383/:445 maintenance after wait | %s keeps maintenance refusal; revalidates maintenance before releasing a buffered response
+ * :337 origin                     | %s keeps maintenance refusal and origin policy without application work
+ * :630 credential revalidation     | revalidates grant/revoke/rotate/maintenance/shutdown/disconnect/deadline between mint and actual write
+ * :236 no-store/JSON/security      | full wire matrix; uses security headers and terminal finite JSON replies
+ * provider-lifetime.ts:20 reserve  | DEFERRED D1a-5b: no cookie provider work is admitted in 5a; reserve requires the cookie mount
+ * :673 SSE lifetime                | uses security headers and terminal finite JSON replies (finite read ends, no SSE owner applies)
+ * :952 listener close/drain        | shutdown retains the real open SQLite handle and lock record; half-open and reset protocol clients
+ * Unix (9 rows):
+ * :32 directory/socket privacy     | keeps real admin directory/socket permissions private
+ * :56 POST /auth                   | keeps legacy paths working in legacy mode (unix executor stubbed); preserves legacy h2c status and bodies
+ * :35 work/closing/32              | shares the real unix ceiling and drain with a stubbed /auth executor; shutdown retains the real open SQLite handle
+ * :65 body/project exception       | %s enforces production byte ceilings; refuses project-command exception on operations
+ * :59 body deadline                | uses the socket's real ten second deadline; revalidates deadline between mint and actual write (real runtime clock)
+ * :69 UTF-8/protected JSON         | rejects malformed UTF-8 and duplicate singleton headers; strict JSON, content type, path and all method refusals
+ * :84 provider response ceiling    | controlled adapter: commits exactly one 413 envelope (DTO bound, provider-only ceiling does not apply)
+ * :102 disconnect/close drain      | shares the real unix ceiling and drain; real socket backpressure; controlled adapter/end hook
+ * shutdown.ts:58 storage/lock       | shutdown retains the real open SQLite handle and lock record until an admitted request settles
+ * Total: 21 rows, 20 mapped to assertions, 1 deferred to D1a-5b.
+ * Worker/MCP/CLI drivers are deliberately absent until D1a-6/7/8 mount them.
+ */
 const cleanups: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
-const route = "/api/operations/session.describe";
+const route = operationRoute;
 const pause = () => { let done!: () => void; const promise = new Promise<void>(r => { done = r; }); return { promise, done }; };
-type Headers = Record<string, string> | string[];
-type Reply = { status: number; body: Record<string, any>; headers: IncomingMessage["headers"] }; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 async function fixture(mode = "open", limits?: Parameters<typeof createOperationsHttp>[0]["limits"], fault?: "omit_guard" | "early_release" | "unmounted") {
   const root = mkdtempSync(join(tmpdir(), "operations-http-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict", admissionTimeoutMs: 100 });
   cleanups.push(() => store.close());
+  // The getter normally returns a fresh forwarding facade. Pin ONE real facade
+  // before composition/mounting so later admission spies observe their actual
+  // calls. It still forwards to the same owned core gate, with no fake admission.
+  const admission = store.admission;
+  vi.spyOn(store, "admission", "get").mockReturnValue(admission);
   const clock = { offset: 0 };
   const db = ownedFixtureDatabase(store), state = { maintenance: false, stopping: false, configChanged: false };
   const installation = token("wsi"), agent = token("wts"), credentialId = agent.slice(4, 40);
+  const storedLegacy = [
+    { principal: "owner", principalKind: "owner", kind: "owner_session", secret: token("wts") },
+    { principal: "worker", principalKind: "worker", kind: "worker_token", secret: token("wts") },
+  ] as const;
+  const unknownMachine = token("wts");
   await store.admission.run(() => {
     const policy = store.getAuthenticationPolicy();
     store.saveAuthenticationPolicy({ ...policy, mode: mode as "open", token: { id: installation.slice(4, 40), prefix: installation.slice(0, 40), verifierHash: hash(installation), createdAt: iso(NOW) } }, "fixture", "fixture");
     store.savePrincipal({ id: "agent", kind: "agent", status: "active" }, "fixture");
     store.saveCredential({ id: credentialId, principalId: "agent", kind: "agent_token", label: "fixture", tokenPrefix: agent.slice(0, 40), verifierHash: hash(agent), status: "active", expiresAt: null, createdAt: iso(NOW), revokedAt: null, lastUsedAt: null }, "fixture");
+    for (const row of storedLegacy) {
+      store.savePrincipal({ id: row.principal, kind: row.principalKind, status: "active" }, "fixture");
+      store.saveCredential({ id: row.secret.slice(4, 40), principalId: row.principal, kind: row.kind, label: "legacy fixture",
+        tokenPrefix: row.secret.slice(0, 40), verifierHash: hash(row.secret), status: "active", expiresAt: null,
+        createdAt: iso(NOW), revokedAt: null, lastUsedAt: iso(NOW - 1000) }, "fixture");
+    }
     for (const id of ["project-a", "project-b"]) store.saveKnowledgeProject({ id, name: id, status: "active", revision: 1, createdAt: iso(NOW), updatedAt: iso(NOW) }, "fixture");
   });
   const socketPath = join(root, "admin.sock");
@@ -59,6 +103,8 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
     authenticateInstallation: vi.fn((secret: string) => authentication.authenticateInstallation(secret)),
     anonymousInstallation: vi.fn(() => authentication.anonymousInstallation()) };
   const addProject = vi.fn(async () => ({ id: "fixture" }));
+  // Real unix HTTP/parser/capacity/close; execute and its maintenance gate are
+  // stubbed. The CLI command dispatcher is not exported independently of startup.
   const legacy = vi.fn((body: unknown) => { if (state.maintenance) throw new Error("Controller is in maintenance."); return hooks.legacy ? hooks.legacy(body) : { echo: body }; });
   writeFileSync(join(root, "index.html"), "fixture");
   const controller = createControllerServer({ service: { addProject } as unknown as ControlService, directoryBrowser: new DirectoryBrowser(root),
@@ -69,14 +115,16 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   cleanups.push(() => { apiOpen = false; return controller.close(); });
   const admin = await listenAdminSocket(socketPath, legacy, fault === "unmounted" ? undefined : runtime);
   cleanups.push(() => { unixOpen = false; return admin.close(); });
-  // A short-limit adapter uses the actual API listener too, never calls handle directly.
-  if (limits) {
+  // Controlled-adapter cases retain real runtime/admission and HTTP I/O but
+  // replace API dispatch: production mounts expose no limit override. Only the
+  // early_release mutant replaces ownership; normal limit cases use the adapter owner.
+  if (limits || fault === "early_release") {
     const adapter = createOperationsHttp({ runtime, listener: "api", limits, externallyOwned: fault === "early_release" });
     controller.server.removeAllListeners("request");
     let active = 0;
     controller.server.on("request", (req, res) => {
       if (fault === "early_release") {
-        if (active >= 1) { operationsFailure(res, { category: "busy", status: 503, reason: "listener_capacity", retry: "retry", effect: null }); return; }
+        if (active >= OPERATIONS_HTTP_LIMITS.maxInFlight) { operationsFailure(res, { category: "busy", status: 503, reason: "listener_capacity", retry: "retry", effect: null }); return; }
         active++;
         // Deliberately broken owner: releases on disconnect while application work is pending.
         res.once("close", () => { active--; });
@@ -85,44 +133,19 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
     });
     cleanups.push(async () => { adapter.stop(); await adapter.drain(); });
   }
-  const send = (listener: "api" | "unix", options: { path?: string; method?: string; headers?: Headers; body?: string; slow?: boolean } = {}) => {
-    let call!: ClientRequest;
-    const reply = new Promise<Reply>((resolve, reject) => {
-      call = request({ ...(listener === "unix" ? { socketPath } : { hostname: "127.0.0.1", port: (controller.server.address() as AddressInfo).port }),
-        path: options.path ?? route, method: options.method ?? "POST",
-        headers: options.headers ?? { "Content-Type": "application/json" } }, res => {
-        const chunks: Buffer[] = []; res.on("data", c => chunks.push(c)); res.on("error", reject);
-        res.on("end", () => { try { resolve({ status: res.statusCode!, headers: res.headers, body: chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {} }); } catch (e) { reject(e); } });
-      });
-      call.on("error", reject);
-      if (options.slow) { call.flushHeaders(); call.write("{"); } else call.end(options.body ?? "{}");
-    });
-    // Some cancellation assertions only inspect server-side evidence.
-    void reply.catch(() => undefined);
-    return { call, reply };
+  const drivers = {
+    api: createBoundaryDriver({ kind: "api", server: controller.server, close: () => controller.close(),
+      legacyPath: "/api/projects", acceptedCredentials: mode === "open" ? ["none"] : mode === "token" ? ["installation"] : mode === "better-auth" ? ["agent"] : [] }),
+    unix: createBoundaryDriver({ kind: "unix", server: admin.server, socketPath, close: () => admin.close(),
+      legacyPath: "/auth", acceptedCredentials: mode === "legacy" ? [] : ["none"] }),
   };
+  const send = (listener: keyof typeof drivers, options?: Parameters<BoundaryDriver["send"]>[0]) => drivers[listener].send(options);
   const grant = () => store.admission.run(() => db.prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('agent','reader','project','project-a',?)").run(iso(NOW)));
-  return { store, state, db, built, runtime, send, hooks, oldAuthentication, legacy, controller, admin, installation, agent, credentialId, grant, clock, socketPath, provider, addProject };
+  return { root, storedLegacy, unknownMachine, drivers, store, state, db, built, runtime, send, hooks, oldAuthentication, legacy, controller, admin, installation, agent, credentialId, grant, clock, socketPath, provider, addProject };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-const h2c = { Connection: "Upgrade, HTTP2-Settings", Upgrade: "h2c", "HTTP2-Settings": "" };
-async function wire(f: Fixture, listener: "api" | "unix", path: string, method = "GET", upgrade = false) {
-  return new Promise<{ status: number; body: string }>((resolve, reject) => {
-    const call = request({ ...(listener === "unix" ? { socketPath: f.socketPath }
-      : { hostname: "127.0.0.1", port: (f.controller.server.address() as AddressInfo).port }),
-      path, method, headers: { "Content-Type": "application/json", ...(upgrade ? h2c : {}) } }, res => {
-      const chunks: Buffer[] = [];
-      res.on("data", c => chunks.push(c)); res.on("error", reject);
-      res.on("end", () => resolve({ status: res.statusCode!, body: Buffer.concat(chunks).toString() }));
-    });
-    call.setTimeout(2000, () => call.destroy(new Error("Wire response timed out")));
-    call.on("error", reject); call.end(method === "POST" ? '{"command":"status"}' : undefined);
-  });
-}
-function protocolConnection(f: Fixture, listener: "api" | "unix") {
-  return createConnection(listener === "unix" ? { path: f.socketPath, allowHalfOpen: true }
-    : { port: (f.controller.server.address() as AddressInfo).port, host: "127.0.0.1", allowHalfOpen: true });
-}
+const wire = (f: Fixture, listener: keyof Fixture["drivers"], ...args: Parameters<BoundaryDriver["wire"]>) => f.drivers[listener].wire(...args);
+const protocolConnection = (f: Fixture, listener: keyof Fixture["drivers"]) => f.drivers[listener].connection();
 const connectionCount = (server: Server) => new Promise<number>((resolve, reject) => {
   server.getConnections((error, count) => error ? reject(error) : resolve(count));
 });
@@ -182,6 +205,97 @@ const refusal = (reason: string, category = "unauthenticated", status = 401, ret
 function assertRefused(reply: Reply, prohibitedWork: number) { expect(reply.status).toBeGreaterThanOrEqual(400); expect(reply.body).not.toHaveProperty("actor"); expect(prohibitedWork).toBe(0); }
 function assertOwned(owned: boolean) { expect(owned).toBe(true); }
 
+type UpgradeOutcome = WireReply | { reset: "ECONNRESET" };
+async function upgradeOutcome(driver: BoundaryDriver, path: string, method: string): Promise<UpgradeOutcome> {
+  try { return await driver.wire(path, method, true); }
+  catch (error) {
+    // Only the old listener's exact hang-up is an outcome. Timeouts, refused
+    // connections, response errors and malformed data must fail the test.
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ECONNRESET" && error.message === "socket hang up") return { reset: "ECONNRESET" };
+    throw error;
+  }
+}
+function assertLegacyParity(outcome: UpgradeOutcome, baseline: WireReply) { conform("legacy Upgrade parity", outcome, baseline); }
+function expectFailure(assertion: () => void, name: string, observed: unknown, expected: unknown) {
+  let failure: unknown;
+  try { assertion(); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(ConformanceFailure);
+  expect(failure).toMatchObject({ assertion: name, observed, expected });
+}
+async function maintenanceObservation(f: Fixture, driver: BoundaryDriver) {
+  const mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run");
+  let data = 0;
+  const observe = (req: IncomingMessage) => req.on("newListener", event => { if (event === "data") data++; });
+  driver.server.prependListener("request", observe);
+  f.state.maintenance = true;
+  try {
+    const reply = await driver.send().reply;
+    return { reply, calls: { mint: mint.mock.calls.length, admission: admission.mock.calls.length,
+      data, provider: f.provider.isSessionAuthorityEligible.mock.calls.length } };
+  } finally { driver.server.off("request", observe); }
+}
+function assertMaintenance({ reply, calls }: Awaited<ReturnType<typeof maintenanceObservation>>) {
+  conform("maintenance prohibited mint calls", calls.mint, 0);
+  conform("maintenance prohibited admission calls", calls.admission, 0);
+  conform("maintenance prohibited body data listeners", calls.data, 0);
+  conform("maintenance prohibited provider calls", calls.provider, 0);
+  expect(reply.status).toBe(503); expect(reply.body).toEqual(refusal("release_not_eligible", "unavailable", 503, "none"));
+  assertRefused(reply, calls.mint);
+}
+function assertCapacity(reply: Reply, owned: number) {
+  // Setup evidence is outside the deliberately failed expectation.
+  expect(owned).toBe(32);
+  conform("capacity while 32 works remain unsettled", reply.status, 503);
+  expect(reply.body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
+}
+async function disconnectedCapacity(f: Fixture, driver: BoundaryDriver, mutant: boolean) {
+  const entered = pause(), release = pause(), disconnected = pause();
+  let started = 0, settled = 0, aborted = 0;
+  f.hooks.beforeMint = signal => signal?.addEventListener("abort", () => { if (++aborted === driver.capacity) disconnected.done(); }, { once: true });
+  f.hooks.afterMint = async () => {
+    if (++started <= driver.capacity) { if (started === driver.capacity) entered.done(); await release.promise; settled++; }
+  };
+  const held = Array.from({ length: driver.capacity }, () => driver.send());
+  await entered.promise;
+  try {
+    for (const pending of held) pending.call.destroy();
+    for (const pending of held) await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
+    await disconnected.promise;
+    const reply = await driver.capacityProbe();
+    expect(started - settled).toBe(mutant ? 33 : 32);
+    expect(settled).toBe(0);
+    if (mutant) {
+      expect(reply.body).toHaveProperty("actor.kind", "installation");
+      expectFailure(() => assertCapacity(reply, driver.capacity), "capacity while 32 works remain unsettled", 200, 503);
+    } else assertCapacity(reply, driver.capacity);
+  } finally { release.done(); }
+}
+function assertMaintenanceRelease(reply: Reply) {
+  conform("maintenance release status", reply.status, 401);
+  // Context revalidation precedes readRelease's eligibility check.
+  expect(reply.body).toEqual(refusal("listener_closed"));
+  expect(reply.body).not.toHaveProperty("actor");
+}
+async function bufferedRelease(f: Fixture, driver: BoundaryDriver, mutant: boolean) {
+  if (!f.built.supported) throw new Error("supported runtime required");
+  const runner = f.built.runner, entered = pause(), release = pause();
+  const realRelease = runner.readRelease.bind(runner);
+  vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
+    if (!mutant) { entered.done(); await release.promise; return realRelease(operation, context, raw, options); }
+    // One mutation: buffer the ordinary runner result, then bypass readRelease's
+    // final admitted revalidation by committing that old result directly.
+    if (operation.kind === "stream") throw new Error("read required");
+    const result = await runner.run(operation, context, raw, { signal: options.signal });
+    expect(result.ok).toBe(true);
+    entered.done(); await release.promise;
+    if (!result.ok) throw new Error("successful control read required");
+    options.commit(result.value); return { status: "committed" };
+  });
+  const pending = driver.send(); await entered.promise;
+  f.state.maintenance = true; release.done();
+  return pending.reply;
+}
+
 describe("raw operations namespace", () => {
   it("claims malformed targets without normalizing them and reserves the later MCP path", () => {
     for (const suffix of ["../session.describe", "%2e%2e/session.describe", "session%2edescribe", "session.describe/", "/session.describe", "session.describe?x=1", "session%2fdescribe", "session%5cdescribe", "unknown.operation"]) {
@@ -197,15 +311,14 @@ describe("raw operations namespace", () => {
 describe("real API and unix acceptance", () => {
   it.each(["open", "token", "better-auth", "legacy"])("full wire matrix in %s, with no old authentication or usage write", async mode => {
     const f = await fixture(mode);
-    const rows = ["none", "installation", "agent", "owner", "worker", "unknown", "cookie", "header"];
+    const rows = ["none", "installation", "agent", "stored-owner", "stored-worker", "unknown-machine", "unknown", "cookie", "header"];
     for (const listener of ["api", "unix"] as const) for (const credential of rows) {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (credential === "cookie") headers.Cookie = "__Secure-wtc.session=synthetic";
       else if (credential === "header") headers["X-Worktree-Control-Token"] = "synthetic-pairing";
-      else if (credential !== "none") headers.Authorization = `Bearer ${credential === "installation" ? f.installation : credential === "agent" ? f.agent : credential === "owner" || credential === "worker" ? token("wts") : "unrecognized"}`;
+      else if (credential !== "none") headers.Authorization = `Bearer ${credential === "installation" ? f.installation : credential === "agent" ? f.agent : credential === "stored-owner" ? f.storedLegacy[0].secret : credential === "stored-worker" ? f.storedLegacy[1].secret : credential === "unknown-machine" ? f.unknownMachine : "unrecognized"}`;
       const r = await f.send(listener, { headers }).reply;
-      const accepted = mode !== "legacy" && credential === "none" && (listener === "unix" || mode === "open")
-        || listener === "api" && (mode === "token" && credential === "installation" || mode === "better-auth" && credential === "agent");
+      const accepted = f.drivers[listener].acceptedCredentials.includes(credential);
       if (accepted) {
         expect(r.status).toBe(200); expect(r.body).toMatchObject({ mode, listener, actor: { kind: listener === "unix" ? "operator" : mode === "better-auth" ? "agent" : "installation" } });
         expect(r.headers["cache-control"]).toBe("no-store");
@@ -215,11 +328,77 @@ describe("real API and unix acceptance", () => {
           : mode === "open" ? "credential_in_open_mode" : credential === "none" ? "credential_required"
           : mode === "better-auth" && credential === "installation" ? "installation_token_in_account_mode"
           : mode === "better-auth" ? "invalid_credential" : "credential_not_accepted_here";
-        expect(r.body).toEqual(refusal(reason));
+        expect(r.status).toBe(401); expect(r.body).toEqual(refusal(reason));
       }
     }
     expect(f.oldAuthentication.authenticateInstallation.mock.calls.length).toBe(0); expect(f.oldAuthentication.anonymousInstallation.mock.calls.length).toBe(0); expect(f.legacy).not.toHaveBeenCalled();
-    await f.store.admission.run(() => expect(f.store.getCredentialForAuthentication(f.credentialId)?.lastUsedAt).toBeNull());
+    await f.store.admission.run(() => {
+      expect(f.store.getCredentialForAuthentication(f.credentialId)?.lastUsedAt).toBeNull();
+      for (const row of f.storedLegacy) expect(f.store.getCredentialForAuthentication(row.secret.slice(4, 40))?.lastUsedAt).toBe(iso(NOW - 1000));
+    });
+  });
+
+  it.each(["owner", "worker"] as const)("stored %s credential is refused by committed kind, without a context or usage update", async principal => {
+    const f = await fixture("better-auth"), row = f.storedLegacy.find(row => row.principal === principal)!;
+    const before = await f.store.admission.run(() => {
+      expect(f.store.getPrincipal(principal)).toMatchObject({ kind: principal, status: "active" });
+      const stored = f.store.getCredentialForAuthentication(row.secret.slice(4, 40));
+      expect(stored).toMatchObject({ kind: row.kind, verifierHash: hash(row.secret), principalId: principal, status: "active" });
+      return stored;
+    });
+    const mint = vi.spyOn(f.runtime, "mint");
+    for (const driver of Object.values(f.drivers)) {
+      const reply = await driver.send({ headers: auth(row.secret) }).reply;
+      expect(reply.status).toBe(401);
+      expect(reply.body).toEqual(refusal(driver.kind === "api" ? "invalid_credential" : "credential_on_local_listener"));
+      const result = await mint.mock.results.at(-1)!.value;
+      expect(result).toEqual({ ok: false, error: reply.body.error }); expect(result).not.toHaveProperty("context");
+    }
+    await f.store.admission.run(() => expect(f.store.getCredentialForAuthentication(row.secret.slice(4, 40))).toEqual(before));
+  });
+
+  it("keeps real admin directory/socket permissions private", async () => {
+    const f = await fixture();
+    expect(lstatSync(f.root).mode & 0o777).toBe(0o700);
+    expect(lstatSync(f.socketPath).isSocket()).toBe(true);
+    expect(lstatSync(f.socketPath).mode & 0o777).toBe(0o600);
+  });
+
+  it("uses security headers and terminal finite JSON replies", async () => {
+    const f = await fixture();
+    for (const driver of Object.values(f.drivers)) for (const method of ["POST", "GET"]) {
+      const reply = await driver.send({ method }).reply;
+      expect(reply.status).toBe(method === "POST" ? 200 : 400);
+      expect(reply.headers["cache-control"]).toBe("no-store");
+      expect(reply.headers["content-type"]).toBe("application/json; charset=utf-8");
+      expect(reply.headers["x-content-type-options"]).toBe("nosniff");
+      expect(reply.headers["content-security-policy"]).toBe("default-src 'none'; frame-ancestors 'none'");
+      expect(reply.headers["retry-after"]).toBeUndefined();
+      expect(reply.body).toHaveProperty(method === "POST" ? "actor" : "error");
+    }
+  });
+
+  it("rejects malformed UTF-8 and duplicate singleton headers before mint", async () => {
+    const f = await fixture(), mint = vi.spyOn(f.runtime, "mint");
+    for (const driver of Object.values(f.drivers)) {
+      const invalid = await driver.send({ body: Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]) }).reply;
+      expect(invalid.status).toBe(400); expect(invalid.body).toEqual(refusal("invalid_request", "invalid_request", 400, "none"));
+      for (const header of ["Host", "Content-Type", "Origin"]) {
+        const headers = ["Content-Length", "2", "Content-Type", "application/json", header, header === "Content-Type" ? "application/json" : "localhost", header, header === "Content-Type" ? "application/json" : "localhost"];
+        const reply = await driver.send({ headers }).reply;
+        expect(reply.status).toBe(400);
+      }
+    }
+    expect(mint).not.toHaveBeenCalled();
+  });
+
+  it("refuses project-command exception on operations (legacy unix executor stubbed)", async () => {
+    const f = await fixture(), driver = f.drivers.unix;
+    const body = JSON.stringify({ command: "project", padding: "x".repeat(17 * 1024) });
+    const reply = await driver.send({ body }).reply;
+    expect(reply.status).toBe(413); expect(reply.body).toEqual(refusal("request_too_large", "payload_too_large", 413, "none"));
+    expect(f.legacy).not.toHaveBeenCalled();
+    expect((await driver.send({ path: driver.legacyPath, body }).reply).status).toBe(200);
   });
 
   it("preserves legacy h2c status and bodies against listeners without the operations mount", async () => {
@@ -229,9 +408,9 @@ describe("real API and unix acceptance", () => {
         : [["/auth", "POST"], ["/api/status", "GET"], ["/unknown", "GET"]];
       for (const [path, method] of targets) {
         const baseline = await wire(old, listener, path, method);
-        expect(await wire(old, listener, path, method, true)).toEqual(baseline);
+        assertLegacyParity(await upgradeOutcome(old.drivers[listener], path, method), baseline);
         expect(await wire(mounted, listener, path, method)).toEqual(baseline);
-        expect(await wire(mounted, listener, path, method, true)).toEqual(baseline);
+        assertLegacyParity(await upgradeOutcome(mounted.drivers[listener], path, method), baseline);
       }
       for (const path of ["/auth", "/api/status", "example.invalid:443"]) {
         expect(await protocolWire(old, listener, path, "CONNECT")).toBe("");
@@ -243,14 +422,14 @@ describe("real API and unix acceptance", () => {
     }
   });
 
-  it.each(["api", "unix"] as const)("negative control: the old %s Upgrade listener fails legacy parity", async listener => {
-    const f = await fixture();
+  it.each(["api", "unix"] as const)("negative control: the old %s Upgrade listener fails legacy parity exactly at ECONNRESET", async listener => {
+    const f = await fixture(), driver = f.drivers[listener];
     const path = listener === "api" ? "/api/auth/status" : "/auth", method = listener === "api" ? "GET" : "POST";
-    const baseline = await wire(f, listener, path, method);
-    // Reproduce the old listener exactly for unclaimed targets, on the real mount.
-    f[listener === "api" ? "controller" : "admin"].server.on("upgrade", (_request, socket) => socket.destroy());
-    const broken = await wire(f, listener, path, method, true).catch(() => null);
-    expect(() => expect(broken).toEqual(baseline)).toThrow();
+    const baseline = await driver.wire(path, method);
+    // One mutation: restore the old upgrade listener on unclaimed legacy targets.
+    driver.server.on("upgrade", (_request, socket) => socket.destroy());
+    const broken = await upgradeOutcome(driver, path, method);
+    expectFailure(() => assertLegacyParity(broken, baseline), "legacy Upgrade parity", { reset: "ECONNRESET" }, baseline);
   });
 
   it("refuses normalized aliases before all legacy work, with cookie refusal first", async () => {
@@ -431,7 +610,7 @@ describe("real API and unix acceptance", () => {
     } finally { process.off("uncaughtExceptionMonitor", unhandled); }
   });
 
-  it("keeps legacy paths working in legacy mode, five per listener", async () => {
+  it("keeps legacy paths working in legacy mode, five per listener (unix executor stubbed)", async () => {
     const f = await fixture("legacy");
     for (const command of ["status", "project", "backup", "identity-admin", "auth-provider"]) {
       expect((await f.send("unix", { path: "/auth", body: JSON.stringify({ command }) }).reply).body).toEqual({ result: { echo: { command } } });
@@ -446,11 +625,12 @@ describe("real API and unix acceptance", () => {
 });
 
 describe("boundary conformance through real listeners", () => {
-  it.each(["api", "unix"] as const)("%s keeps maintenance refusal and origin policy without application work", async listener => {
-    const f = await fixture(), mint = vi.spyOn(f.runtime, "mint");
-    f.state.maintenance = true;
-    assertRefused(await f.send(listener).reply, mint.mock.calls.length);
-    // Run the same outcome assertion against the existing neighbour.
+  it.each(["api", "unix"] as const)("%s keeps maintenance refusal and origin policy without application work (unix legacy gate stubbed)", async listener => {
+    const f = await fixture(), driver = f.drivers[listener];
+    const observation = await maintenanceObservation(f, driver);
+    assertMaintenance(observation);
+    const mint = vi.spyOn(f.runtime, "mint");
+    // Unix neighbour maintenance is a stubbed executor gate; API gate is real.
     const effect = vi.fn(); f.hooks.legacy = effect;
     const old = await f.send(listener, { path: listener === "api" ? "/api/projects" : "/auth" }).reply;
     assertRefused(old, listener === "api" ? f.addProject.mock.calls.length : effect.mock.calls.length);
@@ -461,22 +641,24 @@ describe("boundary conformance through real listeners", () => {
     expect((await f.send(listener).reply).status).toBe(200);
   });
 
-  it.each(["api", "unix"] as const)("%s enforces byte ceilings before mint", async listener => {
+  it.each(["api", "unix"] as const)("%s enforces production byte ceilings before mint (unix legacy executor stubbed)", async listener => {
     const f = await fixture(), mint = vi.spyOn(f.runtime, "mint");
     const body = JSON.stringify({ padding: "x".repeat(listener === "api" ? 65536 : 16384) });
-    assertRefused(await f.send(listener, { body }).reply, mint.mock.calls.length);
+    const driver = f.drivers[listener], reply = await driver.send({ body }).reply;
+    expect(reply.status).toBe(413); expect(reply.body).toEqual(refusal("request_too_large", "payload_too_large", 413, "none"));
+    assertRefused(reply, mint.mock.calls.length);
     const effect = vi.fn(); f.hooks.legacy = effect;
     assertRefused(await f.send(listener, { path: listener === "api" ? "/api/projects" : "/auth", body }).reply,
       listener === "api" ? f.addProject.mock.calls.length : effect.mock.calls.length);
   });
 
-  it("bounds a slow body and response on real HTTP", async () => {
+  it("controlled adapter: bounds a slow body and response on real HTTP (stubbed limits/dispatch)", async () => {
     const f = await fixture("open", { deadlineMs: 50, responseBytes: 32 });
     expect((await f.send("api", { slow: true }).reply).status).toBeGreaterThanOrEqual(400);
     expect((await f.send("api").reply).body).toEqual(refusal("response_too_large", "payload_too_large", 413, "none"));
   });
 
-  it("commits exactly one 413 envelope for an oversized response", async () => {
+  it("controlled adapter: commits exactly one 413 envelope for an oversized response (stubbed limits/dispatch)", async () => {
     const f = await fixture("open", { responseBytes: 32 });
     if (!f.runtime.supported) throw new Error("Expected a supported fixture");
     const runner = vi.spyOn(f.runtime.runner, "readRelease");
@@ -511,7 +693,9 @@ describe("boundary conformance through real listeners", () => {
     else {
       const reply = await r.reply;
       if (change === "grant") { expect(reply.status).toBe(200); expect(reply.body.projects).toEqual([]); }
-      else expect(reply.status).toBeGreaterThanOrEqual(400);
+      else if (change === "deadline") {
+        expect(reply.status).toBe(503); expect(reply.body).toEqual(refusal("release_timed_out", "unavailable", 503, "retry"));
+      } else expect(reply.status).toBeGreaterThanOrEqual(400);
     }
   });
 
@@ -525,6 +709,34 @@ describe("boundary conformance through real listeners", () => {
       expect((await f.send("api", { slow: true, headers: { Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("provider_cookie_not_supported"));
       expect(reading).toBe(32);
     } finally { for (const pending of held) pending.call.destroy(); }
+  });
+
+  it("matches legacy Retry-After during real provider-storage contention on both operations listeners", async () => {
+    const f = await fixture(), entered = pause(), release = pause();
+    const borrow = f.store.authenticationProviderStorage().borrow(async () => { entered.done(); await release.promise; });
+    await entered.promise;
+    try {
+      const legacy = await f.drivers.api.send({ path: f.drivers.api.legacyPath }).reply;
+      expect(legacy.status).toBe(503); expect(legacy.body.code).toBe("database_busy");
+      expect(legacy.headers["retry-after"]).toBe("1");
+      for (const driver of Object.values(f.drivers)) {
+        const reply = await driver.send().reply;
+        expect(reply.body).toEqual(refusal("admission_refused", "busy", 503, "retry"));
+        expect(reply.status).toBe(legacy.status); expect(reply.headers["retry-after"]).toBe(legacy.headers["retry-after"]);
+      }
+      expect(f.addProject).not.toHaveBeenCalled(); expect(f.legacy).not.toHaveBeenCalled();
+    } finally { release.done(); await borrow; }
+  });
+
+  it.each(["api", "unix"] as const)("%s configuration change still refuses cookies before provider/admission/body work", async listener => {
+    const f = await fixture("better-auth"), driver = f.drivers[listener];
+    f.state.configChanged = true;
+    const admission = vi.spyOn(f.store.admission, "run"), mint = vi.spyOn(f.runtime, "mint"); let data = 0;
+    driver.server.prependListener("request", req => req.on("newListener", event => { if (event === "data") data++; }));
+    const reply = await driver.send({ slow: true, headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply;
+    expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal("provider_cookie_not_supported"));
+    expect(admission).not.toHaveBeenCalled(); expect(mint).not.toHaveBeenCalled(); expect(data).toBe(0);
+    expect(f.provider.isSessionAuthorityEligible).not.toHaveBeenCalled();
   });
 
   it("refuses admission contention while real provider storage is pending, and cancels a queued disconnected request", async () => {
@@ -546,7 +758,7 @@ describe("boundary conformance through real listeners", () => {
     expect((await f.send("api").reply).status).toBe(200);
   });
 
-  it("shares the unix ceiling with /auth and drains started work after disconnect", async () => {
+  it("shares the real unix ceiling and drain with a stubbed /auth executor after disconnect", async () => {
     const f = await fixture(), entered = pause(), release = pause();
     let active = 0;
     f.hooks.legacy = async () => { active++; if (active === 16) entered.done(); await release.promise; return {}; };
@@ -563,60 +775,55 @@ describe("boundary conformance through real listeners", () => {
     release.done(); await closing; expect(drained).toBe(true);
   });
 
-  it("shutdown retains database and lock until an admitted request settles", async () => {
+  it("shutdown retains the real open SQLite handle and lock record until an admitted request settles", async () => {
     const f = await fixture(), entered = pause(), release = pause();
+    const lockPath = join(f.root, "shutdown", "controller.lock"), lock = acquireControllerLock(lockPath);
+    cleanups.push(() => lock.release());
+    const record = readFileSync(lockPath, "utf8");
     f.hooks.afterMint = async () => { entered.done(); await release.promise; };
     const pending = f.send("api"); await entered.promise;
-    const closedStore = vi.fn(), releasedLock = vi.fn();
-    const shutdown = createControllerShutdown({ service: { closeAdmission() {}, shutdown: async () => { closedStore(); } },
-      stopping: () => { f.state.stopping = true; }, userSchedules: undefined, backups: { close() {} }, remoteVerification: null, mcp: null,
-      controller: f.controller, adminSocket: f.admin, removeServiceAccess() {}, controllerLock: { release: releasedLock } as never });
+    // Only the service facade is stubbed. These callbacks perform the real close;
+    // the real CLI shutdown function owns both real listeners and the real lock.
+    const shutdown = createControllerShutdown({ service: { closeAdmission() {}, shutdown: async () => {
+      expect(f.db.open).toBe(true); expect(readFileSync(lockPath, "utf8")).toBe(record);
+      f.store.close(); expect(f.db.open).toBe(false);
+    } }, stopping: () => { f.state.stopping = true; }, userSchedules: undefined,
+      backups: { close() {} }, remoteVerification: null, mcp: null,
+      controller: f.controller, adminSocket: f.admin,
+      removeServiceAccess() { expect(f.db.open).toBe(false); expect(readFileSync(lockPath, "utf8")).toBe(record); }, controllerLock: lock });
     const stopping = shutdown();
-    expect(f.state.stopping).toBe(true); expect(closedStore).not.toHaveBeenCalled(); expect(releasedLock).not.toHaveBeenCalled();
-    release.done(); expect((await pending.reply).status).toBeGreaterThanOrEqual(400);
-    await stopping; expect(closedStore).toHaveBeenCalledOnce(); expect(releasedLock).toHaveBeenCalledOnce();
+    try {
+      await new Promise<void>(done => setImmediate(done));
+      expect(f.state.stopping).toBe(true); assertOwned(f.db.open);
+      expect(readFileSync(lockPath, "utf8")).toBe(record);
+    } finally { release.done(); }
+    expect((await pending.reply).status).toBeGreaterThanOrEqual(400);
+    await stopping; expect(f.db.open).toBe(false); expect(existsSync(lockPath)).toBe(false);
   });
 
-  it("negative control: the same maintenance assertion fails when eligibility is omitted", async () => {
+  it("negative control: omitted maintenance guard starts exactly one measured mint", async () => {
     const f = await fixture("open", undefined, "omit_guard");
-    f.state.maintenance = true;
-    const reply = await f.send("api").reply;
-    expect(() => assertRefused(reply, reply.status === 200 ? 1 : 0)).toThrow();
+    const observation = await maintenanceObservation(f, f.drivers.api);
+    expect(observation.reply.status).toBe(200); expect(observation.reply.body).toHaveProperty("actor.kind", "installation");
+    expect(observation.calls.admission).toBeGreaterThan(0); expect(observation.calls.data).toBe(1);
+    expectFailure(() => assertMaintenance(observation), "maintenance prohibited mint calls", 1, 0);
   });
 
-  async function disconnectedCapacity(f: Awaited<ReturnType<typeof fixture>>) {
-    const entered = pause(), release = pause(), disconnected = pause(); let first = true;
-    f.hooks.beforeMint = signal => { if (first) signal?.addEventListener("abort", disconnected.done, { once: true }); };
-    f.hooks.afterMint = async () => { if (first) { first = false; entered.done(); await release.promise; } };
-    const pending = f.send("api"); await entered.promise;
-    pending.call.destroy(); await expect(pending.reply).rejects.toThrow();
-    // Observe the exact abort propagated to the pending request rather than a timer tick.
-    await disconnected.promise;
-    try { expect((await f.send("api").reply).status).toBe(503); }
-    finally { release.done(); }
-  }
-  it("retains API capacity until disconnected work settles", async () => {
-    await disconnectedCapacity(await fixture("open", { maxInFlight: 1 }));
+  it("retains all 32 API slots until disconnected work settles through production dispatch", async () => {
+    const f = await fixture(); await disconnectedCapacity(f, f.drivers.api, false);
   });
-  it("negative control: the same capacity assertion fails when its owner releases early", async () => {
-    await expect(disconnectedCapacity(await fixture("open", { maxInFlight: 1 }, "early_release"))).rejects.toThrow();
+  it("negative control: early slot release admits request 33 while all 32 works remain unsettled", async () => {
+    const f = await fixture("open", undefined, "early_release"); await disconnectedCapacity(f, f.drivers.api, true);
   });
 
-  it("negative control: the same release assertion fails on a buffered premature success", async () => {
-    const f = await fixture(), entered = pause(), release = pause();
-    if (!f.built.supported) throw new Error("supported runtime required");
-    const runner = f.built.runner;
-    vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
-      if (operation.kind === "stream") throw new Error("read required");
-      const result = await runner.run(operation, context, raw, { signal: options.signal });
-      entered.done(); await release.promise;
-      if (!result.ok) return { status: "refused", error: result.error };
-      options.commit(result.value); return { status: "committed" };
-    });
-    const pending = f.send("api"); await entered.promise;
-    f.state.maintenance = true; release.done();
-    const reply = await pending.reply;
-    expect(() => assertRefused(reply, 0)).toThrow();
+  it("revalidates maintenance before releasing a buffered response through production dispatch", async () => {
+    const f = await fixture(), reply = await bufferedRelease(f, f.drivers.api, false);
+    assertMaintenanceRelease(reply);
+  });
+  it("negative control: buffered success without revalidation writes exactly 200 with a DTO after maintenance", async () => {
+    const f = await fixture(), reply = await bufferedRelease(f, f.drivers.api, true);
+    expect(reply.body).toHaveProperty("actor.kind", "installation");
+    expectFailure(() => assertMaintenanceRelease(reply), "maintenance release status", 200, 401);
   });
 
   it.each(["api", "unix"] as const)("%s writes success only inside real core admission and hides credential IDs", async listener => {
@@ -635,7 +842,7 @@ describe("boundary conformance through real listeners", () => {
     expect(JSON.stringify(reply.body).includes(f.installation.slice(4, 40))).toBe(false);
   });
 
-  it("holds capacity through response completion, after admitted work returns", async () => {
+  it("controlled adapter/end hook: holds capacity through response completion after admitted work returns", async () => {
     const f = await fixture("open", { maxInFlight: 1 }), intercepted = pause();
     let finish: (() => void) | undefined;
     const hold = (_req: IncomingMessage, response: ServerResponse) => {
@@ -643,12 +850,43 @@ describe("boundary conformance through real listeners", () => {
       const end = response.end.bind(response);
       response.end = ((...args: Parameters<ServerResponse["end"]>) => { finish = () => { end(...args); }; intercepted.done(); return response; }) as ServerResponse["end"];
     };
+    // Controlled end hook, not a backpressure claim: Node's end is delayed.
+    // A separate test below observes a real socket.write returning false.
     f.controller.server.prependListener("request", hold);
     const pending = f.send("api"); await intercepted.promise;
     try { expect((await f.send("api").reply).status).toBe(503); }
     finally { finish?.(); }
     expect((await pending.reply).status).toBe(200);
     expect((await f.send("api").reply).status).toBe(200);
+  });
+
+  it.each(["api", "unix"] as const)("%s completes a large real DTO under real socket backpressure", async listener => {
+    const f = await fixture(), driver = f.drivers[listener];
+    // session.describe can list 500 projects, so it is NOT always a tiny DTO.
+    // Keep this below the real 256 KiB limit, above Node's socket high-water mark.
+    await f.store.admission.run(() => {
+      for (let i = 0; i < 300; i++) {
+        const id = `large-${String(i).padStart(3, "0")}-${"x".repeat(145)}`;
+        f.store.saveKnowledgeProject({ id, name: id, status: "active", revision: 1, createdAt: iso(NOW), updatedAt: iso(NOW) }, "fixture");
+      }
+    });
+    let backpressured = false, backpressureBeforeFinish = false, finished = false;
+    driver.server.prependOnceListener("request", (_req, response) => {
+      const socket = response.socket!, write = socket.write.bind(socket);
+      // Observe the real write's return value. No bytes, end, drain or finish
+      // are delayed or simulated. The separate end-hook test controls ownership.
+      socket.write = ((...args: Parameters<Socket["write"]>) => {
+        const accepted = write(...args);
+        if (!accepted) { backpressured = true; backpressureBeforeFinish ||= !finished; }
+        return accepted;
+      }) as Socket["write"];
+      response.once("finish", () => { finished = true; });
+    });
+    const reply = await driver.send().reply;
+    expect(reply.status).toBe(200); expect(reply.body.projects).toHaveLength(302);
+    expect(Buffer.byteLength(JSON.stringify(reply.body))).toBeGreaterThan(64 * 1024);
+    expect(backpressured).toBe(true); expect(backpressureBeforeFinish).toBe(true); expect(finished).toBe(true);
+    expect((await driver.capacityProbe()).status).toBe(200);
   });
 
   it("uses the socket's real ten second deadline for a slow operations body", async () => {
