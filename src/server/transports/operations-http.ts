@@ -45,6 +45,7 @@ export function presentedCredentials(request: IncomingMessage): PresentedCredent
 export function operationsFailure(response: ServerResponse, error: PublicOperationError): void {
   if (response.destroyed || response.writableEnded) return;
   if (response.headersSent) { response.destroy(); return; }
+  if (error.retry === "retry") response.setHeader("Retry-After", "1");
   // Refused bodies are not drained. Close this connection after the finite response.
   response.setHeader("Connection", "close");
   write(response, error.status, JSON.stringify({ error }));
