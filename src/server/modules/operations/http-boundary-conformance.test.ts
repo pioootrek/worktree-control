@@ -36,7 +36,7 @@ import { hash, iso, NOW, token } from "./adapters/credential-verifier-fixture";
  * :337 origin                     | %s keeps maintenance refusal and origin policy without application work
  * :630 credential revalidation     | revalidates grant/revoke/rotate/maintenance/shutdown/disconnect/deadline between mint and actual write
  * :236 no-store/JSON/security      | full wire matrix; uses security headers and terminal finite JSON replies
- * provider-lifetime.ts:20 reserve  | owner accounting: bootstrap/authentication-request-budget.test.ts; operations cookie path DEFERRED D1a-5b-2
+ * provider-lifetime.ts:20 reserve  | closes D1a-5a reserve deferral (real-provider CLI lifecycle cookie proof)
  * :673 SSE lifetime                | uses security headers and terminal finite JSON replies (finite read ends, no SSE owner applies)
  * :952 listener close/drain        | shutdown retains the real open SQLite handle and lock record; half-open and reset protocol clients
  * Unix (9 rows):
@@ -49,7 +49,7 @@ import { hash, iso, NOW, token } from "./adapters/credential-verifier-fixture";
  * :84 provider response ceiling    | controlled adapter: commits exactly one 413 envelope (DTO bound, provider-only ceiling does not apply)
  * :102 disconnect/close drain      | shares the real unix ceiling and drain; real socket backpressure; controlled adapter/end hook
  * shutdown.ts:58 storage/lock       | shutdown retains the real open SQLite handle and lock record until an admitted request settles
- * Total: 21 rows, 20 mapped to assertions, 1 owner-tested, with listener conformance deferred to D1a-5b-2.
+ * Total: 21 rows mapped to executable assertions, including real-provider completion reserve on API.
  * Worker/MCP/CLI drivers are deliberately absent until D1a-6/7/8 mount them.
  */
 const cleanups: (() => unknown | Promise<unknown>)[] = [];
@@ -94,7 +94,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
     configurationRestartRequired: () => state.configChanged, runtime: () => cookieMount ? { isSessionAuthorityEligible: () => !state.configChanged } : undefined });
   const world = createProviderWorld({ now: Date.now() });
   const session = world.passwordLogin(world.account("human"));
-  await store.admission.run(() => store.savePrincipal({ id: "human", kind: "human", status: "active" }, "fixture"));
+  await store.admission.run(() => store.humanAccounts().createHumanPrincipal({ id: "human", kind: "human", status: "active" }, "fixture"));
   const provider = { isSessionAuthorityEligible: vi.fn(() => true), providerId: "better-auth" as const,
     reader: cookieMount ? world.store : store.authenticationProviderStorage(), resolveRequest: vi.fn(() => ({ result: Promise.resolve(cookieMount ? { session, principalId: "human" } : null), settled: Promise.resolve() })) };
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs: { controller() {} },
@@ -467,7 +467,7 @@ describe("real API and unix acceptance", () => {
       for (const method of ["GET", "POST", "OPTIONS"]) for (const cookie of [false, true]) {
         const headers = { "Content-Type": "application/json", ...(cookie ? { Cookie: "wtc.session=x" } : {}) };
         const reply = await f.send(listener, { path: alias + "/session.describe", method, headers }).reply;
-        expect(reply.status, `${listener} ${method} ${alias} cookie=${cookie}`).toBe(cookie ? 401 : 404);
+        expect(reply.status, `${listener} ${method} ${alias} cookie=${cookie}`).toBe(cookie && listener === "unix" ? 401 : 404);
         expect(reply.body).toEqual(cookie && (listener === "unix") ? refusal("provider_cookie_not_supported") : refusal("operation_not_found", "not_found", 404, "none"));
       }
     }
@@ -914,7 +914,7 @@ describe("operations cookie listener conformance", () => {
     ["Cookie", "wtc.session_token=alias", "invalid_request", 400],
     ["Cookie", "__Secure-wtc.session_token=x; __Secure-wtc.session_token=y", "invalid_request", 400],
     ["Cookie", `__Secure-wtc.session_token=${"x".repeat(8192)}`, "invalid_request", 400],
-  ] as const)("cookie boundary rejects %s=%s before body, budget and provider", async (name, value, reason, status) => {
+  ] as const)("cookie boundary rejects %s before body, budget and provider", async (name, value, reason, status) => {
     const f = await fixture("better-auth", undefined, undefined, true);
     const resolve = vi.spyOn(f.runtime, "resolveSession"), acquire = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire"); let data = 0;
     f.controller.server.prependListener("request", req => req.on("newListener", event => { if (event === "data") data++; }));
@@ -1052,4 +1052,41 @@ describe("cookie cancellation ownership", () => {
       expect(f.runtime.requestBudget.active).toBe(1);
     } finally { release.done(); }
   }, 15_000);
+});
+
+it("cookie disconnects abort twelve resolutions and retain all initiating slots until real work settles", async () => {
+  const f = await fixture("better-auth", undefined, undefined, true), entered = pause(), aborted = pause(), release = pause();
+  let calls = 0, cancellations = 0;
+  vi.spyOn(f.runtime, "resolveSession").mockImplementation((_headers, { signal } = {}) => {
+    if (++calls === 12) entered.done();
+    const result = new Promise<null>((_resolve, reject) => signal!.addEventListener("abort", () => { if (++cancellations === 12) aborted.done(); reject(new Error("cancelled public result")); }, { once: true }));
+    return { result, settled: release.promise };
+  });
+  const held = Array.from({ length: 12 }, () => f.send("api", { headers: cookieHeaders })); await entered.promise;
+  try {
+    for (const h of held) h.call.destroy(); await aborted.promise;
+    for (const h of held) await expect(h.reply).rejects.toMatchObject({ code: "ECONNRESET" });
+    expect(f.runtime.requestBudget.active).toBe(12);
+    const overflow = await f.send("api", { headers: cookieHeaders }).reply; assertCookieCapacity(overflow); expect(calls).toBe(12);
+  } finally { release.done(); }
+});
+
+it.each([
+  ['{"actor":{"kind":"installation"}}', "invalid_input"],
+  ['{"session":{"id":"spoof"}}', "invalid_input"],
+  ['{"x":1,"x":2}', "invalid_request"],
+  ['[]', "invalid_request"],
+  ['{"unterminated":', "invalid_request"],
+])("cookie strict JSON and server-owned authority: %s", async (body, reason) => {
+  const f = await fixture("better-auth", undefined, undefined, true);
+  const reply = await f.send("api", { headers: cookieHeaders, body }).reply;
+  expect(reply.body).toEqual(refusal(reason, "invalid_request", 400, "none")); expect(reply.body).not.toHaveProperty("actor");
+  if (reason === "invalid_request") expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+});
+
+it("cookie content type and byte ceiling refuse before provider work", async () => {
+  const f = await fixture("better-auth", undefined, undefined, true);
+  for (const type of ["text/plain", "application/json; charset=utf-8"]) expect((await f.send("api", { headers: { ...cookieHeaders, "Content-Type": type } }).reply).body.error.reason).toBe("invalid_request");
+  const reply = await f.send("api", { headers: cookieHeaders, body: " ".repeat(65537) }).reply;
+  expect(reply.body).toEqual(refusal("request_too_large", "payload_too_large", 413, "none")); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
 });

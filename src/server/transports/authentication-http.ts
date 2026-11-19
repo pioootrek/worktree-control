@@ -145,14 +145,12 @@ export class AuthenticationHttp {
       if (request.method === "POST" || (operation && browserOperationRequires(operation, "factor"))) {
         // Same-origin browser GETs omit Origin. Only browser Fetch Metadata may
         // substitute for it; boundary() still rejects conflicting/duplicate headers.
-        const sameOriginGet = request.method === "GET" && request.headers.origin === undefined
-          && request.headers["sec-fetch-site"] === "same-origin";
-        if (request.headers.origin !== this.#origin && !sameOriginGet) fail(403, "origin_forbidden");
+        authenticationRequestOrigin(request, this.#origin);
       }
       const nativeHeaders = this.headers(request);
       let input: unknown;
       if (request.method === "POST") {
-        if (request.headers["content-type"] !== "application/json") fail(400, "invalid_request");
+        authenticationJsonContentType(request);
         const limit = runtimeRead || runtimeMutation || verification || configuration ? Math.min(4096, this.#limits.passwordBodyBytes) : knowledge ? this.#limits.knowledgeBodyBytes : operation!.startsWith("passkey-") ? this.#limits.webAuthnBodyBytes : this.#limits.passwordBodyBytes;
         const text = await readBoundedBody(request, { limit, timeoutMs: this.#limits.bodyTimeoutMs, signal: lifetime.signal });
         input = parseStrictJson(text, knowledge ? this.#limits.knowledgeJson : this.#limits.json);
@@ -352,4 +350,15 @@ export function authenticationProviderHeaders(request: IncomingMessage, trustedF
     const value = request.headers[name]; if (typeof value === "string") headers.set(name, value);
   }
   return headers;
+}
+
+/** Required browser Origin; only same-origin browser GET metadata may substitute. */
+export function authenticationRequestOrigin(request: IncomingMessage, origin: string): void {
+  const sameOriginGet = request.method === "GET" && request.headers.origin === undefined
+    && request.headers["sec-fetch-site"] === "same-origin";
+  if (request.headers.origin !== origin && !sameOriginGet) fail(403, "origin_forbidden");
+}
+
+export function authenticationJsonContentType(request: IncomingMessage): void {
+  if (request.headers["content-type"] !== "application/json") fail(400, "invalid_request");
 }

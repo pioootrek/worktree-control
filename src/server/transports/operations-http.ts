@@ -8,7 +8,7 @@ import {
 import type { DatabaseAdmissionOptions } from "../database-admission";
 import type { VerifiedProviderSession, AuthenticationProviderRuntime } from "../modules/authentication";
 import type { AuthenticationRequestBudget, AuthenticationRequestSlot } from "../bootstrap/authentication-request-budget";
-import { authenticationRequestBoundary, authenticationProviderHeaders } from "./authentication-http";
+import { authenticationRequestBoundary, authenticationProviderHeaders, authenticationRequestOrigin, authenticationJsonContentType } from "./authentication-http";
 import type { PublicOperationError } from "@/shared/contracts/operations";
 import { BoundaryError, parseStrictJson, readBoundedBody, requestCookies, SESSION_COOKIE } from "./authentication-http-boundary";
 import { parseOperationsPath } from "./operations-path";
@@ -136,7 +136,7 @@ export function createOperationsHttp(options: {
         }
         authenticationRequestBoundary(request, options.cookieBoundary);
         const cookies = requestCookies(request.headers.cookie);
-        if (request.headers.origin !== options.cookieBoundary.origin) throw new BoundaryError(403, "origin_forbidden");
+        authenticationRequestOrigin(request, options.cookieBoundary.origin);
         nativeHeaders = authenticationProviderHeaders(request);
         const session = cookies.get(SESSION_COOKIE);
         if (session !== undefined) nativeHeaders.set("cookie", `${SESSION_COOKIE}=${session}`);
@@ -153,6 +153,7 @@ export function createOperationsHttp(options: {
         if (single.has(name) && seen.has(name)) throw new BoundaryError(400, "invalid_request");
         seen.add(name);
       }
+      if (cookie) authenticationJsonContentType(request);
       if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers["content-type"] ?? "")) throw new BoundaryError(400, "invalid_request");
       const deadline = runtime.runtime.now() + limits.deadlineMs;
       const body = parseStrictJson(await readBoundedBody(request, {
@@ -185,18 +186,20 @@ export function createOperationsHttp(options: {
       if (result.status !== "committed") operationsFailure(response, result.error);
     } catch (error) {
       operationsFailure(response, timedOut ? publicError(new OperationError("unavailable", "request_timed_out", { retry: "retry" })) : error instanceof BoundaryError
-        ? failure(error.status === 413 ? "payload_too_large" : error.status === 403 ? "forbidden" : "invalid_request", error.code)
+        ? failure(error.status === 413 ? "payload_too_large" : error.status === 403 ? "forbidden" : error.status === 503 ? "unavailable" : "invalid_request", error.code)
         : publicError(error));
     } finally {
       // Never relinquish ownership merely because the handler returned or the client disconnected.
       // settle is called once; failed cleanup retains capacity. No race against
       // result cancellation: the provider's settled promise owns its real work.
       try { if (slot) await slot.settle(Promise.all(started)); else await Promise.all(started); }
-      finally { await completed; }
-      clearTimeout(timer);
-      cancellations.delete(cancel);
-      request.off("aborted", cancel); request.off("error", cancel);
-      response.off("finish", finished); response.off("close", closed);
+      finally {
+        await completed;
+        clearTimeout(timer);
+        cancellations.delete(cancel);
+        request.off("aborted", cancel); request.off("error", cancel);
+        response.off("finish", finished); response.off("close", closed);
+      }
     }
   };
   return {

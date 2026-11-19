@@ -52,9 +52,9 @@ const ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
   "scripts/package-smoke.test.mjs": "imports a copy of package-smoke.mjs from a temporary directory",
 });
 
-/** Exact production consumers. No legacy handler imports the module. */
+/** Exact production and mounted-provider proof consumers. No legacy handler imports the module. */
 const APPROVED_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
-  "packages/auth-provider-better-auth-proof/test/operations-cookie.test.ts": "runs cookie listener proofs through production bootstrap and reuses the mounted boundary driver and exact conformance assertions",
+  "packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts": "runs cookie listener proofs through production bootstrap and reuses the mounted boundary driver and exact conformance assertions",
   "src/server/bootstrap/operations-runtime.ts": "composes the runtime from the store owner's read ports and controller policies",
   "src/server/transports/operations-http.ts": "uses the public classifier and error serializer to avoid duplicating wire and failure policy; receives the runtime as a value",
 });

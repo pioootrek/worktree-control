@@ -410,8 +410,8 @@ Pinned configuration changes, disposal, maintenance and stopping refuse.
 The shared listener conformance suite is
 `src/server/modules/operations/http-boundary-conformance.test.ts`, with exact
 negative-control assertion identities in `http-boundary-driver.ts`.
-`packages/auth-provider-better-auth-proof/test/operations-cookie.test.ts` runs
-real Better Auth through production bootstrap under `node:test:auth-provider-proof`.
+`packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts` runs
+real Better Auth through production bootstrap under `node:test:auth-provider-cli`.
 Installed API bearer and unix operator checks run under `node:test:package`;
 `node:test:rbac-artifact` extends these to open, token and account modes and
 account cookies. `node:test:package:provider` builds the separate optional
@@ -1311,7 +1311,10 @@ imports under `tests/`, and a `src/` importer of such a helper.
 The approved importers of the module and shared contract are
 `src/server/bootstrap/operations-runtime.ts` (store-owner composition) and
 `src/server/transports/operations-http.ts` (the public wire classifier, error
-serializer and runtime types). The adapter receives the built runtime as a
+serializer and runtime types). The exact provider proof importer
+`packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts`
+reuses the listener driver and conformance assertions under real production
+bootstrap. It is test-only and mounts no additional operation. The adapter receives the built runtime as a
 value and creates no boundary. Approved entries must exist and really import
 the module or contract. Missing and stale entries fail, with negative controls.
 A second exact-importer guard permits only `src/cli/index.ts` to import the

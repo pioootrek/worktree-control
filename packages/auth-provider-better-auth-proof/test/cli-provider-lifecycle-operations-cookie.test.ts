@@ -19,6 +19,7 @@ import { createBoundaryDriver, assertCookieOrigin, operationRoute } from "@/serv
 import { PROVIDER_ENTRY, ORIGIN, OWNER_EMAIL, OWNER_PASSWORD } from "./fixture";
 import { aroundBrowser } from "./browser-authentication-fixture";
 
+let peers = 20;
 const closes: (() => Promise<unknown> | void)[] = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 const gate = () => { let open!: () => void; const promise = new Promise<void>(r => { open = r; }); return { promise, open }; };
@@ -56,7 +57,7 @@ async function fixture() {
   const server = createControllerServer(httpOptions);
   await new Promise<void>(resolve => server.server.listen(0, "127.0.0.1", resolve));
   closes.push(async () => { administration.stop(); await server.close(); await administration.dispose(); await store.closeAfterDrain(); });
-  const driver = createBoundaryDriver({ kind: "api", server: server.server, close: () => server.close(), legacyPath: "/api/auth/get-session", acceptedCredentials: ["cookie"] });
+  const driver = createBoundaryDriver({ kind: "api", localAddress: `127.0.0.${peers++}`, server: server.server, close: () => server.close(), legacyPath: "/api/auth/get-session", acceptedCredentials: ["cookie"] });
   let cookie = "__Secure-wtc.session_token=unresolved";
   const send = (path = operationRoute, body = "{}", headers: Record<string, string> = {}) => driver.send({ path, body, headers: { Host: "controller.test", Origin: ORIGIN, "Content-Type": "application/json", Cookie: cookie, ...headers } });
   const call = async (path = operationRoute, body = "{}", headers: Record<string, string> = {}) => {
@@ -80,14 +81,14 @@ describe("operations cookies through production bootstrap and real Better Auth",
     const old = f.cookie(); expect((await f.call("/api/auth/sign-out")).status).toBe(200);
     expect((await f.call(undefined, undefined, { Cookie: old })).body.error.reason).toBe("invalid_credential");
     expect((await f.call(undefined, undefined, { Cookie: old, Authorization: `Bearer ${f.installation}` })).body.error.reason).toBe("mixed_credentials");
-    await f.login();
+    expect((await f.login()).status).toBe(200);
     await f.administration.execute({ command: "auth-provider", action: "configure", input: { module: join(f.root, "provider.mjs"), origin: "https://changed.test", signingSecret: { kind: "preserve" } } });
     expect((await f.call()).body.error.reason).toBe("invalid_credential");
     f.maintenance(); expect((await f.call()).body.error.reason).toBe("release_not_eligible");
   });
 
   it("closes D1a-5a reserve deferral: sign-out and an accepted login completion succeed with operations initiating cap saturated", async () => {
-    const f = await fixture(); await f.ready(); await f.login();
+    const f = await fixture(); await f.ready(); expect((await f.login()).status).toBe(200);
     const entered = gate(), release = gate(), runtime = f.runtime(), browser = runtime.browser.bind(runtime);
     vi.spyOn(runtime, "browser").mockImplementation((...args) => args[0] !== "sign-in" ? browser(...args) : aroundBrowser(async () => {
       const work = browser(...args); const result = await work.result; entered.open(); await release.promise;
@@ -104,7 +105,7 @@ describe("operations cookies through production bootstrap and real Better Auth",
   });
 
   it.each(["maintenance", "configuration", "sign-out", "revoke", "grants", "deadline", "disconnect"])("real provider release after runner completion rechecks %s", async change => {
-    const f = await fixture(); await f.ready(); await f.login(); if (!f.operations.supported) throw new Error("supported runtime required");
+    const f = await fixture(); await f.ready(); expect((await f.login()).status).toBe(200); if (!f.operations.supported) throw new Error("supported runtime required");
     const runner = f.operations.runner, release = gate(), entered = gate(), readRelease = runner.readRelease.bind(runner);
     vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, input, options) => {
       if (operation.kind === "stream") throw new Error("read required");
@@ -125,8 +126,8 @@ describe("operations cookies through production bootstrap and real Better Auth",
     else { const reply = await pending.reply; if (change === "grants") { expect(reply.status).toBe(200); expect(reply.body.projects).toEqual([]); } else { expect(reply.status).toBeGreaterThanOrEqual(400); expect(reply.body).not.toHaveProperty("actor"); } }
   });
 
-  it.each(["/api/auth/sign-out", operationRoute])("shared browser origin conformance on %s with exact negative-control cause", async path => {
-    const f = await fixture(); await f.ready(); await f.login();
+  it.each(["/api/auth/sign-out", operationRoute])("shared browser origin conformance on %s using shared boundary assertion", async path => {
+    const f = await fixture(); await f.ready(); expect((await f.login()).status).toBe(200);
     const reply = await f.call(path, "{}", { Origin: "https://other.test" });
     assertCookieOrigin(reply);
   });
@@ -134,7 +135,7 @@ describe("operations cookies through production bootstrap and real Better Auth",
 
 
 it("production shutdown retains SQLite and controller lock during a blocked real provider delete and repeated cookie disconnects", async () => {
-  const f = await fixture(); await f.ready(); await f.login();
+  const f = await fixture(); await f.ready(); expect((await f.login()).status).toBe(200);
   const entered = gate(), release = gate();
   f.faults.beforeSessionDelete = async () => { entered.open(); await release.promise; };
   const pending = f.send("/api/auth/sign-out"); await entered.promise;
@@ -153,4 +154,11 @@ it("production shutdown retains SQLite and controller lock during a blocked real
     expect(finished).toBe(false); expect(f.database.open).toBe(true); expect(existsSync(lockPath)).toBe(true);
     release.open(); await closing; expect(f.database.open).toBe(false); expect(existsSync(lockPath)).toBe(false);
   } finally { release.open(); }
+});
+
+
+it("disposed real provider refuses the cookie path", async () => {
+  const f = await fixture(); await f.ready(); expect((await f.login()).status).toBe(200);
+  await f.runtime().dispose();
+  expect((await f.call()).body.error).toMatchObject({ category: "unauthenticated", reason: "invalid_credential" });
 });

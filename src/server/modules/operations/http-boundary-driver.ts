@@ -13,7 +13,7 @@ export type BoundaryDriver = ReturnType<typeof createBoundaryDriver>;
 /** Only mounted transports belong here. Capacity is observed through saturation,
  * not a second counter or access to the listener's private accepted-work set. */
 export function createBoundaryDriver(options: {
-  kind: "api" | "unix"; server: Server; socketPath?: string; close(): Promise<void>;
+  kind: "api" | "unix"; server: Server; localAddress?: string; socketPath?: string; close(): Promise<void>;
   legacyPath: string; acceptedCredentials: readonly string[];
 }) {
   const address = () => options.socketPath ? { socketPath: options.socketPath }
@@ -22,7 +22,7 @@ export function createBoundaryDriver(options: {
     let call!: ClientRequest;
     const reply = new Promise<Reply>((resolve, reject) => {
       call = request({ ...address(), path: input.path ?? operationRoute, method: input.method ?? "POST",
-        headers: input.headers ?? { "Content-Type": "application/json" } }, response => {
+        localAddress: options.localAddress, headers: input.headers ?? { "Content-Type": "application/json" } }, response => {
         const chunks: Buffer[] = [];
         response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
         response.on("end", () => {

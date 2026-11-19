@@ -373,6 +373,7 @@ try {
     assert.equal((await json(currentCli, ["auth", "status"])).mode, "token");
     await start();
     await operationApi("token", installation.token); await operationSocket("token");
+    assert.equal((await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" })).body.error.reason, "credential_not_accepted_here");
     const authorized = await fetch(endpoint + "/api/dashboard", { headers: { Authorization: `Bearer ${installation.token}` } }); await authorized.arrayBuffer();
     assert.equal(authorized.status, 200, "Installation token must keep working without a provider.");
     const anonymous = await fetch(endpoint + "/api/dashboard"); await anonymous.arrayBuffer(); assert.equal(anonymous.status, 401);
@@ -416,6 +417,7 @@ try {
   await step("community-open-mode-without-provider", async () => {
     await json(currentCli, ["auth", "mode", "set", "open"]); await start();
     await operationApi("open"); await operationSocket("open");
+    assert.equal((await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" })).body.error.reason, "credential_in_open_mode");
     const anonymous = await fetch(endpoint + "/api/dashboard"); await anonymous.arrayBuffer(); assert.equal(anonymous.status, 200);
     await stop(); await json(currentCli, ["auth", "mode", "set", "token"]);
   });
