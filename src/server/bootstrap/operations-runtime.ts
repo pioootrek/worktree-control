@@ -65,7 +65,7 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
     const resolutionFailure = (error: unknown) => {
       if (!admissionFailureOf(error)) return error;
       return requestOptions?.signal?.aborted ? new OperationError("unavailable", "request_cancelled", { retry: "retry" })
-        : classify(error);
+        : classify(error, null);
     };
     try {
       if (requestOptions?.signal?.aborted) throw new OperationError("unavailable", "request_cancelled", { retry: "retry" });
