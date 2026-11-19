@@ -1403,8 +1403,13 @@ mounts remain for later steps.
   Contention delays delivery; refused admission rejects with retryable
   `busy` / `admission_refused`, and an aborted wait with
   `unavailable` / `request_cancelled`. An evaluated refusal still returns null.
-  The accessor rejects with `ControllerOperationSessionResolutionError` (`busy` or `cancelled`);
-  the operations composition maps it to the public errors above.
+  The accessor rejects with `ControllerOperationSessionResolutionError` only
+  when the entry check could not run or the request was already cancelled.
+  Connection errors from provider work and from the delivery check reach the
+  operations composition unchanged, which classifies them: contention is
+  retryable `busy`; a closed, draining or poisoned store and a provider fault
+  such as an expired borrow are `unavailable` / `database_unavailable` without
+  a retry instruction.
   Administration also owns the browser's shared 16-slot request budget, with
   four slots reserved for completions. Its initiating acquisition and release
   after both response completion and work settlement are ready for the operations

@@ -91,7 +91,7 @@ export interface ControllerAuthenticationOptions {
 /** Busy means the policy could not run, not that it evaluated to false. */
 export type ProviderSessionEligibility = "eligible" | "ineligible" | "busy";
 
-/** Resolution admission failed before eligibility could be evaluated. No credential verdict. */
+/** The entry check could not obtain admission, or the request was cancelled before it. No credential verdict. */
 export class ControllerOperationSessionResolutionError extends Error {
   constructor(readonly code: "busy" | "cancelled") {
     super(code === "busy" ? "Session eligibility could not obtain admission." : "Session resolution was cancelled before admission.");
@@ -105,9 +105,11 @@ export interface ControllerOperationSessionAuthority {
   readonly reader: Pick<AuthenticationProviderStorage, "currentSession">;
   /** Evaluate inside core admission; no second admission attempt. */
   isSessionAuthorityEligible(): boolean;
-  /** Admission contention/cancellation reject result with ControllerOperationSessionResolutionError;
-   * only an evaluated eligibility refusal returns null. Operations maps these
-   * admission errors to its public busy/cancelled errors in its composition.
+  /** Only an evaluated eligibility refusal returns null. An entry check that
+   * could not run, or a request cancelled before it, rejects result with
+   * ControllerOperationSessionResolutionError. Connection errors from provider
+   * work and from the queued delivery check reject unchanged: the operations
+   * composition classifies them, so a provider fault never reads as contention.
    */
   resolveRequest: AuthenticationProviderRuntime["resolveRequest"];
 }
@@ -149,12 +151,6 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
     const checked = d.store.admission.tryRun(eligibility.providerSessionEligible);
     return !checked.ran ? "busy" : checked.value ? "eligible" : "ineligible";
   };
-  const resolutionFailure = (error: unknown, signal?: AbortSignal) => {
-    if (databaseAdmissionFailure(error)) {
-      return new ControllerOperationSessionResolutionError(signal?.aborted ? "cancelled" : "busy");
-    }
-    return error;
-  };
   const requestBudget = new AuthenticationRequestBudget(CONTROLLER_AUTHENTICATION_POLICY.maxInFlight,
     CONTROLLER_AUTHENTICATION_POLICY.limits.reservedCompletionSlots);
   const operationSessions: ControllerOperationSessionAuthority = Object.freeze({
@@ -164,7 +160,7 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
     resolveRequest(headers: Headers, options: { signal?: AbortSignal } = {}) {
       const refused = () => ({ result: Promise.resolve(null), settled: Promise.resolve() });
       const failed = (error: unknown) => {
-        const result = Promise.reject(resolutionFailure(error, options.signal));
+        const result = Promise.reject(error);
         result.catch(() => undefined);
         return { result, settled: Promise.resolve() };
       };
@@ -180,7 +176,7 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
         track(resolution.settled);
         const result = resolution.result.then(value => d.store.admission.run(
           () => eligibility.providerSessionEligible() && runtime === current ? value : null, { signal: options.signal },
-        )).catch(error => { throw resolutionFailure(error, options.signal); });
+        ));
         result.catch(() => undefined);
         // Delivery now includes a queued eligibility check. Retain it as well
         // as provider work until it has actually ended, including cancellation.

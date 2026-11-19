@@ -261,7 +261,22 @@ describe("production provider administration and operations composition", () => 
     } finally { ready.resolve(); release.resolve(); await borrowing; await ticket; }
   });
 
-  it("reports resolved-session mint contention as retryable busy", async () => {
+  it("keeps provider faults and contention apart: an expired provider borrow is unavailable, not retryable busy", async () => {
+    const f = await fixture(); f.configure(); const prepared = f.prepare(); await f.started.promise; f.resume.resolve(); await prepared;
+    const expired = Object.assign(new Error("synthetic expired provider borrow"), { name: "ExclusiveConnectionError", code: "expired" });
+    f.resolveRequest.mockImplementation(() => ({ result: Promise.reject(expired), settled: Promise.resolve() }));
+    const resolution = f.operations.resolveSession(new Headers());
+    const failure = await resolution.result.then(() => null, (error: unknown) => error as { category?: string; reason?: string; retry?: string });
+    await resolution.settled;
+    expect(failure).toMatchObject({ category: "unavailable", reason: "database_unavailable" });
+    expect(failure?.retry).not.toBe("retry");
+    const direct = f.admin.operationSessionAuthority().resolveRequest(new Headers());
+    await expect(direct.result).rejects.toBe(expired); await direct.settled;
+  });
+
+  // Mint's outer admission refuses here; the inner eligibility branch is covered by the
+  // composition suite's forced tryRun case.
+  it("reports mint that cannot obtain admission for a resolved session as retryable busy", async () => {
     const f = await fixture(false, { admissionTimeoutMs: 20 });
     f.configure(); const prepared = f.prepare(); await f.started.promise; f.resume.resolve(); await prepared;
     const resolved = await f.operations.resolveSession(new Headers()).result;
@@ -276,7 +291,8 @@ describe("production provider administration and operations composition", () => 
     expect(await f.mintHuman()).toMatchObject({ ok: true });
   });
 
-  it("evaluates staging and runner revalidation inside live admission despite a queued provider", async () => {
+  // Invariant, true before and after the contention fix: an admitted phase joins its live admission.
+  it("keeps staging and runner revalidation inside live admission while a provider is queued", async () => {
     const f = await fixture(); f.configure(); const prepared = f.prepare(); await f.started.promise; f.resume.resolve(); await prepared;
     const human = await f.mintHuman(); if (!human.ok) throw new Error("human refused");
     let borrowing: Promise<void> | undefined;
