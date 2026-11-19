@@ -1403,6 +1403,8 @@ mounts remain for later steps.
   Contention delays delivery; refused admission rejects with retryable
   `busy` / `admission_refused`, and an aborted wait with
   `unavailable` / `request_cancelled`. An evaluated refusal still returns null.
+  The accessor rejects with `ExclusiveConnectionError` (`busy` or `cancelled`);
+  the operations composition maps it to the public errors above.
   Administration also owns the browser's shared 16-slot request budget, with
   four slots reserved for completions. Its initiating acquisition and release
   after both response completion and work settlement are ready for the operations

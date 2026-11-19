@@ -201,11 +201,12 @@ describe("production provider administration and operations composition", () => 
       expect(f.operations.providerSessionEligible()).toBe(false);
       expect(f.operations.providerSessionEligibility()).toBe("busy");
       expect(f.admin.providerSessionEligibility()).toBe("busy");
-      for (const resolve of [f.operations.resolveSession, f.admin.operationSessionAuthority().resolveRequest]) {
-        const resolution = resolve(new Headers());
-        await expect(resolution.result).rejects.toMatchObject({ category: "busy", reason: "admission_refused", retry: "retry" });
-        await resolution.settled;
-      }
+      const resolution = f.operations.resolveSession(new Headers());
+      await expect(resolution.result).rejects.toMatchObject({ category: "busy", reason: "admission_refused", retry: "retry" });
+      await resolution.settled;
+      const direct = f.admin.operationSessionAuthority().resolveRequest(new Headers());
+      await expect(direct.result).rejects.toMatchObject({ name: "ExclusiveConnectionError", code: "busy" });
+      await direct.settled;
       expect(f.resolveRequest).not.toHaveBeenCalled();
     } finally { release.resolve(); await borrowing; }
     expect(f.operations.providerSessionEligible()).toBe(true);

@@ -5,7 +5,7 @@ import type { VerifiedProviderSession } from "../modules/authentication";
 import {
   AgentTokenVerifier, CompositeCredentialVerifier, createListenerBoundary, InstallationVerifier,
   OperationError, OperationRegistry, OperationRunner, ProviderSessionVerifier, sessionDescribe,
-  sqliteGrants, SqliteResourceResolver, admissionFailureOf, mintOfflineContext, publicError, resolveAcceptance,
+  sqliteGrants, SqliteResourceResolver, admissionFailureOf, classify, mintOfflineContext, publicError, resolveAcceptance,
   type AuthenticationContext, type ListenerBoundary, type OperationRuntime, type PresentedCredentials,
 } from "../modules/operations";
 import { authenticationModes, type AuthenticationMode, type ListenerKind, type PublicOperationError } from "../../shared/contracts/operations";
@@ -62,14 +62,22 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   /** False includes contention; use providerSessionEligibility to distinguish it. */
   const providerSessionEligible = () => providerSessionEligibility() === "eligible";
   const resolveSession: ControllerOperationSessionAuthority["resolveRequest"] = (headers, requestOptions) => {
+    const resolutionFailure = (error: unknown) => {
+      if (!admissionFailureOf(error)) return error;
+      return requestOptions?.signal?.aborted ? new OperationError("unavailable", "request_cancelled", { retry: "retry" })
+        : classify(error);
+    };
     try {
       if (requestOptions?.signal?.aborted) throw new OperationError("unavailable", "request_cancelled", { retry: "retry" });
       const checked = providerSessionEligibility();
       if (checked === "busy") throw new OperationError("busy", "admission_refused");
       if (checked === "ineligible") return { result: Promise.resolve(null), settled: Promise.resolve() };
-      return provider!.resolveRequest(headers, requestOptions);
+      const resolution = provider!.resolveRequest(headers, requestOptions);
+      const result = resolution.result.catch(error => { throw resolutionFailure(error); });
+      result.catch(() => undefined);
+      return { result, settled: resolution.settled };
     } catch (error) {
-      const result = Promise.reject(error);
+      const result = Promise.reject(resolutionFailure(error));
       result.catch(() => undefined);
       return { result, settled: Promise.resolve() };
     }

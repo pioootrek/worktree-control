@@ -12,7 +12,8 @@ import { ProviderConfigurationApplication, type ProviderConfigurationApplication
 import { AuthenticationHttp } from "../transports/authentication-http";
 import type { ProviderSessionAuthority } from "../modules/identity";
 import type { SqliteStateStore } from "../sqlite-store";
-import { OperationError, admissionFailureOf } from "../modules/operations";
+import { databaseAdmissionFailure } from "../database-admission";
+import { ExclusiveConnectionError } from "../infrastructure/sqlite/exclusive-connection";
 
 /** Engineering capacity bounds for this controller composition, independent of proof fixtures.
  * They bound work/storage; they neither select account mode nor prescribe account protection.
@@ -97,6 +98,10 @@ export interface ControllerOperationSessionAuthority {
   readonly reader: Pick<AuthenticationProviderStorage, "currentSession">;
   /** Evaluate inside core admission; no second admission attempt. */
   isSessionAuthorityEligible(): boolean;
+  /** Admission contention/cancellation reject result with ExclusiveConnectionError;
+   * only an evaluated eligibility refusal returns null. Operations maps these
+   * admission errors to its public busy/cancelled errors in its composition.
+   */
   resolveRequest: AuthenticationProviderRuntime["resolveRequest"];
 }
 
@@ -138,9 +143,9 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
     return !checked.ran ? "busy" : checked.value ? "eligible" : "ineligible";
   };
   const resolutionFailure = (error: unknown, signal?: AbortSignal) => {
-    if (admissionFailureOf(error)) {
-      return signal?.aborted ? new OperationError("unavailable", "request_cancelled", { retry: "retry" })
-        : new OperationError("busy", "admission_refused");
+    if (databaseAdmissionFailure(error)) {
+      return signal?.aborted ? new ExclusiveConnectionError("cancelled", "Session resolution was cancelled before admission.")
+        : new ExclusiveConnectionError("busy", "Session eligibility could not obtain admission.");
     }
     return error;
   };
@@ -157,10 +162,10 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
         result.catch(() => undefined);
         return { result, settled: Promise.resolve() };
       };
-      if (options.signal?.aborted) return failed(new OperationError("unavailable", "request_cancelled", { retry: "retry" }));
+      if (options.signal?.aborted) return failed(new ExclusiveConnectionError("cancelled", "Session resolution was cancelled before admission."));
       let checked: ProviderSessionEligibility;
       try { checked = providerSessionEligibility(); } catch (error) { return failed(error); }
-      if (checked === "busy") return failed(new OperationError("busy", "admission_refused"));
+      if (checked === "busy") return failed(new ExclusiveConnectionError("busy", "Session eligibility could not obtain admission."));
       if (checked === "ineligible") return refused();
       const current = runtime!;
       try {
@@ -177,7 +182,7 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
         const settled = Promise.all([resolution.settled, delivery]).then(() => undefined);
         settled.catch(() => undefined);
         return { result, settled };
-      } catch (error) { return admissionFailureOf(error) ? failed(error) : refused(); }
+      } catch (error) { return databaseAdmissionFailure(error) ? failed(error) : refused(); }
     },
   });
   // Reuse the ONE existing connection gate. New work checks the current config in its actual borrow.
