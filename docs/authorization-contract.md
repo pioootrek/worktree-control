@@ -375,7 +375,12 @@ to initiating requests; browser completions retain four. Before body reads it
 also checks the composition's current provider eligibility, as the browser checks
 its pinned-configuration guard. Busy remains contention; an evaluated refusal
 is passed to mint with the raw credentials so the acceptance table keeps its
-mode-specific or mixed-credential answer. Saturation answers
+mode-specific or mixed-credential answer. If mint returns `invalid_credential`
+or succeeds after that pre-body refusal, the adapter answers retryable
+`unavailable` / `provider_session_unavailable`: it resolved no session and cannot
+judge the cookie. Without a configured public origin, the server accepts no
+sessions at all; that branch retains its acceptance refusals, including
+`unauthenticated` / `invalid_credential` in account mode. Saturation answers
 `busy` / `listener_capacity` with `Retry-After: 1`. Operations also retain the
 API's 32-request owner. It checks JSON content type, reads at most 65536 bytes,
 and parses strict JSON with depth 8 and 128 fields. The body must be an object;
@@ -387,14 +392,22 @@ signal, then passes the resolved session and the original raw presented
 credentials to `mint`. Stage, verification and mint share one admitted phase.
 `runner.readRelease` performs the fresh admitted read and Node write. It checks
 current authority, grants, directory, clock, deadline, connection and controller
-eligibility. No successful DTO or usage timestamp is written outside that phase.
+eligibility. If the provider becomes ineligible between mint and the final read,
+revalidation keeps its existing `unauthenticated` / `credential_no_longer_valid`
+refusal. No successful DTO or usage timestamp is written outside that phase.
 
 All refusals use the operations five-field error envelope. Browser authority
 failures map to `invalid_request` / `invalid_authority` (400); origin and fetch
 failures to `forbidden` / `origin_forbidden` (403). Cookie syntax and singleton
 failures use `invalid_request` (400), body excess `payload_too_large` (413).
-An evaluated missing, revoked or ineligible session is `unauthenticated` /
-`invalid_credential`. A mixed request is `unauthenticated` / `mixed_credentials`.
+A cookie examined and refused by an eligible provider or verifier (unknown,
+expired, revoked, signed out or a disabled account) is `unauthenticated` /
+`invalid_credential`. An ineligible provider at mint (not loaded, failed to load,
+changed pinned configuration or disposed) is retryable `unavailable` /
+`provider_session_unavailable` (503, `Retry-After: 1`). This also applies when
+resolution returns null after eligibility is lost in flight. Controller
+maintenance and stopping retain their earlier refusal. A mixed request is
+`unauthenticated` / `mixed_credentials`.
 Contention remains `busy` / `admission_refused`; cancellation remains
 `unavailable` / `request_cancelled`, both retryable. Provider/storage faults
 retain `unavailable` / `database_unavailable`. The total ten-second deadline

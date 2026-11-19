@@ -23,6 +23,11 @@ import { aroundBrowser } from "./browser-authentication-fixture";
 let peers = 20;
 const closes: (() => Promise<unknown> | void)[] = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+const expectProviderUnavailable = (reply: { status: number; body: Record<string, unknown>; headers: Record<string, unknown> }) => {
+  expect(reply.status).toBe(503);
+  expect(reply.body).toEqual({ error: { category: "unavailable", status: 503, reason: "provider_session_unavailable", retry: "retry", effect: null } });
+  expect(reply.headers["retry-after"]).toBe("1");
+};
 const gate = () => { let open!: () => void; const promise = new Promise<void>(r => { open = r; }); return { promise, open }; };
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "operations-provider-")); closes.push(() => rmSync(root, { recursive: true, force: true }));
@@ -75,17 +80,33 @@ async function fixture() {
 describe("operations cookies through production bootstrap and real Better Auth", () => {
   it("supports late readiness without rebuilding the operations boundary; real login, mixed-cookie failure, sign-out, maintenance and changed pinned configuration", async () => {
     const f = await fixture();
-    expect((await f.call()).body.error.reason).toBe("invalid_credential");
+    expectProviderUnavailable(await f.call());
     await f.ready(); expect((await f.login()).status).toBe(200);
     expect((await f.call()).body).toMatchObject({ actor: { kind: "human", accountId: f.owner.principalId }, mode: "better-auth", listener: "api" });
     expect((await f.call(undefined, undefined, { Authorization: `Bearer ${f.installation}` })).body.error.reason).toBe("mixed_credentials");
     const old = f.cookie(); expect((await f.call("/api/auth/sign-out")).status).toBe(200);
-    expect((await f.call(undefined, undefined, { Cookie: old })).body.error.reason).toBe("invalid_credential");
+    const signedOut = await f.call(undefined, undefined, { Cookie: old });
+    expect(signedOut.status).toBe(401); expect(signedOut.body.error).toMatchObject({ category: "unauthenticated", reason: "invalid_credential" });
     expect((await f.call(undefined, undefined, { Cookie: old, Authorization: `Bearer ${f.installation}` })).body.error.reason).toBe("mixed_credentials");
     expect((await f.login()).status).toBe(200);
     await f.administration.execute({ command: "auth-provider", action: "configure", input: { module: join(f.root, "provider.mjs"), origin: "https://changed.test", signingSecret: { kind: "preserve" } } });
-    expect((await f.call()).body.error.reason).toBe("invalid_credential");
+    expectProviderUnavailable(await f.call());
     f.maintenance(); expect((await f.call()).body.error.reason).toBe("release_not_eligible");
+  });
+
+  it("lost eligibility during real provider resolution is unavailable after the accessor delivery check returns null", async () => {
+    const f = await fixture(); await f.ready(); expect((await f.login()).status).toBe(200);
+    const entered = gate(), release = gate(), runtime = f.runtime(), resolve = runtime.resolveRequest.bind(runtime);
+    const resolution = vi.spyOn(runtime, "resolveRequest").mockImplementation((...args) => {
+      const work = resolve(...args);
+      return { result: work.result.then(async value => { expect(value).not.toBeNull(); entered.open(); await release.promise; return value; }), settled: work.settled };
+    });
+    const pending = f.send(); await entered.promise;
+    try {
+      await f.administration.execute({ command: "auth-provider", action: "configure", input: { module: join(f.root, "provider.mjs"), origin: "https://changed.test", signingSecret: { kind: "preserve" } } });
+    } finally { release.open(); }
+    expectProviderUnavailable(await pending.reply);
+    expect(resolution).toHaveBeenCalledTimes(1);
   });
 
   it("closes D1a-5a reserve deferral: sign-out and an accepted login completion succeed with operations initiating cap saturated", async () => {
@@ -179,7 +200,7 @@ it("production shutdown retains SQLite and controller lock during a blocked real
 it("disposed real provider refuses the cookie path", async () => {
   const f = await fixture(); await f.ready(); expect((await f.login()).status).toBe(200);
   await f.runtime().dispose();
-  expect((await f.call()).body.error).toMatchObject({ category: "unauthenticated", reason: "invalid_credential" });
+  expectProviderUnavailable(await f.call());
 });
 
 
@@ -188,7 +209,7 @@ it.each(["/api/auth/sign-out", operationRoute])("shared browser maintenance and 
   const browser = vi.spyOn(f.runtime(), "browser"), resolution = vi.spyOn(f.runtime(), "resolveRequest");
   await f.administration.execute({ command: "auth-provider", action: "configure", input: { module: join(f.root, "provider.mjs"), origin: "https://changed.test", signingSecret: { kind: "preserve" } } });
   const changed = await f.call(path);
-  if (path === operationRoute) expect(changed.body.error.reason).toBe("invalid_credential");
+  if (path === operationRoute) expectProviderUnavailable(changed);
   else { expect(changed.status).toBe(503); expect(changed.body.code).toBe("database_unavailable"); }
   f.maintenance(); const stopped = await f.call(path); expect(stopped.status).toBe(503);
   expect(browser).not.toHaveBeenCalled(); expect(resolution).not.toHaveBeenCalled();

@@ -176,7 +176,7 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
           if (acceptance.path === "provider_session") {
             const checked = providerSessionEligibility();
             if (checked === "busy") throw new OperationError("busy", "admission_refused");
-            if (checked === "ineligible") return refused("invalid_credential");
+            if (checked === "ineligible") throw new OperationError("unavailable", "provider_session_unavailable", { retry: "retry" });
           }
           const at: unknown = now();
           if (typeof at !== "number" || !Number.isFinite(at)) {

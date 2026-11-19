@@ -69,5 +69,6 @@ export function conform(assertion: string, observed: unknown, expected: unknown)
 
 /** Shared by browser and operations cookie listener scenarios, including mutants. */
 export function assertCookieOrigin(reply: Pick<Reply, "status">): void { conform("cookie origin boundary", reply.status, 403); }
+export function assertCookieRequiredOrigin(reply: Pick<Reply, "status">): void { conform("cookie required Origin boundary", reply.status, 403); }
 export function assertCookieCapacity(reply: Pick<Reply, "status">): void { conform("cookie capacity until settlement", reply.status, 503); }
 export function assertCookieRelease(reply: Pick<Reply, "status">): void { conform("cookie maintenance release", reply.status, 401); }

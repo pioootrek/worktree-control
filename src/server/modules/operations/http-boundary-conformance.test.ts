@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { listenAdminSocket } from "@/server/admin-socket";
 import { AuthenticationService } from "@/server/modules/authentication";
 import { buildOperationsRuntime } from "@/server/bootstrap/operations-runtime";
+import * as authenticationHttp from "@/server/transports/authentication-http";
 import { createControllerOperationEligibility } from "@/server/bootstrap/authentication-provider-lifetime";
 import { createControllerShutdown } from "@/server/bootstrap/controller-shutdown";
 import { createControllerServer } from "@/server/http-server";
@@ -21,7 +22,7 @@ import { resolveAppPaths } from "@/server/paths";
 import { createOperationsHttp, operationsFailure, OPERATIONS_HTTP_LIMITS } from "@/server/transports/operations-http";
 import { parseOperationsPath } from "@/server/transports/operations-path";
 import { acquireControllerLock } from "@/server/controller-lock";
-import { createBoundaryDriver, assertCookieOrigin, assertCookieCapacity, assertCookieRelease, conform, ConformanceFailure, operationRoute, type BoundaryDriver, type Reply, type WireReply } from "./http-boundary-driver";
+import { createBoundaryDriver, assertCookieOrigin, assertCookieRequiredOrigin, assertCookieCapacity, assertCookieRelease, conform, ConformanceFailure, operationRoute, type BoundaryDriver, type Reply, type WireReply } from "./http-boundary-driver";
 import { hash, iso, NOW, token } from "./adapters/credential-verifier-fixture";
 
 /** Neighbour checklist from PR #161 (source lines at its mounting review).
@@ -68,7 +69,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const admission = store.admission;
   vi.spyOn(store, "admission", "get").mockReturnValue(admission);
   const clock = { offset: 0 };
-  const db = ownedFixtureDatabase(store), state = { maintenance: false, stopping: false, configChanged: false };
+  const db = ownedFixtureDatabase(store), state = { maintenance: false, stopping: false, configChanged: false, providerState: "ready" as "ready" | "not_loaded" | "failed" };
   const installation = token("wsi"), agent = token("wts"), credentialId = agent.slice(4, 40);
   const storedLegacy = [
     { principal: "owner", principalKind: "owner", kind: "owner_session", secret: token("wts") },
@@ -91,7 +92,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const socketPath = join(root, "admin.sock");
   let apiOpen = true, unixOpen = true;
   const eligibility = createControllerOperationEligibility({ maintenance: () => fault === "omit_guard" ? false : state.maintenance, stopping: () => state.stopping,
-    configurationRestartRequired: () => state.configChanged, runtime: () => cookieMount ? { isSessionAuthorityEligible: () => !state.configChanged } : undefined });
+    configurationRestartRequired: () => state.configChanged, runtime: () => cookieMount && state.providerState === "ready" ? { isSessionAuthorityEligible: () => !state.configChanged } : undefined });
   const world = createProviderWorld({ now: Date.now() });
   const session = world.passwordLogin(world.account("human"));
   await store.admission.run(() => store.humanAccounts().createHumanPrincipal({ id: "human", kind: "human", status: "active" }, "fixture"));
@@ -923,6 +924,19 @@ describe("operations cookie listener conformance", () => {
     expect(data).toBe(0); expect(resolve).not.toHaveBeenCalled(); expect(acquire).not.toHaveBeenCalled();
   });
 
+  it("requires Origin on cookie requests before body, budget and provider", async () => {
+    const f = await fixture("better-auth", undefined, undefined, true);
+    const resolve = vi.spyOn(f.runtime, "resolveSession"), acquire = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire");
+    let bodyReads = 0;
+    f.controller.server.prependListener("request", req => req.on("newListener", event => { if (event === "data") bodyReads++; }));
+    const headers = Object.fromEntries(Object.entries(cookieHeaders).filter(([name]) => name !== "Origin"));
+    const reply = await f.send("api", { slow: true, headers }).reply;
+    assertCookieRequiredOrigin(reply);
+    expect(reply.body).toEqual(refusal("origin_forbidden", "forbidden", 403, "none"));
+    expect(bodyReads).toBe(0); expect(acquire).not.toHaveBeenCalled(); expect(resolve).not.toHaveBeenCalled();
+    expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+  });
+
   it.each(["Host", "Origin", "Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest", "Content-Type"])("cookie boundary rejects duplicate %s", async name => {
     const f = await fixture("better-auth", undefined, undefined, true);
     const value = name === "Host" ? "controller.test" : name === "Origin" ? "https://controller.test" : name === "Content-Type" ? "application/json" : name === "Sec-Fetch-Site" ? "same-origin" : name === "Sec-Fetch-Mode" ? "cors" : "empty";
@@ -941,7 +955,8 @@ describe("operations cookie listener conformance", () => {
     expect(forwarded[0].get("x-worktree-control-client-ip")).toBe("127.0.0.1");
     f.provider.resolveRequest.mockImplementation(() => ({ result: Promise.resolve(null), settled: Promise.resolve() }));
     expect((await f.send("api", { headers: { ...cookieHeaders, Authorization: `Bearer ${f.agent}` } }).reply).body).toEqual(refusal("mixed_credentials"));
-    expect((await f.send("api", { headers: cookieHeaders }).reply).body).toEqual(refusal("invalid_credential"));
+    const unknown = await f.send("api", { headers: cookieHeaders }).reply;
+    expect(unknown.status).toBe(401); expect(unknown.body).toEqual(refusal("invalid_credential"));
   });
 
   it.each(["maintenance", "configChanged"] as const)("cookie %s refusal preserves provider and body fences", async change => {
@@ -950,7 +965,74 @@ describe("operations cookie listener conformance", () => {
     f.controller.server.prependListener("request", req => req.on("newListener", event => { if (event === "data") bodyReads++; }));
     const reply = await f.send("api", { slow: true, headers: cookieHeaders }).reply;
     expect(bodyReads).toBe(0);
-    expect(reply.body).toEqual(change === "maintenance" ? refusal("release_not_eligible", "unavailable", 503, "none") : refusal("invalid_credential"));
+    expect(reply.body).toEqual(change === "maintenance" ? refusal("release_not_eligible", "unavailable", 503, "none") : refusal("provider_session_unavailable", "unavailable", 503, "retry"));
+    expect(reply.status).toBe(503);
+    expect(reply.headers["retry-after"]).toBe(change === "maintenance" ? undefined : "1");
+    expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+  });
+
+  it.each(["not_loaded", "failed", "configuration"] as const)("cookie provider %s is unavailable before body or resolution, with late readiness on the same boundary", async change => {
+    const f = await fixture("better-auth", undefined, undefined, true);
+    if (change === "configuration") f.state.configChanged = true;
+    else f.state.providerState = change;
+    const resolve = vi.spyOn(f.runtime, "resolveSession");
+    let bodyReads = 0;
+    f.controller.server.prependListener("request", req => req.on("newListener", event => { if (event === "data") bodyReads++; }));
+    const reply = await f.send("api", { slow: true, headers: cookieHeaders }).reply;
+    expect(reply.status).toBe(503);
+    expect(reply.body).toEqual(refusal("provider_session_unavailable", "unavailable", 503, "retry"));
+    expect(reply.headers["retry-after"]).toBe("1");
+    expect(bodyReads).toBe(0); expect(resolve).not.toHaveBeenCalled(); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+    if (change === "not_loaded") {
+      f.state.providerState = "ready";
+      const ready = await f.send("api", { headers: cookieHeaders }).reply;
+      expect(ready.status).toBe(200); expect(ready.body.actor).toMatchObject({ kind: "human", accountId: "human" });
+      expect(f.provider.resolveRequest).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("cookie eligibility lost during pending resolution is unavailable at mint", async () => {
+    const f = await fixture("better-auth", undefined, undefined, true), entered = pause(), release = pause();
+    f.provider.resolveRequest.mockImplementation(() => {
+      entered.done();
+      return { result: release.promise.then(() => null), settled: release.promise };
+    });
+    const pending = f.send("api", { headers: cookieHeaders }); await entered.promise;
+    try { f.state.configChanged = true; } finally { release.done(); }
+    const reply = await pending.reply;
+    expect(reply.status).toBe(503);
+    expect(reply.body).toEqual(refusal("provider_session_unavailable", "unavailable", 503, "retry"));
+    expect(reply.headers["retry-after"]).toBe("1"); expect(f.provider.resolveRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["invalid_credential", "success"] as const)("pre-body ineligibility never becomes a credential verdict when mint returns %s", async outcome => {
+    const f = await fixture("better-auth", undefined, undefined, true);
+    vi.spyOn(f.runtime, "providerSessionEligibility").mockReturnValueOnce("ineligible");
+    if (outcome === "success") {
+      // Controlled mint result: this branch must refuse even a returned context.
+      const minted = await f.built.mint("api", { bearers: [], providerSession: { secret: "" }, legacySecret: false, browserHeaders: true }, f.session, {});
+      expect(minted.ok).toBe(true);
+      vi.spyOn(f.runtime, "mint").mockResolvedValueOnce(minted);
+    }
+    const mint = vi.spyOn(f.runtime, "mint"), resolve = vi.spyOn(f.runtime, "resolveSession"); let bodyReads = 0;
+    f.controller.server.prependListener("request", req => req.on("newListener", event => { if (event === "data") bodyReads++; }));
+    const reply = await f.send("api", { slow: true, headers: cookieHeaders }).reply;
+    expect(reply.status).toBe(503);
+    expect(reply.body).toEqual(refusal("provider_session_unavailable", "unavailable", 503, "retry"));
+    expect(reply.headers["retry-after"]).toBe("1"); expect(bodyReads).toBe(0); expect(resolve).not.toHaveBeenCalled();
+    expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+    expect(mint).toHaveBeenCalledTimes(1);
+    const minted = await mint.mock.results[0].value;
+    expect(minted).toMatchObject(outcome === "success" ? { ok: true } : { ok: false, error: { reason: "invalid_credential" } });
+  });
+
+  it.each(["open", "token", "mixed"] as const)("ineligible cookie provider preserves the %s acceptance refusal", async mode => {
+    const f = await fixture(mode === "mixed" ? "better-auth" : mode, undefined, undefined, true);
+    f.state.providerState = "not_loaded";
+    const headers = mode === "mixed" ? { ...cookieHeaders, Authorization: `Bearer ${f.agent}` } : cookieHeaders;
+    const reply = await f.send("api", { slow: true, headers }).reply;
+    expect(reply.status).toBe(401);
+    expect(reply.body).toEqual(refusal(mode === "open" ? "credential_in_open_mode" : mode === "token" ? "credential_not_accepted_here" : "mixed_credentials"));
     expect(f.provider.resolveRequest).not.toHaveBeenCalled();
   });
 
@@ -1010,6 +1092,14 @@ describe("cookie conformance negative controls", () => {
     const reply = await f.send("api", { headers: { ...cookieHeaders, Origin: "https://other.test" } }).reply;
     expect(reply.body.actor.kind).toBe("human");
     expectFailure(() => assertCookieOrigin(reply), "cookie origin boundary", 200, 403);
+  });
+  it("negative control: removing only required-Origin fails cookie required Origin boundary with 200 versus 403", async () => {
+    const f = await fixture("better-auth", undefined, undefined, true);
+    vi.spyOn(authenticationHttp, "authenticationRequestOrigin").mockImplementation(() => {});
+    const headers = Object.fromEntries(Object.entries(cookieHeaders).filter(([name]) => name !== "Origin"));
+    const reply = await f.send("api", { headers }).reply;
+    expect(reply.body.actor.kind).toBe("human");
+    expectFailure(() => assertCookieRequiredOrigin(reply), "cookie required Origin boundary", 200, 403);
   });
   it("negative control: early work settlement fails cookie capacity until settlement with 401 versus 503", async () => {
     const f = await fixture("better-auth", undefined, undefined, true), release = pause();

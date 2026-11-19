@@ -132,7 +132,7 @@ export function createOperationsHttp(options: {
         // Let the existing acceptance table choose its exact public refusal.
         if (!options.cookieBoundary) {
           const minted = await runtime.mint(listener, presented, null, { signal: abort.signal });
-          if (!minted.ok) operationsFailure(response, minted.error);
+          if (!minted.ok && minted.error.reason !== "provider_session_unavailable") operationsFailure(response, minted.error);
           else operationsFailure(response, failure("unauthenticated", "invalid_credential"));
           return;
         }
@@ -146,13 +146,15 @@ export function createOperationsHttp(options: {
         if (!slot) { operationsFailure(response, failure("busy", "listener_capacity")); return; }
         if (response.writableFinished || response.destroyed) slot.responseFinished();
         // The browser checks the pinned configuration before any body read.
-        // Reuse the current policy; mint alone selects the acceptance verdict.
+        // Reuse the current policy; preserve mint's acceptance-table refusals.
         const eligibility = runtime.providerSessionEligibility();
         if (eligibility === "busy") throw new OperationError("busy", "admission_refused");
         if (eligibility === "ineligible") {
           const minted = await runtime.mint(listener, presented, null, { signal: abort.signal });
-          if (!minted.ok) operationsFailure(response, minted.error);
-          else operationsFailure(response, failure("unauthenticated", "invalid_credential"));
+          // No session was resolved. Readiness may change during mint, but it
+          // cannot turn this pre-body refusal into a credential verdict or success.
+          if (!minted.ok && minted.error.reason !== "invalid_credential") operationsFailure(response, minted.error);
+          else throw new OperationError("unavailable", "provider_session_unavailable", { retry: "retry" });
           return;
         }
       }
