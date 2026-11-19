@@ -5,7 +5,7 @@ import type { AuthenticationProviderRuntime, VerifiedProviderSession } from "../
 import {
   AgentTokenVerifier, CompositeCredentialVerifier, createListenerBoundary, InstallationVerifier,
   OperationError, OperationRegistry, OperationRunner, ProviderSessionVerifier, sessionDescribe,
-  sqliteGrants, SqliteResourceResolver, admissionFailureOf, publicError, resolveAcceptance,
+  sqliteGrants, SqliteResourceResolver, admissionFailureOf, mintOfflineContext, publicError, resolveAcceptance,
   type AuthenticationContext, type ListenerBoundary, type OperationRuntime, type PresentedCredentials,
 } from "../modules/operations";
 import { authenticationModes, type AuthenticationMode, type ListenerKind, type PublicOperationError } from "../../shared/contracts/operations";
@@ -40,13 +40,21 @@ function holds(call: () => unknown): boolean {
 }
 const refused = (reason: string): MintResult => Object.freeze({ ok: false, error: publicError(new OperationError("unauthenticated", reason)) });
 
+function mintFailure(error: unknown, admissionOptions: DatabaseAdmissionOptions): MintResult {
+  // Match the runner: an aborted admission is cancellation, not contention.
+  const failure = admissionOptions.signal?.aborted && admissionFailureOf(error)
+    ? new OperationError("unavailable", "request_cancelled", { retry: "retry" }) : error;
+  return Object.freeze({ ok: false, error: publicError(failure) });
+}
+
 /** Built and tested, but deliberately not called by any production path yet. */
 export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   const { store, activeMode, now, logs, provider, eligibility } = options;
   // In particular, legacy boot must not construct a boundary or verifier.
   if (!(authenticationModes as readonly string[]).includes(activeMode)) {
     return Object.freeze({ supported: false as const, eligible: () => false,
-      mint: async (): Promise<MintResult> => refused("unknown_mode") });
+      mint: async (): Promise<MintResult> => refused("unknown_mode"),
+      mintOffline: async (): Promise<MintResult> => refused("unknown_mode") });
   }
   const mode = activeMode as AuthenticationMode;
   const eligible = mode === "better-auth" && provider !== null
@@ -64,6 +72,12 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   });
   const registry = new OperationRegistry();
   registry.register(sessionDescribe);
+  const registryView = Object.freeze({
+    get: registry.get.bind(registry),
+    ids: registry.ids.bind(registry),
+    availableOn: registry.availableOn.bind(registry),
+    idsOn: registry.idsOn.bind(registry),
+  });
   const runner = new OperationRunner(runtime);
   const sessions = provider === null ? null : new ProviderSessionVerifier({
     providerId: "better-auth", reader: store.authenticationProviderStorage(), now, eligible,
@@ -81,7 +95,22 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
     if (open) boundaries[listener] = createListenerBoundary({ mode, listener, verifier, open: () => eligible() && holds(open) });
   }
   Object.freeze(boundaries);
-  return Object.freeze({ supported: true as const, runtime, runner, registry, boundaries, eligible,
+  return Object.freeze({ supported: true as const, runtime, runner, registry: registryView, boundaries, eligible,
+    /** Offline callers must mint through this composition, never call
+     * mintOfflineContext themselves: eligibility and the synchronous owner lock
+     * must hold at mint and every revalidation, inside core admission.
+     */
+    async mintOffline(lockHeld: () => boolean, admissionOptions: DatabaseAdmissionOptions): Promise<MintResult> {
+      try {
+        return await store.admission.run((): MintResult => {
+          const context = mintOfflineContext({ mode, lockHeld: () => eligible() && holds(lockHeld) });
+          context.revalidate();
+          return Object.freeze({ ok: true, context });
+        }, admissionOptions);
+      } catch (error) {
+        return mintFailure(error, admissionOptions);
+      }
+    },
     /** Provider resolution was awaited outside admission. Preserve raw credential
      * multiplicity in presented, including a cookie whose resolution failed.
      * resolvedSession is trusted server evidence, never request JSON.
@@ -115,10 +144,7 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
           return Object.freeze({ ok: true, context });
         }, admissionOptions);
       } catch (error) {
-        // Match the runner: an aborted admission is cancellation, not contention.
-        const failure = admissionOptions.signal?.aborted && admissionFailureOf(error)
-          ? new OperationError("unavailable", "request_cancelled", { retry: "retry" }) : error;
-        return Object.freeze({ ok: false, error: publicError(failure) });
+        return mintFailure(error, admissionOptions);
       }
     },
   });

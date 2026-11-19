@@ -181,8 +181,14 @@ function createGuard(root: string, composition = false) {
     for (const link of symlinks) found.push(`${relative(root, link)}: symbolic link inside the inventory`);
     for (const file of files) {
       const name = relative(root, file).split(sep).join("/");
-      const { literals, dynamic } = analyse(file, readFileSync(file, "utf8"));
+      const text = readFileSync(file, "utf8");
+      const { literals, dynamic } = analyse(file, text);
       for (const specifier of literals) if (reaches(file, specifier) && !Object.prototype.hasOwnProperty.call(importers, name)) found.push(`${name}: imports ${specifier}`);
+      // Text scan of allowlisted production files, including strings/templates
+      // feeding computed imports. The module guard keeps its own allowlist semantics.
+      if (composition && Object.prototype.hasOwnProperty.call(allowlist, name) && text.includes("operations-runtime")) {
+        found.push(`${name}: composition name in allowlisted text scan`);
+      }
       if (dynamic.length > 0 && !Object.prototype.hasOwnProperty.call(allowlist, name)) {
         for (const each of dynamic) found.push(`${name}: non-literal ${each}`);
       }
@@ -223,6 +229,25 @@ describe("authorization contract stays unmounted", () => {
 
   it("has no production importer of the composition yet", () => {
     expect(createGuard(repository, true).violations(ALLOWLIST)).toEqual([]);
+  });
+
+  it("text-scans allowlisted production files for computed composition imports", () => {
+    const root = mkdtempSync(join(tmpdir(), "composition-allowlist-")); temporary.push(root);
+    const name = "src/server/modules/authentication/provider-runtime.ts";
+    const file = join(root, name);
+    mkdirSync(dirname(file), { recursive: true });
+    const guard = createGuard(root, true);
+    writeFileSync(file, 'const path = "./external-provider"; await import(path);\n');
+    expect(guard.violations(ALLOWLIST)).toEqual([]);
+    for (const text of [
+      'const path = "../../bootstrap/operations-runtime"; await import(path);',
+      'const path = `../../bootstrap/operations-runtime.${extension}`; await import(path);',
+      'const name = "operations-runtime"; await import(`../../bootstrap/${name}`);',
+    ]) {
+      writeFileSync(file, text);
+      expect(guard.violations(ALLOWLIST)).toEqual([`${name}: composition name in allowlisted text scan`]);
+      expect(createGuard(root).violations(ALLOWLIST)).toEqual([]);
+    }
   });
 
   it("rejects unlisted importers and stale approved entries", () => {

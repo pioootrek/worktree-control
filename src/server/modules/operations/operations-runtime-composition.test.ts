@@ -11,7 +11,8 @@ import { resolveAppPaths } from "@/server/paths";
 import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
 import type { VerifiedProviderSession } from "@/server/modules/authentication";
 import { installationPermissions, projectPermissions, roleDefinitions } from "@/shared/contracts/operations";
-import { mintOfflineContext, type AuthenticationContext } from "./authentication-context";
+import type { AuthenticationContext } from "./authentication-context";
+import { OperationRegistry } from "./operation";
 import { sessionDescribe, MAX_DESCRIBED_PROJECTS } from "./session-describe";
 import { hash, iso, token, none, presentedBearer, NOW } from "./adapters/credential-verifier-fixture";
 import { createProviderWorld } from "./adapters/provider-session-fixture";
@@ -122,12 +123,14 @@ describe("unmounted real operations composition under strict admission", () => {
       expect(normal).toEqual({ ok: false, error: { category: "busy", status: 503, reason: "admission_refused", retry: "retry", effect: null } });
       const minted = await f.composition!.mint("api", presented, null, {});
       expect(minted).toEqual(normal);
+      expect(await f.composition!.mintOffline(() => true, {})).toEqual(normal);
     } finally {
       release();
       await borrowing;
     }
     // The same token still works after contention ends.
     expect(await f.composition!.mint("api", presented, null, {})).toMatchObject({ ok: true });
+    expect(await f.composition!.mintOffline(() => true, {})).toMatchObject({ ok: true });
   });
 
   it("gives mint the runner's cancellation error for an already aborted signal", async () => {
@@ -137,6 +140,7 @@ describe("unmounted real operations composition under strict admission", () => {
     const normal = await f.composition!.runner.run(sessionDescribe, context, {}, { signal: controller.signal });
     expect(normal).toEqual({ ok: false, error: { category: "unavailable", status: 503, reason: "request_cancelled", retry: "retry", effect: null } });
     expect(await f.composition!.mint("api", presented, null, { signal: controller.signal })).toEqual(normal);
+    expect(await f.composition!.mintOffline(() => true, { signal: controller.signal })).toEqual(normal);
   });
 
   it("reports an unexpected clock throw inside admitted mint as a sanitized internal error", async () => {
@@ -194,14 +198,68 @@ describe("unmounted real operations composition under strict admission", () => {
     expect(minted.ok).toBe(true);
     if (!minted.ok) throw new Error("expected agent");
     expect(await c.runner.run(sessionDescribe, minted.context, {})).toMatchObject({ ok: true, value: { actor: { kind: "agent" } } });
-    const offline = mintOfflineContext({ mode: "better-auth", lockHeld: () => true });
+    const offline = await c.mintOffline(() => true, {});
+    if (!offline.ok) throw new Error("expected offline operator");
     expect(c.eligible()).toBe(true);
-    expect(await c.runner.run(sessionDescribe, offline, {})).toMatchObject({ ok: true, value: { actor: { kind: "operator" }, fullAuthority: true } });
+    expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject({ ok: true, value: { actor: { kind: "operator" }, fullAuthority: true } });
     expect(await c.mint("api", { ...none(), providerSession: { secret: "synthetic-cookie" } }, null, {}))
       .toMatchObject(unauthenticated("invalid_credential"));
     f.state.maintenance = true;
     expect(c.eligible()).toBe(false);
     expect(await c.mint("api", presentedBearer(secret), null, {})).toMatchObject(unauthenticated("listener_closed"));
+    expect(await c.mintOffline(() => true, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
+    expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
+  });
+
+  it.each(["open", "token", "better-auth"])("fences offline mint and revalidation on maintenance and stopping in %s mode", async mode => {
+    const f = await fixture(mode), c = f.composition!;
+    // A real strict store read proves both mint-time lock checks run in admission.
+    const lockHeld = () => { f.store.getAuthenticationPolicy(); return true; };
+    for (const change of ["maintenance", "stopping"] as const) {
+      const offline = await c.mintOffline(lockHeld, {});
+      if (!offline.ok) throw new Error("expected offline operator");
+      expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject({
+        ok: true, value: { actor: { kind: "operator", accountId: null }, mode, listener: "offline", fullAuthority: true },
+      });
+      f.state[change] = true;
+      expect(await c.mintOffline(lockHeld, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
+      expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
+      f.state[change] = false;
+    }
+  });
+
+  it.each(["maintenance", "stopping", "configuration", "runtime"] as const)("applies provider eligibility to offline contexts after %s changes", async change => {
+    const f = await fixture("better-auth", true), c = f.composition!;
+    const offline = await c.mintOffline(() => true, {});
+    if (!offline.ok) throw new Error("expected offline operator");
+    expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject({ ok: true });
+    if (change === "configuration") f.changeConfiguration();
+    else if (change === "runtime") f.state.runtime = false;
+    else f.state[change] = true;
+    expect(await c.mintOffline(() => true, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
+    expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
+  });
+
+  it("refuses lost, throwing and thenable offline locks at mint and revalidation", async () => {
+    const f = await fixture("better-auth"), c = f.composition!;
+    for (const invalid of [
+      () => false,
+      () => { throw new Error("sensitive synthetic lock detail"); },
+      () => Promise.resolve(true) as never,
+      () => Promise.reject(new Error("synthetic lock rejection")) as never,
+      () => ({ then(resolve: (held: boolean) => void) { resolve(true); } }) as never,
+    ]) {
+      let lockHeld = () => true;
+      const offline = await c.mintOffline(() => lockHeld(), {});
+      if (!offline.ok) throw new Error("expected offline operator");
+      lockHeld = invalid;
+      expect(await c.mintOffline(() => lockHeld(), {})).toMatchObject(unauthenticated("offline_lock_not_held"));
+      expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
+    }
+    // A lock lost between mint and its immediate revalidation returns no context.
+    const lockHeld = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    expect(await c.mintOffline(lockHeld, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
+    expect(lockHeld).toHaveBeenCalledTimes(2);
   });
 
   it("bounds the listing, omits invalid IDs and includes archived projects", async () => {
@@ -288,6 +346,9 @@ describe("unmounted real operations composition under strict admission", () => {
       expect(Object.isFrozen(built)).toBe(true);
       expect("boundaries" in built).toBe(false);
       expect(await built.mint("api", none(), null, {})).toMatchObject(unauthenticated("unknown_mode"));
+      const lockHeld = vi.fn(() => true);
+      expect(await built.mintOffline(lockHeld, {})).toMatchObject(unauthenticated("unknown_mode"));
+      expect(lockHeld).not.toHaveBeenCalled();
     }
     expect(ports).not.toHaveBeenCalled(); expect(boundary).not.toHaveBeenCalled();
   });
@@ -324,7 +385,20 @@ describe("unmounted real operations composition under strict admission", () => {
   it("pins the production registry and logs disposal failures without thrown values or credential facts", async () => {
     const f = await fixture("open"), c = f.composition!;
     expect(c.registry.ids()).toEqual(["session.describe"]);
-    for (const listener of ["api", "mcp", "worker", "unix", "offline"] as const) expect(c.registry.idsOn(listener)).toEqual(["session.describe"]);
+    expect(Object.isFrozen(c.registry)).toBe(true);
+    expect("register" in c.registry).toBe(false);
+    const another = { ...sessionDescribe, id: "session.another" };
+    expect(() => (c.registry as unknown as OperationRegistry).register(another)).toThrow(TypeError);
+    expect(() => OperationRegistry.prototype.register.call(c.registry, another)).toThrow(TypeError);
+    const { get, ids, idsOn, availableOn } = c.registry;
+    expect(get("session.describe")?.id).toBe("session.describe");
+    expect(get("session.another")).toBeUndefined();
+    expect(ids()).toEqual(["session.describe"]);
+    for (const listener of ["api", "mcp", "worker", "unix", "offline"] as const) {
+      expect(idsOn(listener)).toEqual(["session.describe"]);
+      expect(availableOn("session.describe", listener)).toBe(true);
+      expect(availableOn("session.another", listener)).toBe(false);
+    }
     expect(Object.isFrozen(c)).toBe(true); expect(Object.isFrozen(c.boundaries)).toBe(true);
     // The store returns a new wrapper on each access. Exercise the owned gate
     // instead of comparing wrapper identity: strict SQLite refuses this outside it.

@@ -1245,8 +1245,10 @@ must exist in the inventory and really import the module or contract. Missing
 files and stale entries fail. Negative controls exercise a listed importer,
 an unlisted importer, a missing entry and an entry that no longer imports.
 A second test forbids every production import of the composition itself,
-including imports from inside the operations module. The first mounting pull
-request removes that second test and updates the approved-importer list.
+including imports from inside the operations module. A text scan also forbids
+its path or module name in allowlisted production files, including strings and
+templates used for computed imports. The first mounting pull request removes
+that second test and updates the approved-importer list.
 
 Within the inventory, the guard does three things:
 
@@ -1347,8 +1349,9 @@ These are not implemented here. The slices that mount the contract own them.
   and [Provider sessions](#provider-sessions)). The unmounted bootstrap
   `buildOperationsRuntime` composes those adapters, one clock, the store's own
   admission, a fresh grants factory, disposal diagnostics and a registry pinned
-  to `session.describe`. Its explicit active mode fixes both installation
-  verification and each served listener boundary. Unknown modes, including
+  to `session.describe`, exposed through a frozen read-only view with bound read
+  methods and no registration method. Its explicit active mode fixes both
+  installation verification and each served listener boundary. Unknown modes, including
   `legacy`, construct no boundary or verifier and answer `unauthenticated` /
   `unknown_mode` on this new surface alone.
 
@@ -1356,9 +1359,11 @@ These are not implemented here. The slices that mount the contract own them.
   maintenance, stopping and pinned-configuration checks, then requires a
   synchronous `true` from the runtime's session-authority predicate. Modes
   without a provider use the controller maintenance and stopping predicate.
-  Mint, provider stage and provider verification run in one synchronous core
-  admission callback; thrown failures use the runner's public classification:
-  contention is `busy` / `admission_refused`, an aborted admission is
+  Mint, including the offline path through the composition, provider stage and
+  provider verification run in one synchronous core admission callback. Offline
+  mint and every revalidation require both composition eligibility and a
+  synchronously held owner lock. Thrown failures use the runner's public
+  classification: contention is `busy` / `admission_refused`, an aborted admission is
   `unavailable` / `request_cancelled` with retry `retry`, and an unexpected
   throw is `internal` / `unexpected_failure`, without exposing thrown details.
   Cookie resolution belongs outside it. Staging is bounded
