@@ -1355,21 +1355,33 @@ These are not implemented here. The slices that mount the contract own them.
   `legacy`, construct no boundary or verifier and answer `unauthenticated` /
   `unknown_mode` on this new surface alone.
 
-  Bootstrap's provider eligibility shares the existing throwing guard's
-  maintenance, stopping and pinned-configuration checks, then requires a
-  synchronous `true` from the runtime's session-authority predicate. Modes
-  without a provider use the controller maintenance and stopping predicate.
+  Bootstrap separates controller eligibility from provider-session eligibility.
+  In every mode, controller eligibility refuses maintenance and stopping. It
+  gates every listener boundary together with that listener's own `open`, the
+  top of mint, and offline mint and revalidation together with the owner lock.
+  Provider-session eligibility shares the existing throwing guard's maintenance,
+  stopping and pinned-configuration checks, requires the provider runtime to be
+  ready, and requires a synchronous `true` from its session-authority predicate.
+  Only provider sessions use this additional gate: mint checks it before staging
+  a resolved session, and the verifier checks it on every `stage`, `verify` and
+  `current`. A provider outage or pending configuration change therefore refuses
+  human contexts at their next revalidation while agent tokens, the unix
+  operator and the offline CLI retain access if the controller remains eligible.
   Mint, including the offline path through the composition, provider stage and
   provider verification run in one synchronous core admission callback. Offline
-  mint and every revalidation require both composition eligibility and a
+  mint and every revalidation require both controller eligibility and a
   synchronously held owner lock. Thrown failures use the runner's public
   classification: contention is `busy` / `admission_refused`, an aborted admission is
   `unavailable` / `request_cancelled` with retry `retry`, and an unexpected
   throw is `internal` / `unexpected_failure`, without exposing thrown details.
   Cookie resolution belongs outside it. Staging is bounded
   to 16 handles and 5000 ms; no timer or new connection is created. Transports
-  must supply the resolution for the current request, retain raw credential
-  multiplicity and pass the returned eligibility predicate to read-release.
+  must supply the resolution for the current request and retain raw credential
+  multiplicity. The returned `eligible` is the controller-level predicate for
+  every request's read-release; human contexts enforce the additional provider
+  condition through their own revalidation. Cookie transports check the returned
+  `providerSessionEligible` before starting provider work; it is `null` without
+  a provider.
   No production caller imports the composition yet. Transport mounting,
   credential usage recording and principal-incarnation detection remain
   unimplemented.

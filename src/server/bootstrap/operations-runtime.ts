@@ -52,14 +52,14 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   const { store, activeMode, now, logs, provider, eligibility } = options;
   // In particular, legacy boot must not construct a boundary or verifier.
   if (!(authenticationModes as readonly string[]).includes(activeMode)) {
-    return Object.freeze({ supported: false as const, eligible: () => false,
+    return Object.freeze({ supported: false as const, eligible: () => false, providerSessionEligible: null,
       mint: async (): Promise<MintResult> => refused("unknown_mode"),
       mintOffline: async (): Promise<MintResult> => refused("unknown_mode") });
   }
   const mode = activeMode as AuthenticationMode;
-  const eligible = mode === "better-auth" && provider !== null
-    ? () => holds(eligibility.providerSessionEligible) && holds(() => provider.isSessionAuthorityEligible())
-    : () => holds(eligibility.controllerEligible);
+  const controllerEligible = () => holds(eligibility.controllerEligible);
+  const providerSessionEligible = provider === null ? null
+    : () => holds(eligibility.providerSessionEligible) && holds(() => provider.isSessionAuthorityEligible());
   const runtime: OperationRuntime = Object.freeze({
     admission: store.admission,
     resolver: new SqliteResourceResolver(store.projectDirectoryReader()),
@@ -79,8 +79,8 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
     idsOn: registry.idsOn.bind(registry),
   });
   const runner = new OperationRunner(runtime);
-  const sessions = provider === null ? null : new ProviderSessionVerifier({
-    providerId: "better-auth", reader: store.authenticationProviderStorage(), now, eligible,
+  const sessions = providerSessionEligible === null ? null : new ProviderSessionVerifier({
+    providerId: "better-auth", reader: store.authenticationProviderStorage(), now, eligible: providerSessionEligible,
     stagedCapacity: CONTROLLER_OPERATION_SESSION_POLICY.stagedCapacity,
     stagedTtlMs: CONTROLLER_OPERATION_SESSION_POLICY.stagedTtlMs,
   });
@@ -92,18 +92,26 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   const boundaries: Partial<Record<ServedListener, ListenerBoundary>> = {};
   for (const listener of ["api", "mcp", "worker", "unix"] as const) {
     const open = options.listeners[listener];
-    if (open) boundaries[listener] = createListenerBoundary({ mode, listener, verifier, open: () => eligible() && holds(open) });
+    if (open) boundaries[listener] = createListenerBoundary({ mode, listener, verifier, open: () => controllerEligible() && holds(open) });
   }
   Object.freeze(boundaries);
-  return Object.freeze({ supported: true as const, runtime, runner, registry: registryView, boundaries, eligible,
+  return Object.freeze({ supported: true as const, runtime, runner, registry: registryView, boundaries,
+    /** Controller maintenance/shutdown gate for every request's read-release.
+     * Human contexts also enforce provider eligibility through revalidation.
+     */
+    eligible: controllerEligible,
+    /** Provider-only gate for cookie transports before provider work; null
+     * when this boot has no provider. Also checked at stage, mint and revalidation.
+     */
+    providerSessionEligible,
     /** Offline callers must mint through this composition, never call
-     * mintOfflineContext themselves: eligibility and the synchronous owner lock
+     * mintOfflineContext themselves: controller eligibility and the synchronous owner lock
      * must hold at mint and every revalidation, inside core admission.
      */
     async mintOffline(lockHeld: () => boolean, admissionOptions: DatabaseAdmissionOptions): Promise<MintResult> {
       try {
         return await store.admission.run((): MintResult => {
-          const context = mintOfflineContext({ mode, lockHeld: () => eligible() && holds(lockHeld) });
+          const context = mintOfflineContext({ mode, lockHeld: () => controllerEligible() && holds(lockHeld) });
           context.revalidate();
           return Object.freeze({ ok: true, context });
         }, admissionOptions);
@@ -119,11 +127,12 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
       admissionOptions: DatabaseAdmissionOptions): Promise<MintResult> {
       try {
         return await store.admission.run((): MintResult => {
-          if (!eligible()) return refused("listener_closed");
+          if (!controllerEligible()) return refused("listener_closed");
           const boundary = boundaries[listener];
           if (!boundary) return refused("listener_closed");
           const acceptance = resolveAcceptance(mode, listener, presented);
           if (!acceptance.accepted) return refused(acceptance.reason);
+          if (acceptance.path === "provider_session" && !providerSessionEligible?.()) return refused("invalid_credential");
           const at: unknown = now();
           if (typeof at !== "number" || !Number.isFinite(at)) {
             Promise.resolve(at).catch(() => undefined);

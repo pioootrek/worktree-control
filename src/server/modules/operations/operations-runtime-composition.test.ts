@@ -29,7 +29,7 @@ async function fixture(mode = "better-auth", withProvider = false, admissionTime
   const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict", admissionTimeoutMs }); stores.push(store);
   const database = ownedFixtureDatabase(store);
   const clock = { now: NOW };
-  const state = { maintenance: false, stopping: false, runtime: true };
+  const state = { maintenance: false, stopping: false, ready: true, runtime: true };
   // Read the actual disk configuration through the existing adapter. No provider is loaded.
   const entry = join(root, "provider.mjs"); writeFileSync(entry, "export {};\n", { mode: 0o600 });
   const configuration = new FileProviderConfiguration(join(root, "provider.json"));
@@ -42,7 +42,7 @@ async function fixture(mode = "better-auth", withProvider = false, admissionTime
       const current = configuration.read();
       return !current || current.entry !== pinned.entry || current.baseURL !== pinned.baseURL || current.secret !== pinned.secret;
     },
-    runtime: () => providerRuntime,
+    runtime: () => state.ready ? providerRuntime : undefined,
   });
   const provider = createProviderWorld(clock);
   if (withProvider) {
@@ -165,7 +165,7 @@ describe("unmounted real operations composition under strict admission", () => {
   });
 
   it.each(["none", "reader", "executor"] as const)("describes an agent with %s roles", async role => {
-    // Account mode's production provider policy is supplied even for bearer requests.
+    // A provider is present, but bearer requests use only controller eligibility.
     const f = await fixture("better-auth", true);
     const { secret } = await f.store.admission.run(() => {
       const credential = f.agent(); if (role !== "none") f.grant("agent", role, "project-b"); return credential;
@@ -201,6 +201,7 @@ describe("unmounted real operations composition under strict admission", () => {
     const offline = await c.mintOffline(() => true, {});
     if (!offline.ok) throw new Error("expected offline operator");
     expect(c.eligible()).toBe(true);
+    expect(c.providerSessionEligible).toBeNull();
     expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject({ ok: true, value: { actor: { kind: "operator" }, fullAuthority: true } });
     expect(await c.mint("api", { ...none(), providerSession: { secret: "synthetic-cookie" } }, null, {}))
       .toMatchObject(unauthenticated("invalid_credential"));
@@ -228,14 +229,66 @@ describe("unmounted real operations composition under strict admission", () => {
     }
   });
 
-  it.each(["maintenance", "stopping", "configuration", "runtime"] as const)("applies provider eligibility to offline contexts after %s changes", async change => {
+  it.each(["not-ready", "ineligible", "configuration"] as const)("keeps agent and operator access when the provider is %s", async change => {
     const f = await fixture("better-auth", true), c = f.composition!;
+    const { secret } = await f.store.admission.run(() => f.agent());
+    const requests = (["api", "mcp", "worker", "unix"] as const).map(listener => ({
+      listener,
+      presented: listener === "unix" ? none() : presentedBearer(secret),
+      kind: listener === "unix" ? "operator" : "agent",
+    }));
+    const retained: AuthenticationContext[] = [];
+    for (const request of requests) retained.push(await f.context(request.presented, null, request.listener));
     const offline = await c.mintOffline(() => true, {});
     if (!offline.ok) throw new Error("expected offline operator");
-    expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject({ ok: true });
     if (change === "configuration") f.changeConfiguration();
-    else if (change === "runtime") f.state.runtime = false;
-    else f.state[change] = true;
+    else if (change === "not-ready") f.state.ready = false;
+    else f.state.runtime = false;
+    expect(c.eligible()).toBe(true);
+    expect(c.providerSessionEligible?.()).toBe(false);
+    for (const [index, request] of requests.entries()) {
+      const fresh = await f.context(request.presented, null, request.listener);
+      for (const context of [retained[index], fresh]) {
+        expect(await f.store.admission.run(() => context.revalidate())).toMatchObject({ actor: { kind: request.kind } });
+        expect(await f.read(context)).toMatchObject({ actor: { kind: request.kind }, listener: request.listener });
+        const commit = vi.fn();
+        expect(await c.runner.readRelease(sessionDescribe, context, {}, {
+          eligible: c.eligible, connected: () => true, deadline: NOW + 1000, commit,
+        })).toEqual({ status: "committed" });
+        expect(commit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ actor: expect.objectContaining({ kind: request.kind }) }));
+      }
+    }
+    const freshOffline = await c.mintOffline(() => true, {});
+    if (!freshOffline.ok) throw new Error("expected offline operator despite provider fence");
+    for (const context of [offline.context, freshOffline.context]) {
+      expect(await f.store.admission.run(() => context.revalidate())).toMatchObject({ actor: { kind: "operator", via: "offline" } });
+      expect(await f.read(context)).toMatchObject({ actor: { kind: "operator" }, listener: "offline", fullAuthority: true });
+      const commit = vi.fn();
+      expect(await c.runner.readRelease(sessionDescribe, context, {}, {
+        eligible: c.eligible, connected: () => true, deadline: NOW + 1000, commit,
+      })).toEqual({ status: "committed" });
+      expect(commit).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it.each(["maintenance", "stopping"] as const)("fences every agent and operator path during %s with a provider present", async change => {
+    const f = await fixture("better-auth", true), c = f.composition!;
+    const { secret } = await f.store.admission.run(() => f.agent());
+    const retained = [];
+    for (const listener of ["api", "mcp", "worker", "unix"] as const) {
+      const presented = listener === "unix" ? none() : presentedBearer(secret);
+      retained.push({ listener, presented, context: await f.context(presented, null, listener) });
+    }
+    const offline = await c.mintOffline(() => true, {});
+    if (!offline.ok) throw new Error("expected offline operator");
+    f.state[change] = true;
+    expect(c.eligible()).toBe(false);
+    expect(c.providerSessionEligible?.()).toBe(false);
+    for (const { listener, presented, context } of retained) {
+      expect(await c.mint(listener, presented, null, {})).toMatchObject(unauthenticated("listener_closed"));
+      await f.store.admission.run(() => expect(() => context.revalidate()).toThrowError(expect.objectContaining({ category: "unauthenticated", reason: "listener_closed" })));
+      expect(await c.runner.run(sessionDescribe, context, {})).toMatchObject(unauthenticated("listener_closed"));
+    }
     expect(await c.mintOffline(() => true, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
     expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
   });
@@ -316,17 +369,30 @@ describe("unmounted real operations composition under strict admission", () => {
     expect((await f.read(await f.context(mode === "open" ? none() : presentedBearer(f.installationSecret)))).mode).toBe(mode);
   });
 
-  it.each(["maintenance", "stopping", "configuration", "runtime"] as const)("fences %s between resolve and mint and between mint and execution", async change => {
+  it.each(["maintenance", "stopping", "configuration", "runtime", "not-ready"] as const)("fences human sessions after %s between resolve and mint and between mint and execution", async change => {
     const f = await fixture("better-auth", true);
     const h = await f.human("human");
     const context = await f.context(h.presented, h.session);
     expect((await f.read(context)).actor.kind).toBe("human");
     if (change === "configuration") f.changeConfiguration();
     else if (change === "runtime") f.state.runtime = false;
+    else if (change === "not-ready") f.state.ready = false;
     else f.state[change] = true;
-    expect(f.composition!.eligible()).toBe(false);
-    expect(await f.composition!.mint("api", h.presented, h.session, {})).toMatchObject(unauthenticated("listener_closed"));
-    expect(await f.composition!.runner.run(sessionDescribe, context, {})).toMatchObject(unauthenticated("listener_closed"));
+    const controllerClosed = change === "maintenance" || change === "stopping";
+    const c = f.composition!;
+    expect(c.eligible()).toBe(!controllerClosed);
+    expect(c.providerSessionEligible?.()).toBe(false);
+    for (const resolved of [h.session, null]) {
+      expect(await c.mint("api", h.presented, resolved, {})).toMatchObject(unauthenticated(controllerClosed ? "listener_closed" : "invalid_credential"));
+    }
+    const reason = controllerClosed ? "listener_closed" : "credential_no_longer_valid";
+    await f.store.admission.run(() => expect(() => context.revalidate()).toThrowError(expect.objectContaining({ category: "unauthenticated", reason })));
+    expect(await c.runner.run(sessionDescribe, context, {})).toMatchObject(unauthenticated(reason));
+    const commit = vi.fn();
+    expect(await c.runner.readRelease(sessionDescribe, context, {}, {
+      eligible: c.eligible, connected: () => true, deadline: NOW + 1000, commit,
+    })).toMatchObject({ status: "refused", error: { category: "unauthenticated", reason } });
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it.each(["open", "token"])("fences maintenance in %s mode without a provider", async mode => {
@@ -343,6 +409,8 @@ describe("unmounted real operations composition under strict admission", () => {
     for (const activeMode of ["legacy", "unknown"]) {
       const built = buildOperationsRuntime({ ...f.options, activeMode });
       expect(built.supported).toBe(false);
+      expect(built.eligible()).toBe(false);
+      expect(built.providerSessionEligible).toBeNull();
       expect(Object.isFrozen(built)).toBe(true);
       expect("boundaries" in built).toBe(false);
       expect(await built.mint("api", none(), null, {})).toMatchObject(unauthenticated("unknown_mode"));
