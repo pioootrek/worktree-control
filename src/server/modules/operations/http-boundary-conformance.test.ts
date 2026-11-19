@@ -946,7 +946,10 @@ describe("operations cookie listener conformance", () => {
 
   it.each(["maintenance", "configChanged"] as const)("cookie %s refusal preserves provider and body fences", async change => {
     const f = await fixture("better-auth", undefined, undefined, true); f.state[change] = true;
-    const reply = await f.send("api", { headers: cookieHeaders }).reply;
+    let bodyReads = 0;
+    f.controller.server.prependListener("request", req => req.on("newListener", event => { if (event === "data") bodyReads++; }));
+    const reply = await f.send("api", { slow: true, headers: cookieHeaders }).reply;
+    expect(bodyReads).toBe(0);
     expect(reply.body).toEqual(change === "maintenance" ? refusal("release_not_eligible", "unavailable", 503, "none") : refusal("invalid_credential"));
     expect(f.provider.resolveRequest).not.toHaveBeenCalled();
   });
@@ -1089,4 +1092,23 @@ it("cookie content type and byte ceiling refuse before provider work", async () 
   for (const type of ["text/plain", "application/json; charset=utf-8"]) expect((await f.send("api", { headers: { ...cookieHeaders, "Content-Type": type } }).reply).body.error.reason).toBe("invalid_request");
   const reply = await f.send("api", { headers: cookieHeaders, body: " ".repeat(65537) }).reply;
   expect(reply.body).toEqual(refusal("request_too_large", "payload_too_large", 413, "none")); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+});
+
+
+it("cookie response completion retains the initiating slot after all provider work settled", async () => {
+  const f = await fixture("better-auth", undefined, undefined, true), intercepted = pause();
+  let finish!: () => void;
+  f.controller.server.prependOnceListener("request", (_req, response) => {
+    const end = response.end.bind(response);
+    response.end = ((...args: Parameters<ServerResponse["end"]>) => { finish = () => { end(...args); }; intercepted.done(); return response; }) as ServerResponse["end"];
+  });
+  const pending = f.send("api", { headers: cookieHeaders }); await intercepted.promise;
+  try {
+    expect(f.runtime.requestBudget.active).toBe(1);
+    expect(f.provider.resolveRequest).toHaveBeenCalledOnce();
+    await f.provider.resolveRequest.mock.results[0].value.settled;
+    expect(f.runtime.requestBudget.active).toBe(1);
+  } finally { finish(); }
+  expect((await pending.reply).status).toBe(200);
+  await vi.waitFor(() => expect(f.runtime.requestBudget.active).toBe(0));
 });

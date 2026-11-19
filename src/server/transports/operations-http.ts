@@ -7,6 +7,7 @@ import {
 } from "../modules/operations";
 import type { DatabaseAdmissionOptions } from "../database-admission";
 import type { VerifiedProviderSession, AuthenticationProviderRuntime } from "../modules/authentication";
+import type { ProviderSessionEligibility } from "../bootstrap/authentication-provider-lifetime";
 import type { AuthenticationRequestBudget, AuthenticationRequestSlot } from "../bootstrap/authentication-request-budget";
 import { authenticationRequestBoundary, authenticationProviderHeaders, authenticationRequestOrigin, authenticationJsonContentType } from "./authentication-http";
 import type { PublicOperationError } from "@/shared/contracts/operations";
@@ -20,6 +21,7 @@ export type OperationsHttpRuntime = { supported: false; mint: Mint } | {
   supported: true; mint: Mint; eligible(): boolean;
   requestBudget: AuthenticationRequestBudget;
   resolveSession: AuthenticationProviderRuntime["resolveRequest"];
+  providerSessionEligibility(): ProviderSessionEligibility;
   runtime: Pick<OperationRuntime, "now">;
   registry: Pick<OperationRegistry, "get" | "idsOn">;
   runner: Pick<OperationRunner, "readRelease">;
@@ -143,6 +145,16 @@ export function createOperationsHttp(options: {
         slot = runtime.requestBudget.acquire("initiating");
         if (!slot) { operationsFailure(response, failure("busy", "listener_capacity")); return; }
         if (response.writableFinished || response.destroyed) slot.responseFinished();
+        // The browser checks the pinned configuration before any body read.
+        // Reuse the current policy; mint alone selects the acceptance verdict.
+        const eligibility = runtime.providerSessionEligibility();
+        if (eligibility === "busy") throw new OperationError("busy", "admission_refused");
+        if (eligibility === "ineligible") {
+          const minted = await runtime.mint(listener, presented, null, { signal: abort.signal });
+          if (!minted.ok) operationsFailure(response, minted.error);
+          else operationsFailure(response, failure("unauthenticated", "invalid_credential"));
+          return;
+        }
       }
       if (!cookie && options.originAllowed && !options.originAllowed(request)) { operationsFailure(response, failure("forbidden", "origin_forbidden")); return; }
       // Do not let Node collapse singleton transport fields into an accepted value.

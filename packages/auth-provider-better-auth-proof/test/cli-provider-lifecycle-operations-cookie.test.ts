@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerAuthentication, CONTROLLER_AUTHENTICATION_POLICY } from "@/server/bootstrap/authentication";
 import { buildOperationsRuntime } from "@/server/bootstrap/operations-runtime";
@@ -94,6 +95,7 @@ describe("operations cookies through production bootstrap and real Better Auth",
       const work = browser(...args); const result = await work.result; entered.open(); await release.promise;
       return { result: Promise.resolve(result), settled: work.settled };
     }));
+    const revokedCookie = f.cookie();
     const completion = f.login(); await entered.promise;
     const held = Array.from({ length: 11 }, () => f.driver.send({ slow: true, headers: { Host: "controller.test", Origin: ORIGIN, "Content-Type": "application/json", Cookie: f.cookie() } }));
     // This request is ordered after slow bodies on the real local listener.
@@ -101,6 +103,8 @@ describe("operations cookies through production bootstrap and real Better Auth",
       const overflow = await f.call(); expect(overflow.body.error).toMatchObject({ category: "busy", reason: "listener_capacity", retry: "retry" });
       expect((await f.call("/api/auth/sign-out")).status).toBe(200);
       release.open(); expect((await completion).status).toBe(200);
+      expect((await f.call(undefined, undefined, { Cookie: revokedCookie })).body.error.reason).toBe("invalid_credential");
+      expect((await f.call()).body.actor.kind).toBe("human");
     } finally { release.open(); for (const h of held) h.call.destroy(); }
   });
 
@@ -139,6 +143,7 @@ it("production shutdown retains SQLite and controller lock during a blocked real
   const entered = gate(), release = gate();
   f.faults.beforeSessionDelete = async () => { entered.open(); await release.promise; };
   const pending = f.send("/api/auth/sign-out"); await entered.promise;
+  const resolutions = vi.spyOn(f.runtime(), "resolveRequest");
   const lockPath = join(f.root, "controller.lock"), lock = acquireControllerLock(lockPath);
   closes.push(() => lock.release());
   const shutdown = createControllerShutdown({ service: { closeAdmission() {}, shutdown: () => f.store.closeAfterDrain() },
@@ -148,8 +153,22 @@ it("production shutdown retains SQLite and controller lock during a blocked real
     for (let i = 0; i < 16; i++) {
       const reply = await f.call(); expect(reply.body.error).toMatchObject({ category: "busy", reason: "admission_refused" });
     }
+    for (let i = 0; i < 16; i++) {
+      const refusing = gate();
+      // Hold only the finite refusal's end, so the real socket disconnect is
+      // observed while the real provider delete remains blocked.
+      f.server.server.prependOnceListener("request", (_req, response) => {
+        response.end = (() => { refusing.open(); return response; }) as ServerResponse["end"];
+      });
+      const disconnected = f.send(); await refusing.promise; disconnected.call.destroy();
+      await expect(disconnected.reply).rejects.toMatchObject({ code: "ECONNRESET" });
+      await vi.waitFor(() => expect(f.administration.requestBudget.active).toBe(1));
+    }
+    expect(resolutions).not.toHaveBeenCalled();
     pending.call.destroy(); await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
     let finished = false; const closing = shutdown().then(() => { finished = true; });
+    expect(f.administration.requestBudget.acquire("initiating")).toBeNull();
+    expect(f.administration.requestBudget.acquire("completion")).toBeNull();
     await new Promise<void>(r => setImmediate(r));
     expect(finished).toBe(false); expect(f.database.open).toBe(true); expect(existsSync(lockPath)).toBe(true);
     release.open(); await closing; expect(f.database.open).toBe(false); expect(existsSync(lockPath)).toBe(false);
@@ -161,4 +180,16 @@ it("disposed real provider refuses the cookie path", async () => {
   const f = await fixture(); await f.ready(); expect((await f.login()).status).toBe(200);
   await f.runtime().dispose();
   expect((await f.call()).body.error).toMatchObject({ category: "unauthenticated", reason: "invalid_credential" });
+});
+
+
+it.each(["/api/auth/sign-out", operationRoute])("shared browser maintenance and configuration fences on %s", async path => {
+  const f = await fixture(); await f.ready(); expect((await f.login()).status).toBe(200);
+  const browser = vi.spyOn(f.runtime(), "browser"), resolution = vi.spyOn(f.runtime(), "resolveRequest");
+  await f.administration.execute({ command: "auth-provider", action: "configure", input: { module: join(f.root, "provider.mjs"), origin: "https://changed.test", signingSecret: { kind: "preserve" } } });
+  const changed = await f.call(path);
+  if (path === operationRoute) expect(changed.body.error.reason).toBe("invalid_credential");
+  else { expect(changed.status).toBe(503); expect(changed.body.code).toBe("database_unavailable"); }
+  f.maintenance(); const stopped = await f.call(path); expect(stopped.status).toBe(503);
+  expect(browser).not.toHaveBeenCalled(); expect(resolution).not.toHaveBeenCalled();
 });

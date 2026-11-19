@@ -371,7 +371,11 @@ secrets, unrelated cookies and ceremony cookies do not reach the provider.
 
 It acquires one initiating slot from administration's aggregate 16-slot budget
 before reading the body or starting provider work. Twelve slots are available
-to initiating requests; browser completions retain four. Saturation answers
+to initiating requests; browser completions retain four. Before body reads it
+also checks the composition's current provider eligibility, as the browser checks
+its pinned-configuration guard. Busy remains contention; an evaluated refusal
+is passed to mint with the raw credentials so the acceptance table keeps its
+mode-specific or mixed-credential answer. Saturation answers
 `busy` / `listener_capacity` with `Retry-After: 1`. Operations also retain the
 API's 32-request owner. It checks JSON content type, reads at most 65536 bytes,
 and parses strict JSON with depth 8 and 128 fields. The body must be an object;
