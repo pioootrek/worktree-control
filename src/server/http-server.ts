@@ -11,7 +11,7 @@ import { BackupError, type BackupOperations, type RestoreOperations, type UserSc
 import { KnowledgeError, knowledgeFailure } from "./modules/knowledge";
 import { knowledgeRequestLimit } from "@/shared/contracts/knowledge";
 import { CONTROLLER_TOKEN_HEADER, LEGACY_CONTROLLER_TOKEN_HEADER } from "@/shared/controller-token";
-import { createOperationsHttp, mountOperationsProtocolEvents, type OperationsHttpRuntime } from "./transports/operations-http";
+import { createOperationsHttp, type OperationsHttpRuntime } from "./transports/operations-http";
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -405,7 +405,7 @@ export function createControllerServer(options: {
     });
     return result && result.kind !== "legacy" ? result.actor : null;
   };
-  const dispatch = (request: IncomingMessage, response: ServerResponse) => {
+  const server = createServer((request, response) => {
     void (async () => {
       if (operations?.claims(request)) { await operations.handle(request, response); return; }
       if (!(request.url ?? "/").startsWith("/")) {
@@ -435,9 +435,7 @@ export function createControllerServer(options: {
       if (failure?.retryable) response.setHeader("Retry-After", "1");
       json(response, failure?.status ?? 500, { code: failure?.code ?? "request_failed", error: failure?.code ?? "request_failed" });
     });
-  };
-  const server = createServer(dispatch);
-  mountOperationsProtocolEvents(server, operations, dispatch);
+  });
   const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const url = new URL(request.url ?? "/", request.headers.host ? `http://${request.headers.host}` : fallbackOrigin);
     const locale = localeFrom(request.headers["accept-language"]);

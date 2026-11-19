@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { request, type ClientRequest, type IncomingMessage, type ServerResponse } from "node:http";
+import { request, type ClientRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createConnection, type AddressInfo } from "node:net";
+import { createConnection, type AddressInfo, type Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { listenAdminSocket } from "@/server/admin-socket";
 import { AuthenticationService } from "@/server/modules/authentication";
@@ -119,16 +119,59 @@ async function wire(f: Fixture, listener: "api" | "unix", path: string, method =
     call.on("error", reject); call.end(method === "POST" ? '{"command":"status"}' : undefined);
   });
 }
+function protocolConnection(f: Fixture, listener: "api" | "unix") {
+  return createConnection(listener === "unix" ? { path: f.socketPath, allowHalfOpen: true }
+    : { port: (f.controller.server.address() as AddressInfo).port, host: "127.0.0.1", allowHalfOpen: true });
+}
+const connectionCount = (server: Server) => new Promise<number>((resolve, reject) => {
+  server.getConnections((error, count) => error ? reject(error) : resolve(count));
+});
+async function resetProtocol(f: Fixture, listener: "api" | "unix", method: "CONNECT" | "GET") {
+  const server = f[listener === "api" ? "controller" : "admin"].server;
+  const socket = protocolConnection(f, listener);
+  cleanups.push(() => { socket.destroy(); });
+  let reset = false;
+  // Reset after the server receives the headers, while its refusal may still be writing.
+  const received = (peer: Socket) => peer.once("data", () => {
+    reset = true;
+    // Unix sockets have no TCP RST; destroy abruptly without sending client EOF.
+    if (listener === "api") socket.resetAndDestroy(); else socket.destroy();
+  });
+  server.once("connection", received);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.setTimeout(2000, () => { socket.destroy(); reject(new Error("Protocol reset timed out")); });
+      socket.on("error", error => { if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") reject(error); });
+      socket.once("close", () => resolve());
+      socket.once("connect", () => socket.write(`${method} ${route} HTTP/1.1\r\nHost: localhost\r\n${method === "GET" ? "Connection: Upgrade\r\nUpgrade: websocket\r\n" : ""}\r\n`));
+    });
+    expect(reset).toBe(true);
+  } finally { server.off("connection", received); }
+}
+async function closeListener(server: Server) {
+  let timer!: ReturnType<typeof setTimeout>;
+  try {
+    await Promise.race([
+      new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Listener close timed out")), 2000); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
 async function protocolWire(f: Fixture, listener: "api" | "unix", path: string, method: "CONNECT" | "GET") {
   return new Promise<string>((resolve, reject) => {
-    const socket = listener === "unix" ? createConnection(f.socketPath)
-      : createConnection((f.controller.server.address() as AddressInfo).port, "127.0.0.1");
+    const socket = protocolConnection(f, listener);
     cleanups.push(() => { socket.destroy(); });
     socket.setTimeout(2000, () => { socket.destroy(); reject(new Error("Protocol response timed out")); });
     const chunks: Buffer[] = [];
     socket.on("data", c => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
-    socket.on("error", reject); socket.on("close", () => resolve(Buffer.concat(chunks).toString()));
-    socket.on("connect", () => socket.write(`${method} ${path} HTTP/1.1\r\nHost: localhost\r\nConnection: close${method === "GET" ? ", Upgrade, HTTP2-Settings\r\nUpgrade: h2c\r\nHTTP2-Settings:" : ""}\r\n\r\n`));
+    socket.on("error", reject);
+    socket.on("end", () => {
+      // Deliberately retain the client sending half. Server cleanup must not need EOF.
+      expect(socket.writableEnded).toBe(false);
+      socket.setTimeout(0);
+      resolve(Buffer.concat(chunks).toString());
+    });
+    socket.on("connect", () => socket.write(`${method} ${path} HTTP/1.1\r\nHost: localhost\r\n${method === "GET" ? "Connection: Upgrade, HTTP2-Settings\r\nUpgrade: h2c\r\nHTTP2-Settings:\r\n" : ""}\r\n`));
   });
 }
 
@@ -334,23 +377,54 @@ describe("real API and unix acceptance", () => {
     expect(f.legacy).not.toHaveBeenCalled(); expect(f.oldAuthentication.anonymousInstallation.mock.calls.length).toBe(0);
   });
 
-  it("answers HEAD, CONNECT and Upgrade inside the namespace on both actual listeners", async () => {
+  it("answers HEAD and Upgrade inside the namespace through normal HTTP dispatch", async () => {
     const f = await fixture();
     for (const listener of ["api", "unix"] as const) {
       expect((await f.send(listener, { method: "HEAD" }).reply).status).toBe(400);
-      for (const method of ["CONNECT", "GET"]) {
-        const raw = await new Promise<string>((resolve, reject) => {
-          const socket = listener === "unix" ? createConnection(f.socketPath) : createConnection((f.controller.server.address() as AddressInfo).port, "127.0.0.1");
-          cleanups.push(() => { socket.destroy(); });
-          socket.setTimeout(1000, () => { socket.destroy(); reject(new Error(`${listener} ${method} protocol response timed out`)); });
-          const chunks: Buffer[] = []; socket.on("data", c => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c))); socket.on("error", reject);
-          socket.on("end", () => resolve(Buffer.concat(chunks).toString()));
-          socket.on("connect", () => socket.write(`${method} ${route} HTTP/1.1\r\nHost: localhost\r\n${method === "GET" ? "Connection: Upgrade\r\nUpgrade: websocket\r\n" : ""}\r\n`));
-        });
-        expect(raw).toContain("400 Bad Request"); expect(raw).toContain('"reason":"method_not_allowed"');
+      const raw = await protocolWire(f, listener, route, "GET");
+      expect(raw).toContain("400 Bad Request"); expect(raw).toContain('"reason":"method_not_allowed"');
+    }
+    expect(f.oldAuthentication.authenticateInstallation).not.toHaveBeenCalled(); expect(f.legacy).not.toHaveBeenCalled();
+  });
+
+  it("starts both listeners without CONNECT or Upgrade listeners and closes every CONNECT target", async () => {
+    const f = await fixture();
+    const mint = vi.spyOn(f.runtime, "mint");
+    for (const listener of ["api", "unix"] as const) {
+      const server = f[listener === "api" ? "controller" : "admin"].server;
+      expect(server.listenerCount("connect")).toBe(0); expect(server.listenerCount("upgrade")).toBe(0);
+      for (const target of [route, "example.invalid:443", "/auth", "/api/status"]) {
+        expect(await protocolWire(f, listener, target, "CONNECT")).toBe("");
+        await vi.waitFor(async () => expect(await connectionCount(server)).toBe(0));
+        expect(mint).not.toHaveBeenCalled(); expect(f.legacy).not.toHaveBeenCalled();
+        expect(f.oldAuthentication.anonymousInstallation).not.toHaveBeenCalled();
+        expect((await f.send(listener, { headers: { "Content-Type": "application/json", Connection: "close" } }).reply).status).toBe(200);
+        mint.mockClear();
       }
     }
-    expect(f.oldAuthentication.authenticateInstallation.mock.calls.length).toBe(0); expect(f.legacy.mock.calls.length).toBe(0);
+  });
+
+  it.each(["api", "unix"] as const)("%s cleans up half-open and reset protocol clients and completes server.close", async listener => {
+    const f = await fixture();
+    const server = f[listener === "api" ? "controller" : "admin"].server;
+    const unhandled = vi.fn();
+    // Observe without handling exceptions; Vitest also fails on unhandled errors.
+    process.on("uncaughtExceptionMonitor", unhandled);
+    try {
+      for (const method of ["CONNECT", "GET"] as const) {
+        const raw = await protocolWire(f, listener, route, method);
+        if (method === "CONNECT") expect(raw).toBe("");
+        else { expect(raw).toContain("400 Bad Request"); expect(raw).toContain('"reason":"method_not_allowed"'); }
+        await vi.waitFor(async () => expect(await connectionCount(server)).toBe(0));
+        await resetProtocol(f, listener, method);
+        await vi.waitFor(async () => expect(await connectionCount(server)).toBe(0));
+        expect((await f.send(listener, { headers: { "Content-Type": "application/json", Connection: "close" } }).reply).status).toBe(200);
+        await vi.waitFor(async () => expect(await connectionCount(server)).toBe(0));
+      }
+      // Use Node's close directly: no force-close helper may hide leaked sockets.
+      await closeListener(server);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally { process.off("uncaughtExceptionMonitor", unhandled); }
   });
 
   it("keeps legacy paths working in legacy mode, five per listener", async () => {

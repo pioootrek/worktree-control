@@ -1,5 +1,4 @@
-import { ServerResponse, type IncomingMessage, type Server } from "node:http";
-import { Socket } from "node:net";
+import type { ServerResponse, IncomingMessage } from "node:http";
 import { CONTROLLER_TOKEN_HEADER, LEGACY_CONTROLLER_TOKEN_HEADER } from "@/shared/controller-token";
 import { containsProviderCookie } from "@/shared/contracts/authentication";
 import {
@@ -57,28 +56,12 @@ function write(response: ServerResponse, status: number, body: string): void {
 }
 const failure = (category: ConstructorParameters<typeof OperationError>[0], reason: string) => publicError(new OperationError(category, reason));
 
-/** CONNECT bypasses request dispatch; unclaimed targets retain Node's socket refusal.
- * Do not register an upgrade listener: on every supported Node 22/24 release,
- * its absence keeps Upgrade requests in normal request dispatch (including bodies).
- * That preserves legacy responses and terminal operations refusals alike, without
- * depending on shouldUpgradeCallback (added in 22.21 / 24.9).
+/** Keep Node's protocol ownership: neither listener registers connect or upgrade.
+ * Node closes CONNECT without dispatch or a response. Without an upgrade listener,
+ * Upgrade requests use normal HTTP dispatch on every supported Node 22/24 release,
+ * including those before shouldUpgradeCallback (22.21 / 24.9).
+ * Lifetime includes Node response completion AND all started application work.
  */
-export function mountOperationsProtocolEvents(server: Server, operations: ReturnType<typeof createOperationsHttp> | undefined,
-  dispatch: (request: IncomingMessage, response: ServerResponse) => void): void {
-  if (!operations) return;
-  server.on("connect", (request, socket) => {
-    if (!operations.claims(request) || !(socket instanceof Socket)) { socket.destroy(); return; }
-    const response = new ServerResponse(request);
-    response.shouldKeepAlive = false;
-    response.assignSocket(socket);
-    // The ordinary server response-finish hook is absent on handed-off sockets.
-    response.once("finish", () => { response.detachSocket(socket); socket.end(); });
-    response.once("close", () => { socket.destroy(); });
-    dispatch(request, response);
-  });
-}
-
-/** Lifetime includes Node response completion AND all started application work. */
 export function createOperationsHttp(options: {
   runtime: OperationsHttpRuntime; listener: "api" | "unix";
   originAllowed?(request: IncomingMessage): boolean;

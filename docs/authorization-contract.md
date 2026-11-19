@@ -12,8 +12,10 @@ through `POST /api/operations/session.describe` on the API listener and private
 unix socket. Only the exact raw operation path can succeed. Aliases entering
 `/api/operations` or `/mcp/operations` through dot segments, encoded path syntax,
 backslashes or duplicate slashes receive the new not-found envelope on both
-listeners, for every method. Cookie refusal still comes first. Upgrade headers
-keep normal request dispatch; unclaimed CONNECT targets retain socket closure.
+listeners through normal request dispatch, for every method. Cookie refusal
+still comes first. Neither listener registers CONNECT or Upgrade handlers. Node
+closes every CONNECT connection without a response or dispatch, including targets
+inside the namespace. Upgrade headers keep normal HTTP request dispatch.
 Other routes and tools retain their existing authentication.
 Cookies on this route receive the fixed `unauthenticated` /
 `provider_cookie_not_supported` refusal before body reads or capacity admission.
