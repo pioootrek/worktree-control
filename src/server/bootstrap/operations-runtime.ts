@@ -9,7 +9,7 @@ import {
   type AuthenticationContext, type ListenerBoundary, type OperationRuntime, type PresentedCredentials,
 } from "../modules/operations";
 import { authenticationModes, type AuthenticationMode, type ListenerKind, type PublicOperationError } from "../../shared/contracts/operations";
-import { CONTROLLER_OPERATION_SESSION_POLICY, type ControllerOperationSessionAuthority, type createControllerOperationEligibility } from "./authentication-provider-lifetime";
+import { CONTROLLER_OPERATION_SESSION_POLICY, type ControllerOperationSessionAuthority, type ProviderSessionEligibility, type createControllerOperationEligibility } from "./authentication-provider-lifetime";
 import type { AuthenticationRequestBudget } from "./authentication-request-budget";
 
 type ServedListener = Exclude<ListenerKind, "offline">;
@@ -50,15 +50,33 @@ function mintFailure(error: unknown, admissionOptions: DatabaseAdmissionOptions)
 export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   const { store, activeMode, now, logs, provider, eligibility } = options;
   const supported = (authenticationModes as readonly string[]).includes(activeMode);
-  const providerSessionEligible = () => supported && provider !== null
+  // The verifier calls this only inside an admitted phase. Evaluate the policy
+  // there directly so unrelated queued tickets cannot turn it into a refusal.
+  const admittedProviderSessionEligible = () => supported && provider !== null
     && holds(eligibility.providerSessionEligible) && holds(() => provider.isSessionAuthorityEligible());
+  const providerSessionEligibility = (): ProviderSessionEligibility => {
+    if (!supported || provider === null) return "ineligible";
+    const checked = store.admission.tryRun(admittedProviderSessionEligible);
+    return !checked.ran ? "busy" : checked.value ? "eligible" : "ineligible";
+  };
+  /** False includes contention; use providerSessionEligibility to distinguish it. */
+  const providerSessionEligible = () => providerSessionEligibility() === "eligible";
   const resolveSession: ControllerOperationSessionAuthority["resolveRequest"] = (headers, requestOptions) => {
-    if (!providerSessionEligible()) return { result: Promise.resolve(null), settled: Promise.resolve() };
-    return provider!.resolveRequest(headers, requestOptions);
+    try {
+      if (requestOptions?.signal?.aborted) throw new OperationError("unavailable", "request_cancelled", { retry: "retry" });
+      const checked = providerSessionEligibility();
+      if (checked === "busy") throw new OperationError("busy", "admission_refused");
+      if (checked === "ineligible") return { result: Promise.resolve(null), settled: Promise.resolve() };
+      return provider!.resolveRequest(headers, requestOptions);
+    } catch (error) {
+      const result = Promise.reject(error);
+      result.catch(() => undefined);
+      return { result, settled: Promise.resolve() };
+    }
   };
   // In particular, legacy boot must not construct a boundary or verifier.
   if (!supported) {
-    return Object.freeze({ supported: false as const, eligible: () => false, providerSessionEligible, resolveSession, requestBudget: options.requestBudget,
+    return Object.freeze({ supported: false as const, eligible: () => false, providerSessionEligible, providerSessionEligibility, resolveSession, requestBudget: options.requestBudget,
       mint: async (): Promise<MintResult> => refused("unknown_mode"),
       mintOffline: async (): Promise<MintResult> => refused("unknown_mode") });
   }
@@ -84,7 +102,7 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   });
   const runner = new OperationRunner(runtime);
   const sessions = provider === null ? null : new ProviderSessionVerifier({
-    providerId: provider.providerId, reader: provider.reader, now, eligible: providerSessionEligible,
+    providerId: provider.providerId, reader: provider.reader, now, eligible: admittedProviderSessionEligible,
     stagedCapacity: CONTROLLER_OPERATION_SESSION_POLICY.stagedCapacity,
     stagedTtlMs: CONTROLLER_OPERATION_SESSION_POLICY.stagedTtlMs,
   });
@@ -104,8 +122,11 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
      * Human contexts also enforce provider eligibility through revalidation.
      */
     eligible: controllerEligible,
-    /** Always callable, including before the provider becomes ready. */
+    /** False includes contention. Call providerSessionEligibility to distinguish
+     * busy from an evaluated refusal, including before the provider is ready.
+     */
     providerSessionEligible,
+    providerSessionEligibility,
     resolveSession,
     requestBudget: options.requestBudget,
     /** Offline callers must mint through this composition, never call
@@ -136,7 +157,11 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
           if (!boundary) return refused("listener_closed");
           const acceptance = resolveAcceptance(mode, listener, presented);
           if (!acceptance.accepted) return refused(acceptance.reason);
-          if (acceptance.path === "provider_session" && !providerSessionEligible()) return refused("invalid_credential");
+          if (acceptance.path === "provider_session") {
+            const checked = providerSessionEligibility();
+            if (checked === "busy") throw new OperationError("busy", "admission_refused");
+            if (checked === "ineligible") return refused("invalid_credential");
+          }
           const at: unknown = now();
           if (typeof at !== "number" || !Number.isFinite(at)) {
             Promise.resolve(at).catch(() => undefined);

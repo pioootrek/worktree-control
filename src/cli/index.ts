@@ -462,6 +462,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     await listen(controller.server, port, host);
     if (mcp) await listen(mcp.server, mcpPort, "127.0.0.1");
   } catch (error) {
+    providerAdministration.stop();
     userSchedules?.close(); await backups.close();
     await mcp?.close();
     await controller.close();

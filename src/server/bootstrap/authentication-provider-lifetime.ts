@@ -12,6 +12,7 @@ import { ProviderConfigurationApplication, type ProviderConfigurationApplication
 import { AuthenticationHttp } from "../transports/authentication-http";
 import type { ProviderSessionAuthority } from "../modules/identity";
 import type { SqliteStateStore } from "../sqlite-store";
+import { OperationError, admissionFailureOf } from "../modules/operations";
 
 /** Engineering capacity bounds for this controller composition, independent of proof fixtures.
  * They bound work/storage; they neither select account mode nor prescribe account protection.
@@ -87,10 +88,14 @@ export interface ControllerAuthenticationOptions {
   holdLifetime?: () => () => void;
 }
 
+/** Busy means the policy could not run, not that it evaluated to false. */
+export type ProviderSessionEligibility = "eligible" | "ineligible" | "busy";
+
 /** Stable, administration-owned ports. No provider load or boot-time snapshot. */
 export interface ControllerOperationSessionAuthority {
   readonly providerId: "better-auth";
   readonly reader: Pick<AuthenticationProviderStorage, "currentSession">;
+  /** Evaluate inside core admission; no second admission attempt. */
   isSessionAuthorityEligible(): boolean;
   resolveRequest: AuthenticationProviderRuntime["resolveRequest"];
 }
@@ -128,31 +133,51 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
   const guard = eligibility.guard;
   // File configuration validates its path against registered repository roots.
   // Its reads therefore need core admission even before provider work starts.
-  // Never queue or borrow here: a synchronous predicate refuses contention.
-  const providerSessionEligible = () => {
-    try {
-      const checked = d.store.admission.tryRun(eligibility.providerSessionEligible);
-      return checked.ran && checked.value === true;
-    } catch { return false; }
+  const providerSessionEligibility = (): ProviderSessionEligibility => {
+    const checked = d.store.admission.tryRun(eligibility.providerSessionEligible);
+    return !checked.ran ? "busy" : checked.value ? "eligible" : "ineligible";
+  };
+  const resolutionFailure = (error: unknown, signal?: AbortSignal) => {
+    if (admissionFailureOf(error)) {
+      return signal?.aborted ? new OperationError("unavailable", "request_cancelled", { retry: "retry" })
+        : new OperationError("busy", "admission_refused");
+    }
+    return error;
   };
   const requestBudget = new AuthenticationRequestBudget(CONTROLLER_AUTHENTICATION_POLICY.maxInFlight,
     CONTROLLER_AUTHENTICATION_POLICY.limits.reservedCompletionSlots);
   const operationSessions: ControllerOperationSessionAuthority = Object.freeze({
     providerId: "better-auth",
     reader: Object.freeze({ currentSession: (providerId: string, sessionId: string) => storage.currentSession(providerId, sessionId) }),
-    isSessionAuthorityEligible: providerSessionEligible,
+    isSessionAuthorityEligible: eligibility.providerSessionEligible,
     resolveRequest(headers: Headers, options: { signal?: AbortSignal } = {}) {
       const refused = () => ({ result: Promise.resolve(null), settled: Promise.resolve() });
-      if (!providerSessionEligible()) return refused();
+      const failed = (error: unknown) => {
+        const result = Promise.reject(resolutionFailure(error, options.signal));
+        result.catch(() => undefined);
+        return { result, settled: Promise.resolve() };
+      };
+      if (options.signal?.aborted) return failed(new OperationError("unavailable", "request_cancelled", { retry: "retry" }));
+      let checked: ProviderSessionEligibility;
+      try { checked = providerSessionEligibility(); } catch (error) { return failed(error); }
+      if (checked === "busy") return failed(new OperationError("busy", "admission_refused"));
+      if (checked === "ineligible") return refused();
       const current = runtime!;
       try {
         const resolution = current.resolveRequest(headers, options);
         // Own real work even when its public result is cancelled or refused.
         track(resolution.settled);
-        const result = resolution.result.then(value => providerSessionEligible() && runtime === current ? value : null);
+        const result = resolution.result.then(value => d.store.admission.run(
+          () => eligibility.providerSessionEligible() && runtime === current ? value : null, { signal: options.signal },
+        )).catch(error => { throw resolutionFailure(error, options.signal); });
         result.catch(() => undefined);
-        return { result, settled: resolution.settled };
-      } catch { return refused(); }
+        // Delivery now includes a queued eligibility check. Retain it as well
+        // as provider work until it has actually ended, including cancellation.
+        const delivery = track(result.then(() => undefined, () => undefined));
+        const settled = Promise.all([resolution.settled, delivery]).then(() => undefined);
+        settled.catch(() => undefined);
+        return { result, settled };
+      } catch (error) { return admissionFailureOf(error) ? failed(error) : refused(); }
     },
   });
   // Reuse the ONE existing connection gate. New work checks the current config in its actual borrow.
@@ -282,7 +307,9 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
     /** Fence new shared cookie work before listener drain. */
     stop: () => { stopping = true; requestBudget.stop(); },
     controllerEligible: eligibility.controllerEligible,
-    providerSessionEligible,
+    /** Admitted verifier policy. Transports use the three-valued check below. */
+    providerSessionEligible: eligibility.providerSessionEligible,
+    providerSessionEligibility,
     /** Server-owned adapter for converted browser workflows.
      * Uses this exact runtime and identity; an HTTPS deployment origin must match pinned config.
      * The caller owns listener drain before dispose(), as in createControllerShutdown.

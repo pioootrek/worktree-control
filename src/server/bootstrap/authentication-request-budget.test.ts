@@ -26,9 +26,25 @@ describe("shared browser and operations cookie request budget", () => {
     expect(owner.active).toBe(1); expect(owner.acquire("completion")).toBeNull();
     if (first === "response") { work.resolve(); await settlement; } else slot.responseFinished();
     expect(owner.active).toBe(0);
-    slot.responseFinished(); await slot.settle(Promise.resolve());
+    slot.responseFinished();
+    expect(() => slot.settle(Promise.resolve())).toThrow("exactly once");
     expect(owner.active).toBe(0);
     expect(owner.acquire("initiating")).not.toBeNull();
+  });
+
+  it.each([false, true])("rejects a second settlement without changing accounting (released=%s)", async released => {
+    const owner = new AuthenticationRequestBudget(1, 0), slot = owner.acquire("initiating")!;
+    const first = gate(), later = gate();
+    const settlement = slot.settle(first.promise);
+    slot.responseFinished();
+    if (released) { first.resolve(); await settlement; }
+    const active = owner.active;
+    expect(() => slot.settle(later.promise)).toThrow("exactly once");
+    expect(owner.active).toBe(active);
+    later.resolve(); await later.promise;
+    expect(owner.active).toBe(active);
+    first.resolve(); await settlement;
+    expect(owner.active).toBe(0);
   });
 
   it("keeps disconnected/cancelled work owned until its actual settled promise ends", async () => {

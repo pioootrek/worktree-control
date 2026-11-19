@@ -26,9 +26,9 @@ export class AuthenticationRequestBudget {
     return Object.freeze({
       responseFinished() { responseFinished = true; release(); },
       settle(work: Promise<unknown>) {
-        // Call once, after all work has been registered. A failed settlement is
-        // not proof of cleanup; retain the slot in that case.
-        return settlement ??= work.then(() => { workFinished = true; release(); });
+        if (settlement) throw new Error("Authentication request settlement must be called exactly once.");
+        // A failed settlement is not proof of cleanup; retain the slot.
+        return settlement = work.then(() => { workFinished = true; release(); });
       },
     });
   }
@@ -37,6 +37,6 @@ export class AuthenticationRequestBudget {
 export interface AuthenticationRequestSlot {
   /** Call on response finish OR close, including an already closed response. */
   responseFinished(): void;
-  /** Join all started work, including resolveRequest().settled, after the handler ends. */
+  /** Call exactly once, with all started work joined, including resolveRequest().settled, after the handler ends. */
   settle(work: Promise<unknown>): Promise<void>;
 }

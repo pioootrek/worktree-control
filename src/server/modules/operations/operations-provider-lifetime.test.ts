@@ -20,9 +20,9 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 const gate = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
 const cookie = { ...none(), browserHeaders: true, providerSession: { secret: "synthetic-cookie" } };
 
-async function fixture(failLoad = false) {
+async function fixture(failLoad = false, admission: { admissionTimeoutMs?: number; maxQueued?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), "operations-provider-bootstrap-")), paths = resolveAppPaths(join(root, "data"));
-  const store = new SqliteStateStore(paths.databasePath, undefined, { admission: "strict" });
+  const store = new SqliteStateStore(paths.databasePath, undefined, { admission: "strict", ...admission });
   const authentication = await store.admission.run(() => {
     store.saveAuthenticationPolicy({ ...store.getAuthenticationPolicy(), mode: "better-auth" }, "fixture", "fixture");
     return new AuthenticationService(store);
@@ -109,6 +109,7 @@ describe("production provider administration and operations composition", () => 
     };
     const refused = async () => {
       identities(); expect(c.providerSessionEligible()).toBe(false);
+      expect(c.providerSessionEligibility()).toBe("ineligible");
       expect(await f.mintHuman()).toMatchObject({ ok: false });
       const resolution = c.resolveSession(new Headers());
       expect(await resolution.result).toBeNull(); await resolution.settled;
@@ -191,19 +192,103 @@ describe("production provider administration and operations composition", () => 
     }
   });
 
-  it("refuses pre-provider work when configuration cannot obtain synchronous admission", async () => {
+  it("reports busy without starting provider work when entry cannot obtain synchronous admission", async () => {
     const f = await fixture(); f.configure(); const prepared = f.prepare(); await f.started.promise; f.resume.resolve(); await prepared;
     const entered = gate(), release = gate();
     const borrowing = f.store.authenticationProviderStorage().borrow(async () => { entered.resolve(); await release.promise; });
     try {
       await entered.promise;
       expect(f.operations.providerSessionEligible()).toBe(false);
-      const resolution = f.operations.resolveSession(new Headers());
-      expect(await resolution.result).toBeNull(); await resolution.settled;
+      expect(f.operations.providerSessionEligibility()).toBe("busy");
+      expect(f.admin.providerSessionEligibility()).toBe("busy");
+      for (const resolve of [f.operations.resolveSession, f.admin.operationSessionAuthority().resolveRequest]) {
+        const resolution = resolve(new Headers());
+        await expect(resolution.result).rejects.toMatchObject({ category: "busy", reason: "admission_refused", retry: "retry" });
+        await resolution.settled;
+      }
       expect(f.resolveRequest).not.toHaveBeenCalled();
     } finally { release.resolve(); await borrowing; }
     expect(f.operations.providerSessionEligible()).toBe(true);
     expect(await f.mintHuman()).toMatchObject({ ok: true });
+  });
+
+  it("queues the delivery check behind an unrelated ticket instead of discarding a valid session", async () => {
+    const f = await fixture(); f.configure(); const prepared = f.prepare(); await f.started.promise; f.resume.resolve(); await prepared;
+    const ready = gate(), entered = gate(), release = gate();
+    f.resolveRequest.mockImplementation(() => ({ result: ready.promise.then(() => ({ session: f.session, principalId: "human" })), settled: ready.promise }));
+    const resolution = f.operations.resolveSession(new Headers());
+    const borrowing = f.store.authenticationProviderStorage().borrow(async () => { entered.resolve(); await release.promise; });
+    let ticket: Promise<void> | undefined;
+    try {
+      await entered.promise;
+      ticket = f.store.admission.run(() => { f.store.getAuthenticationPolicy(); });
+      expect(f.store.admissionSnapshot().queuedCore).toBe(1);
+      ready.resolve();
+      await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBe(2));
+      let delivered = false, settled = false;
+      void resolution.result.then(() => { delivered = true; });
+      void resolution.settled.then(() => { settled = true; });
+      await Promise.resolve(); expect(delivered).toBe(false); expect(settled).toBe(false);
+      release.resolve(); await borrowing; await ticket;
+      expect(await resolution.result).toMatchObject({ principalId: "human", session: f.session });
+      await resolution.settled;
+    } finally { ready.resolve(); release.resolve(); await borrowing; await ticket; }
+  });
+
+  it.each(["full", "cancelled"] as const)("reports %s delivery admission without returning null", async failure => {
+    const f = await fixture(false, { maxQueued: failure === "full" ? 1 : 32 });
+    f.configure(); const prepared = f.prepare(); await f.started.promise; f.resume.resolve(); await prepared;
+    const ready = gate(), entered = gate(), release = gate(), signal = new AbortController();
+    f.resolveRequest.mockImplementation(() => ({ result: ready.promise.then(() => ({ session: f.session, principalId: "human" })), settled: ready.promise }));
+    const resolution = f.operations.resolveSession(new Headers(), { signal: signal.signal });
+    const borrowing = f.store.authenticationProviderStorage().borrow(async () => { entered.resolve(); await release.promise; });
+    let ticket: Promise<void> | undefined;
+    try {
+      await entered.promise;
+      if (failure === "full") ticket = f.store.admission.run(() => {});
+      const outcome = expect(resolution.result).rejects.toMatchObject({
+        category: failure === "full" ? "busy" : "unavailable",
+        reason: failure === "full" ? "admission_refused" : "request_cancelled", retry: "retry",
+      });
+      ready.resolve();
+      if (failure === "cancelled") {
+        await vi.waitFor(() => expect(f.store.admissionSnapshot().queuedCore).toBe(1));
+        signal.abort();
+      }
+      await outcome; await resolution.settled;
+      expect(f.store.admissionSnapshot().providerActive).toBe(true);
+    } finally { ready.resolve(); release.resolve(); await borrowing; await ticket; }
+  });
+
+  it("reports resolved-session mint contention as retryable busy", async () => {
+    const f = await fixture(false, { admissionTimeoutMs: 20 });
+    f.configure(); const prepared = f.prepare(); await f.started.promise; f.resume.resolve(); await prepared;
+    const resolved = await f.operations.resolveSession(new Headers()).result;
+    expect(resolved).not.toBeNull();
+    const entered = gate(), release = gate();
+    const borrowing = f.store.authenticationProviderStorage().borrow(async () => { entered.resolve(); await release.promise; });
+    try {
+      await entered.promise;
+      expect(await f.operations.mint("api", cookie, resolved!.session, {})).toEqual({ ok: false,
+        error: { category: "busy", status: 503, reason: "admission_refused", retry: "retry", effect: null } });
+    } finally { release.resolve(); await borrowing; }
+    expect(await f.mintHuman()).toMatchObject({ ok: true });
+  });
+
+  it("evaluates staging and runner revalidation inside live admission despite a queued provider", async () => {
+    const f = await fixture(); f.configure(); const prepared = f.prepare(); await f.started.promise; f.resume.resolve(); await prepared;
+    const human = await f.mintHuman(); if (!human.ok) throw new Error("human refused");
+    let borrowing: Promise<void> | undefined;
+    try {
+      await f.store.admission.run(async () => {
+        borrowing = f.store.admission.outside(() => f.store.authenticationProviderStorage().borrow(async () => {}));
+        expect(f.store.admissionSnapshot().queuedProviders).toBe(1);
+        expect(f.operations.providerSessionEligibility()).toBe("eligible");
+        expect(await f.mintHuman()).toMatchObject({ ok: true });
+        expect(await f.operations.runner.run(sessionDescribe, human.context, {})).toMatchObject({ ok: true, value: { actor: { kind: "human" } } });
+        expect(f.store.admissionSnapshot().queuedProviders).toBe(1);
+      });
+    } finally { await borrowing; }
   });
 
   it("holds resolution and the shared slot through real settlement, and shutdown joins that work", async () => {

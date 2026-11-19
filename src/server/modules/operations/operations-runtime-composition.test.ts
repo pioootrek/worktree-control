@@ -114,6 +114,18 @@ async function fixture(mode = "better-auth", withProvider = false, admissionTime
 const unauthenticated = (reason: string) => ({ ok: false, error: { category: "unauthenticated", reason } });
 
 describe("unmounted real operations composition under strict admission", () => {
+  it("reports an eligibility admission that cannot run inside mint as busy, not an invalid cookie", async () => {
+    const f = await fixture("better-auth", true), h = await f.human("human");
+    const admission = f.store.admission;
+    vi.spyOn(f.store, "admission", "get").mockReturnValue(admission);
+    const tryRun = vi.spyOn(admission, "tryRun").mockReturnValue({ ran: false });
+    expect(f.composition!.providerSessionEligibility()).toBe("busy");
+    expect(await f.composition!.mint("api", h.presented, h.session, {})).toEqual({ ok: false,
+      error: { category: "busy", status: 503, reason: "admission_refused", retry: "retry", effect: null } });
+    tryRun.mockRestore();
+    expect(await f.composition!.mint("api", h.presented, h.session, {})).toMatchObject({ ok: true });
+  });
+
   it("gives mint the same contention refusal as run while a provider holds real admission", async () => {
     const f = await fixture("token", false, 20);
     const presented = presentedBearer(f.installationSecret), context = await f.context(presented);
