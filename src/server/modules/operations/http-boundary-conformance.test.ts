@@ -1396,7 +1396,8 @@ describe("worker HTTPS boundary conformance", () => {
   it.each(["maintenance", "credential", "grant", "deadline", "disconnect", "listener"])("fresh release after runner completion rechecks %s", async change => {
     const f = await workerFixture("better-auth"); if (!f.built.supported) throw new Error("supported fixture"); await f.grant();
     const runner = f.built.runner, real = runner.readRelease.bind(runner), entered = pause(), release = pause();
-    const commits: unknown[] = [];
+    const commits: unknown[] = [], disconnected = pause();
+    f.hooks.beforeMint = signal => signal?.addEventListener("abort", disconnected.done, { once: true });
     vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
       if (operation.kind === "stream") throw new Error("read required"); const prior = await runner.run(operation, context, raw); expect(prior.ok).toBe(true);
       entered.done(); await release.promise; return real(operation, context, raw, { ...options, commit(value) { commits.push(value); options.commit(value); } });
@@ -1408,7 +1409,7 @@ describe("worker HTTPS boundary conformance", () => {
       if (change === "grant") await f.store.admission.run(() => f.db.prepare("DELETE FROM account_grants WHERE account_id='agent'").run());
       if (change === "deadline") f.clock.offset = OPERATIONS_HTTP_LIMITS.deadlineMs + 1;
       if (change === "listener") f.state.workerOpen = false;
-      if (change === "disconnect") { pending.call.destroy(); await new Promise<void>(r => setImmediate(r)); }
+      if (change === "disconnect") { pending.call.destroy(); await disconnected.promise; }
     } finally { release.done(); }
     if (change === "disconnect") await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
     else { const reply = await pending.reply; if (change === "grant") { expect(reply.status).toBe(200); expect(reply.body.projects).toEqual([]); } else { expect(reply.status).toBeGreaterThanOrEqual(400); expect(reply.body).not.toHaveProperty("actor"); } }
