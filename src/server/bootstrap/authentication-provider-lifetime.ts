@@ -13,7 +13,6 @@ import { AuthenticationHttp } from "../transports/authentication-http";
 import type { ProviderSessionAuthority } from "../modules/identity";
 import type { SqliteStateStore } from "../sqlite-store";
 import { databaseAdmissionFailure } from "../database-admission";
-import { ExclusiveConnectionError } from "../infrastructure/sqlite/exclusive-connection";
 
 /** Engineering capacity bounds for this controller composition, independent of proof fixtures.
  * They bound work/storage; they neither select account mode nor prescribe account protection.
@@ -92,13 +91,21 @@ export interface ControllerAuthenticationOptions {
 /** Busy means the policy could not run, not that it evaluated to false. */
 export type ProviderSessionEligibility = "eligible" | "ineligible" | "busy";
 
+/** Resolution admission failed before eligibility could be evaluated. No credential verdict. */
+export class ControllerOperationSessionResolutionError extends Error {
+  constructor(readonly code: "busy" | "cancelled") {
+    super(code === "busy" ? "Session eligibility could not obtain admission." : "Session resolution was cancelled before admission.");
+    this.name = "ControllerOperationSessionResolutionError";
+  }
+}
+
 /** Stable, administration-owned ports. No provider load or boot-time snapshot. */
 export interface ControllerOperationSessionAuthority {
   readonly providerId: "better-auth";
   readonly reader: Pick<AuthenticationProviderStorage, "currentSession">;
   /** Evaluate inside core admission; no second admission attempt. */
   isSessionAuthorityEligible(): boolean;
-  /** Admission contention/cancellation reject result with ExclusiveConnectionError;
+  /** Admission contention/cancellation reject result with ControllerOperationSessionResolutionError;
    * only an evaluated eligibility refusal returns null. Operations maps these
    * admission errors to its public busy/cancelled errors in its composition.
    */
@@ -144,8 +151,7 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
   };
   const resolutionFailure = (error: unknown, signal?: AbortSignal) => {
     if (databaseAdmissionFailure(error)) {
-      return signal?.aborted ? new ExclusiveConnectionError("cancelled", "Session resolution was cancelled before admission.")
-        : new ExclusiveConnectionError("busy", "Session eligibility could not obtain admission.");
+      return new ControllerOperationSessionResolutionError(signal?.aborted ? "cancelled" : "busy");
     }
     return error;
   };
@@ -162,10 +168,10 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
         result.catch(() => undefined);
         return { result, settled: Promise.resolve() };
       };
-      if (options.signal?.aborted) return failed(new ExclusiveConnectionError("cancelled", "Session resolution was cancelled before admission."));
+      if (options.signal?.aborted) return failed(new ControllerOperationSessionResolutionError("cancelled"));
       let checked: ProviderSessionEligibility;
       try { checked = providerSessionEligibility(); } catch (error) { return failed(error); }
-      if (checked === "busy") return failed(new ExclusiveConnectionError("busy", "Session eligibility could not obtain admission."));
+      if (checked === "busy") return failed(new ControllerOperationSessionResolutionError("busy"));
       if (checked === "ineligible") return refused();
       const current = runtime!;
       try {

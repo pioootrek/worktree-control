@@ -9,7 +9,7 @@ import {
   type AuthenticationContext, type ListenerBoundary, type OperationRuntime, type PresentedCredentials,
 } from "../modules/operations";
 import { authenticationModes, type AuthenticationMode, type ListenerKind, type PublicOperationError } from "../../shared/contracts/operations";
-import { CONTROLLER_OPERATION_SESSION_POLICY, type ControllerOperationSessionAuthority, type ProviderSessionEligibility, type createControllerOperationEligibility } from "./authentication-provider-lifetime";
+import { CONTROLLER_OPERATION_SESSION_POLICY, ControllerOperationSessionResolutionError, type ControllerOperationSessionAuthority, type ProviderSessionEligibility, type createControllerOperationEligibility } from "./authentication-provider-lifetime";
 import type { AuthenticationRequestBudget } from "./authentication-request-budget";
 
 type ServedListener = Exclude<ListenerKind, "offline">;
@@ -63,6 +63,10 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   const providerSessionEligible = () => providerSessionEligibility() === "eligible";
   const resolveSession: ControllerOperationSessionAuthority["resolveRequest"] = (headers, requestOptions) => {
     const resolutionFailure = (error: unknown) => {
+      if (error instanceof ControllerOperationSessionResolutionError) {
+        return error.code === "cancelled" ? new OperationError("unavailable", "request_cancelled", { retry: "retry" })
+          : new OperationError("busy", "admission_refused");
+      }
       if (!admissionFailureOf(error)) return error;
       return requestOptions?.signal?.aborted ? new OperationError("unavailable", "request_cancelled", { retry: "retry" })
         : classify(error, null);
