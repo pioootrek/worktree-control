@@ -11,7 +11,7 @@ import { resolveAppPaths } from "@/server/paths";
 import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
 import type { VerifiedProviderSession } from "@/server/modules/authentication";
 import { installationPermissions, projectPermissions, roleDefinitions } from "@/shared/contracts/operations";
-import type { AuthenticationContext } from "./authentication-context";
+import { mintOfflineContext, type AuthenticationContext } from "./authentication-context";
 import { sessionDescribe, MAX_DESCRIBED_PROJECTS } from "./session-describe";
 import { hash, iso, token, none, presentedBearer, NOW } from "./adapters/credential-verifier-fixture";
 import { createProviderWorld } from "./adapters/provider-session-fixture";
@@ -142,6 +142,26 @@ describe("unmounted real operations composition under strict admission", () => {
       projectId, permissions: projectPermissions.filter(p => roleDefinitions[role].permissions.includes(p)),
     })));
     if (role === "admin") expect(value.projects.flatMap(p => p.permissions).some(p => p.startsWith("secrets:"))).toBe(false);
+  });
+
+  it("uses controller eligibility for a providerless account-mode boot, including offline CLI", async () => {
+    const f = await fixture("better-auth");
+    const storage = vi.spyOn(f.store, "authenticationProviderStorage");
+    const c = f.build();
+    expect(storage).not.toHaveBeenCalled();
+    const { secret } = await f.store.admission.run(() => f.agent());
+    const minted = await c.mint("api", presentedBearer(secret), null, {});
+    expect(minted.ok).toBe(true);
+    if (!minted.ok) throw new Error("expected agent");
+    expect(await c.runner.run(sessionDescribe, minted.context, {})).toMatchObject({ ok: true, value: { actor: { kind: "agent" } } });
+    const offline = mintOfflineContext({ mode: "better-auth", lockHeld: () => true });
+    expect(c.eligible()).toBe(true);
+    expect(await c.runner.run(sessionDescribe, offline, {})).toMatchObject({ ok: true, value: { actor: { kind: "operator" }, fullAuthority: true } });
+    expect(await c.mint("api", { ...none(), providerSession: { secret: "synthetic-cookie" } }, null, {}))
+      .toMatchObject(unauthenticated("invalid_credential"));
+    f.state.maintenance = true;
+    expect(c.eligible()).toBe(false);
+    expect(await c.mint("api", presentedBearer(secret), null, {})).toMatchObject(unauthenticated("listener_closed"));
   });
 
   it("bounds the listing, omits invalid IDs and includes archived projects", async () => {

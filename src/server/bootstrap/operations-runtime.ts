@@ -22,7 +22,10 @@ export interface OperationsRuntimeOptions {
   logs: Pick<LogWriter, "controller">;
   listeners: Readonly<Partial<Record<ServedListener, () => boolean>>>;
   eligibility: Pick<ReturnType<typeof createControllerOperationEligibility>, "controllerEligible" | "providerSessionEligible">;
-  /** Null when no provider with session authority exists. No loading here. */
+  /** Null when this boot has no provider with session authority (including
+   * offline CLI). Never use null for a temporarily ineligible existing provider.
+   * No loading here.
+   */
   provider: Pick<AuthenticationProviderRuntime, "isSessionAuthorityEligible"> | null;
 }
 
@@ -46,8 +49,8 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
       mint: async (): Promise<MintResult> => refused("unknown_mode") });
   }
   const mode = activeMode as AuthenticationMode;
-  const eligible = mode === "better-auth"
-    ? () => holds(eligibility.providerSessionEligible) && provider !== null && holds(() => provider.isSessionAuthorityEligible())
+  const eligible = mode === "better-auth" && provider !== null
+    ? () => holds(eligibility.providerSessionEligible) && holds(() => provider.isSessionAuthorityEligible())
     : () => holds(eligibility.controllerEligible);
   const runtime: OperationRuntime = Object.freeze({
     admission: store.admission,
