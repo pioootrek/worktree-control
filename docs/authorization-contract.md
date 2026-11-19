@@ -557,16 +557,23 @@ There is exactly one explicit descriptor, `session_describe`, mapped to
 MCP operation IDs. The operation parses call arguments. SDK handlers do no
 asynchronous application work: an initial `readRelease` captures the current
 public DTO before SDK dispatch. The same DTO is an authorization witness for
-initialize, listing and notifications. No client bytes are written there.
+initialize, listing and notifications. Only an oversized-DTO refusal writes
+client bytes there.
 After SDK JSON construction, the adapter buffers the response, then invokes
 `readRelease` again with that witness's canonical value. It recomputes authority,
-grants, directory and clock and refuses a changed projection. Only its final
-synchronous commit writes headers and ends the real Node response. This can
+grants, directory and clock and refuses a changed projection. Successful SDK
+output is written only by the final synchronous commit to the real Node response. This can
 conservatively refuse metadata responses when grants change too. Admission spans
 neither SDK work nor response drain.
 
-Limits reuse HTTP's pattern: 64 KiB request, 256 KiB SDK response, 32 concurrent
-requests and a total ten-second deadline, with strict JSON depth 8 and 128 fields.
+Limits share HTTP's 256 KiB serialized-DTO bound, checked at the initial
+witness commit; an oversized DTO receives the same pre-dispatch HTTP 413
+`payload_too_large` / `response_too_large` refusal. The SDK envelope ceiling is
+`3 * responseBytes + 65,664`: at most 1x for the structured DTO, 2x for its
+escaped text copy, plus 64 KiB for the echoed request ID and 128 bytes for fixed
+JSON-RPC/tool-result framing. Both copies are retained. Other limits remain
+64 KiB request, 32 concurrent requests and a total ten-second deadline, with
+strict JSON depth 8 and 128 fields.
 Messages routed through SDK `transport.send` are byte-checked before Response
 allocation. SDK-generated negotiation and protocol errors construct Responses
 directly and are bounded only while buffering. Every actual Response body is

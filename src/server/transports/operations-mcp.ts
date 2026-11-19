@@ -15,6 +15,14 @@ export const OPERATIONS_MCP_TOOLS = Object.freeze([Object.freeze({
   inputSchema: Object.freeze({ type: "object" as const, properties: Object.freeze({}), additionalProperties: false }),
 })]);
 
+/**
+ * SDK Protocol adds { result, jsonrpc, id }; JSON response mode serializes that
+ * object directly, without a session or SSE frame. Reserve 128 bytes for the
+ * fixed tool/JSON-RPC framing and 64 KiB for an echoed ID (the default request
+ * bound). Larger fixture request limits do not enlarge this fixed allowance.
+ */
+export const OPERATIONS_MCP_ENVELOPE_OVERHEAD = OPERATIONS_HTTP_LIMITS.bodyBytes + 128;
+
 /** Canonical HTTP loopback origin at the listener's effective port. */
 export function isOperationsMcpOrigin(originHeader: string, localPort: number | undefined): boolean {
   try {
@@ -30,6 +38,9 @@ export function createOperationsMcp(options: {
   limits?: { bodyBytes?: number; responseBytes?: number; deadlineMs?: number; maxInFlight?: number };
 }) {
   const { runtime } = options, limits = { ...OPERATIONS_HTTP_LIMITS, ...options.limits };
+  // The structured DTO costs at most 1x; its JSON-string text copy at most
+  // 2x (quotes/backslashes escaped). The two string delimiters are framing.
+  const envelopeBytes = 3 * limits.responseBytes + OPERATIONS_MCP_ENVELOPE_OVERHEAD;
   const accepted = new Set<Promise<void>>(), cancellations = new Set<() => void>();
   let closing = false;
   const failure = (category: ConstructorParameters<typeof OperationError>[0], reason: string) => publicError(new OperationError(category, reason));
@@ -93,10 +104,19 @@ export function createOperationsMcp(options: {
       const releaseOptions = { eligible: () => !closing && runtime.eligible(), connected, deadline, signal: abort.signal };
       // This witness also gates initialize, listing and notifications. It is never
       // sent for those methods, but must still match at the real Node commit.
-      let snapshot!: { readonly serialized: string; readonly canonical: string };
+      let snapshot: { readonly serialized: string; readonly canonical: string } | undefined;
       const initial = await runtime.runner.readRelease(operation, minted.context, {}, { ...releaseOptions,
-        commit(dto) { snapshot = Object.freeze({ serialized: JSON.stringify(dto), canonical: canonicalJson(dto) }); } });
+        commit(dto) {
+          const serialized = JSON.stringify(dto);
+          if (Buffer.byteLength(serialized) > limits.responseBytes) {
+            // Match HTTP: commit one refusal inside admission, before SDK dispatch.
+            // Throwing here would be remapped to release_commit_failed by the runner.
+            operationsFailure(response, failure("payload_too_large", "response_too_large")); return;
+          }
+          snapshot = Object.freeze({ serialized, canonical: canonicalJson(dto) });
+        } });
       if (initial.status !== "committed") { refuse(initial.error); return; }
+      if (!snapshot) return;
       const context = Object.freeze({ authentication: minted.context, ...snapshot });
       const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       server = new Server({ name: "worktree-control-operations", version: "1" }, { capabilities: { tools: {} } });
@@ -119,7 +139,7 @@ export function createOperationsMcp(options: {
       void outputFailure.catch(() => undefined);
       const send = transport.send.bind(transport);
       transport.send = async (...args) => {
-        if (Buffer.byteLength(JSON.stringify(args[0])) > limits.responseBytes) {
+        if (Buffer.byteLength(JSON.stringify(args[0])) > envelopeBytes) {
           const error = new OperationError("payload_too_large", "response_too_large"); rejectOutput(error); throw error;
         }
         return send(...args);
@@ -142,7 +162,7 @@ export function createOperationsMcp(options: {
             const chunk = await Promise.race([reader.read(), cancelled]);
             if (chunk.done) break;
             bytes += chunk.value.byteLength;
-            if (bytes > limits.responseBytes) { await reader.cancel(); throw new OperationError("payload_too_large", "response_too_large"); }
+            if (bytes > envelopeBytes) { await reader.cancel(); throw new OperationError("payload_too_large", "response_too_large"); }
             chunks.push(chunk.value);
           }
         } finally { reader.releaseLock(); }

@@ -15,10 +15,12 @@ import { SqliteStateStore } from "@/server/sqlite-store";
 import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
 import { resolveAppPaths } from "@/server/paths";
 import { IdentityService } from "@/server/modules/identity";
-import { createOperationsMcp, isOperationsMcpOrigin, OPERATIONS_MCP_TOOLS } from "@/server/transports/operations-mcp";
-import { operationsFailure, type OperationsHttpRuntime } from "@/server/transports/operations-http";
+import { createOperationsMcp, isOperationsMcpOrigin, OPERATIONS_MCP_TOOLS, OPERATIONS_MCP_ENVELOPE_OVERHEAD } from "@/server/transports/operations-mcp";
+import { createOperationsHttp, OPERATIONS_HTTP_LIMITS, operationsFailure, type OperationsHttpRuntime } from "@/server/transports/operations-http";
 import { SESSION_COOKIE } from "@/server/transports/authentication-http-boundary";
 import { createBoundaryDriver, conform, ConformanceFailure } from "./http-boundary-driver";
+import { installationPermissions, projectId, projectPermissions } from "@/shared/contracts/operations";
+import { MAX_DESCRIBED_PROJECTS, sessionDescribe } from "./session-describe";
 import { acceptanceTable, resolveAcceptance } from "./acceptance";
 import { hash, iso, NOW, token } from "./adapters/credential-verifier-fixture";
 
@@ -31,7 +33,7 @@ const initialize = { jsonrpc: "2.0", id: 7, method: "initialize", params: { prot
 const notification = { jsonrpc: "2.0", method: "notifications/initialized" };
 
 type Fault = "premature_write" | "early_release" | "omit_list_authentication";
-async function fixture(mode = "open", limits?: Parameters<typeof createOperationsMcp>[0]["limits"], fault?: Fault) {
+async function fixture(mode = "open", limits?: Parameters<typeof createOperationsMcp>[0]["limits"], fault?: Fault, projectIds = ["project-a"]) {
   const root = mkdtempSync(join(tmpdir(), "operations-mcp-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict", admissionTimeoutMs: 75 });
@@ -46,14 +48,14 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
       store.savePrincipal({ id, kind, status: "active" }, "fixture");
       store.saveCredential({ id: secret.slice(4, 40), principalId: id, kind: credentialKind, label: "fixture", tokenPrefix: secret.slice(0, 40), verifierHash: hash(secret), status: "active", expiresAt: null, createdAt: iso(NOW), revokedAt: null, lastUsedAt: null }, "fixture");
     }
-    store.saveKnowledgeProject({ id: "project-a", name: "fixture", status: "active", revision: 1, createdAt: iso(NOW), updatedAt: iso(NOW) }, "fixture");
+    for (const id of projectIds) store.saveKnowledgeProject({ id, name: "fixture", status: "active", revision: 1, createdAt: iso(NOW), updatedAt: iso(NOW) }, "fixture");
   });
   const used = vi.spyOn(store, "recordCredentialUsed");
   const legacy = vi.spyOn(IdentityService.prototype, "authenticateBearer");
   const state = { maintenance: false, stopping: false, configChanged: false, offset: 0 };
   const eligibility = createControllerOperationEligibility({ maintenance: () => state.maintenance, stopping: () => state.stopping, configurationRestartRequired: () => state.configChanged, runtime: () => undefined });
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + state.offset, logs: { controller() {} }, provider: null,
-    eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), listeners: { mcp: () => true } });
+    eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), listeners: { mcp: () => true, api: () => true } });
   if (!built.supported) throw new Error("fixture mode unsupported");
   const handles: Promise<void>[] = [];
   const hooks: { beforeHandle?: (request: IncomingMessage, response: ServerResponse) => void; beforeFinal?: (response: ServerResponse) => void | Promise<void>; beforeMint?: (signal?: AbortSignal) => void | Promise<void> } = {};
@@ -72,6 +74,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   };
   const runtime = { ...built, mint: minted, runner: { readRelease } } satisfies OperationsHttpRuntime;
   const adapter = createOperationsMcp({ runtime, limits });
+  const httpAdapter = createOperationsHttp({ runtime, listener: "api", limits });
   // Fault owners are deliberate negative controls; the actual adapter is unchanged.
   let brokenActive = 0;
   const server = createServer((request, response) => {
@@ -84,11 +87,11 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
       brokenActive++; response.once("close", () => { brokenActive--; });
     }
     hooks.beforeHandle?.(request, response);
-    const handle = adapter.handle(request, response); handles.push(handle);
+    const handle = (request.url === "/api/operations/session.describe" ? httpAdapter : adapter).handle(request, response); handles.push(handle);
     void handle;
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-  cleanups.push(async () => { adapter.stop(); server.closeAllConnections(); await adapter.drain(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); });
+  cleanups.push(async () => { adapter.stop(); httpAdapter.stop(); server.closeAllConnections(); await adapter.drain(); await httpAdapter.drain(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); });
   const driver = createBoundaryDriver({ kind: "api", server, legacyPath: "/unused", close: async () => {}, acceptedCredentials: [] });
   const auth = (secret?: string): Record<string, string> => secret ? { Authorization: `Bearer ${secret}` } : {};
   const send = (body: unknown = call, secret?: string, headers: Record<string, string> = {}, extra: Parameters<typeof driver.send>[0] = {}) => driver.send({ path: "/mcp/operations", body: JSON.stringify(body), headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...auth(secret), ...headers }, ...extra });
@@ -176,12 +179,112 @@ describe("unmounted request-scoped MCP adapter", () => {
     expect(f.minted).not.toHaveBeenCalled();
   });
 
-  it("bounds request bytes and SDK response bytes, including before Response construction", async () => {
+  it("bounds request bytes and refuses oversized DTOs before SDK dispatch", async () => {
     const f = await fixture("open", { bodyBytes: 200, responseBytes: 100 });
     expect(operationError(await f.send(call, undefined, {}, { body: JSON.stringify({ data: "x".repeat(201) }) }).reply)).toMatchObject({ reason: "request_too_large", category: "payload_too_large" });
     const originalSend = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
+    const connect = vi.spyOn(Server.prototype, "connect");
     expect(operationError(await f.send(call).reply)).toMatchObject({ reason: "response_too_large", category: "payload_too_large", status: 413 });
+    expect(originalSend).not.toHaveBeenCalled(); expect(connect).not.toHaveBeenCalled();
+  });
+
+  it.each([36, 160])("measures 500 full-authority projects with %i-byte IDs against both default DTO bounds", async idBytes => {
+    // Contract grammar: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$ (160 ASCII bytes).
+    const ids = Array.from({ length: MAX_DESCRIBED_PROJECTS }, (_, index) => projectId(idBytes === 36
+      ? `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`
+      : `p${String(index).padStart(159, "0")}`));
+    expect(() => projectId("p".repeat(161))).toThrow();
+    const f = await fixture("open", undefined, undefined, ids);
+    const minted = await f.built.mint("mcp", { bearers: [], providerSession: null, legacySecret: false, browserHeaders: false }, null, {});
+    if (!minted.ok) throw new Error("full-authority mint required");
+    const described = await f.built.runner.run(sessionDescribe, minted.context, {});
+    if (!described.ok) throw new Error("description required");
+    const dto = described.value, text = JSON.stringify(dto), dtoBytes = Buffer.byteLength(text);
+    expect(dto).toMatchObject({ fullAuthority: true, installationPermissions: [...installationPermissions], projectsTruncated: false });
+    expect(dto.projects).toEqual(ids.sort().map(projectId => ({ projectId, permissions: [...projectPermissions] })));
+    const http = await f.send({}, undefined, {}, { path: "/api/operations/session.describe" }).reply;
+    if (idBytes === 36) {
+      const client = await f.client();
+      const sent = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
+      const result = await client.callTool({ name: "session_describe", arguments: {} });
+      expect(result.structuredContent).toEqual(dto);
+      expect(result.content).toEqual([{ type: "text", text }]);
+      expect(result.structuredContent).toEqual(JSON.parse((result.content as { text: string }[])[0].text));
+      const messageBytes = Buffer.byteLength(JSON.stringify(sent.mock.calls[0][0]));
+      console.info({ idBytes, projects: ids.length, dtoBytes, messageBytes });
+      expect(dtoBytes).toBeLessThanOrEqual(OPERATIONS_HTTP_LIMITS.responseBytes);
+      expect(messageBytes).toBeGreaterThan(OPERATIONS_HTTP_LIMITS.responseBytes);
+      expect(messageBytes).toBeLessThanOrEqual(3 * OPERATIONS_HTTP_LIMITS.responseBytes + OPERATIONS_MCP_ENVELOPE_OVERHEAD);
+      expect(http.status).toBe(200); expect(http.body).toEqual({ ...dto, listener: "api" });
+    } else {
+      // Separate operation/HTTP finding: the grammar's worst case exceeds the
+      // shared public bound. Do not weaken it to turn this into a success case.
+      // Measure the real SDK envelope with an explicitly enlarged fixture DTO
+      // bound; the production/default HTTP and MCP refusals remain below.
+      const roomy = await fixture("open", { responseBytes: dtoBytes }, undefined, ids);
+      const client = await roomy.client();
+      const sent = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
+      const result = await client.callTool({ name: "session_describe", arguments: {} });
+      expect(result.structuredContent).toEqual(dto);
+      expect(result.content).toEqual([{ type: "text", text }]);
+      expect(result.structuredContent).toEqual(JSON.parse((result.content as { text: string }[])[0].text));
+      const messageBytes = Buffer.byteLength(JSON.stringify(sent.mock.calls[0][0]));
+      console.info({ idBytes, projects: ids.length, dtoBytes, messageBytes, httpStatus: http.status });
+      expect(dtoBytes).toBeGreaterThan(OPERATIONS_HTTP_LIMITS.responseBytes);
+      const mcp = await f.send(call).reply;
+      expect(http.status).toBe(413); expect(mcp.status).toBe(http.status); expect(mcp.body).toEqual(http.body);
+      expect(operationError(mcp)).toMatchObject({ category: "payload_too_large", reason: "response_too_large", status: 413 });
+    }
+  });
+
+  it("refuses a DTO one byte above the shared bound with the identical pre-dispatch HTTP envelope", async () => {
+    const base = await fixture();
+    const reply = await base.send(call).reply;
+    const bytes = Buffer.byteLength(JSON.stringify(reply.body.result.structuredContent));
+    const f = await fixture("open", { responseBytes: bytes - 1 });
+    const connect = vi.spyOn(Server.prototype, "connect");
+    const mcp = await f.send(call).reply;
+    const http = await f.send({}, undefined, {}, { path: "/api/operations/session.describe" }).reply;
+    expect(http.status).toBe(413); expect(mcp.status).toBe(http.status); expect(mcp.body).toEqual(http.body);
+    expect(mcp.body).toEqual({ error: { category: "payload_too_large", reason: "response_too_large", retry: "none", effect: null, status: 413 } });
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("allows a near-request-limit string RPC ID without charging it to the DTO", async () => {
+    const base = await fixture();
+    const first = await base.send(call).reply;
+    const bytes = Buffer.byteLength(JSON.stringify(first.body.result.structuredContent));
+    const f = await fixture("open", { responseBytes: bytes });
+    const message = { ...call, id: "x".repeat(OPERATIONS_HTTP_LIMITS.bodyBytes - Buffer.byteLength(JSON.stringify({ ...call, id: "" }))) };
+    expect(Buffer.byteLength(JSON.stringify(message))).toBe(OPERATIONS_HTTP_LIMITS.bodyBytes);
+    const reply = await f.send(message).reply;
+    expect(reply.status).toBe(200); expect(reply.body.id).toBe(message.id);
+    expect(reply.body.result.structuredContent).toEqual(first.body.result.structuredContent);
+  });
+
+  it("bounds an SDK-produced message before send allocates its Response", async () => {
+    const ceiling = 3 * OPERATIONS_HTTP_LIMITS.responseBytes + OPERATIONS_MCP_ENVELOPE_OVERHEAD;
+    // Raise only the request fixture bound; envelope allowance stays fixed.
+    const f = await fixture("open", { bodyBytes: ceiling + 1024 });
+    const originalSend = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
+    // Protocol produces a method-not-found response echoing this oversized ID.
+    const reply = await f.send({ ...call, method: "unknown", id: "x".repeat(ceiling) }).reply;
+    expect(operationError(reply)).toMatchObject({ category: "payload_too_large", reason: "response_too_large", status: 413 });
     expect(originalSend).not.toHaveBeenCalled();
+    expect(f.minted).toHaveBeenCalledOnce();
+  });
+
+  it("bounds SDK Responses that bypass send while buffering, including across chunks", async () => {
+    const f = await fixture();
+    const ceiling = 3 * OPERATIONS_HTTP_LIMITS.responseBytes + OPERATIONS_MCP_ENVELOPE_OVERHEAD;
+    const originalSend = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
+    const cancel = vi.fn();
+    vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "handleRequest").mockResolvedValueOnce(new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new Uint8Array(ceiling)); controller.enqueue(new Uint8Array(1)); }, cancel,
+    })));
+    const reply = await f.send(list).reply;
+    expect(operationError(reply)).toMatchObject({ category: "payload_too_large", reason: "response_too_large", status: 413 });
+    expect(cancel).toHaveBeenCalledOnce(); expect(originalSend).not.toHaveBeenCalled();
   });
 
   it.each(["stop", "deadline", "disconnect"] as const)("classifies %s during a partial body and retains its slot through response completion", async kind => {
