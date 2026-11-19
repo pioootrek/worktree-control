@@ -265,7 +265,11 @@ describe("real API and unix acceptance", () => {
       aliases.push(`/./${namespace.slice(1)}`, `/x/../${namespace.slice(1)}`, `/${namespace}`, `/\\${namespace.slice(1)}`,
         namespace.replace("/operations", "//operations"), namespace.replace("/operations", "\\operations"),
         namespace.replace("/operations", "%2foperations"), namespace.replace("/operations", "%5Coperations"),
-        namespace.replace("operations", "%6fperations"), `${namespace}/%2e`, `${namespace}/x/%2e%2e`);
+        namespace.replace("operations", "%6fperations"), `${namespace}/%2e`, `${namespace}/x/%2e%2e`,
+        // Network-path and absolute-form targets: the legacy dispatcher's URL parser drops the authority.
+        `//example.invalid${namespace}`, `//user@example.invalid:8443${namespace}`, `/\\example.invalid${namespace}`,
+        `//example.invalid/./${namespace.slice(1)}`, `//example.invalid${namespace.replace("/operations", "/%2e/operations")}`,
+        `http://example.invalid${namespace}`);
       for (const dot of [".", "%2e", "%2E"]) {
         aliases.push(`/${dot}/${namespace.slice(1)}`, namespace.replace("/operations", `/${dot}/operations`),
           `/\\${dot}%2f${namespace.slice(1).replace("/", "//")}`);
