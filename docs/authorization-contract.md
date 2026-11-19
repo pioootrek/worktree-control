@@ -1390,7 +1390,8 @@ mounts remain for later steps.
   `providerSessionEligible` before starting provider work; it always exists and
   answers false without an eligible provider. Provider administration owns a
   stable accessor with the fixed `better-auth` ID and the store's session reader,
-  which exists before loading. The same composition and verifier work when that
+  which exists before loading. Its synchronous eligibility check uses existing
+  core admission for configuration validation and refuses if it cannot enter. The same composition and verifier work when that
   provider later becomes ready. Failed loads remain failed; configuration changes
   require a new controller boot, not replacement within this lifetime. Stage and
   verify share one synchronous admission callback, so no staged handle crosses

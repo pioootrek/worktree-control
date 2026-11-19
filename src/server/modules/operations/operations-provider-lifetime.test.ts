@@ -4,16 +4,16 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FileProviderConfiguration } from "../authentication-provider-configuration";
-import { SqliteStateStore } from "../sqlite-store";
-import { resolveAppPaths } from "../paths";
-import { AuthenticationProviderError, AuthenticationService, type AuthenticationProviderRuntime } from "../modules/authentication";
-import { KnowledgeService } from "../modules/knowledge";
-import { ProviderSessionVerifier, sessionDescribe, type AuthenticationContext } from "../modules/operations";
-import { createProviderWorld } from "../modules/operations/adapters/provider-session-fixture";
-import { hash, iso, none, NOW, presentedBearer, token } from "../modules/operations/adapters/credential-verifier-fixture";
-import { createControllerAuthentication } from "./authentication-provider-lifetime";
-import { buildOperationsRuntime } from "./operations-runtime";
+import { FileProviderConfiguration } from "@/server/authentication-provider-configuration";
+import { SqliteStateStore } from "@/server/sqlite-store";
+import { resolveAppPaths } from "@/server/paths";
+import { AuthenticationProviderError, AuthenticationService, type AuthenticationProviderRuntime } from "@/server/modules/authentication";
+import { KnowledgeService } from "@/server/modules/knowledge";
+import { ProviderSessionVerifier, sessionDescribe, type AuthenticationContext } from "./index";
+import { createProviderWorld } from "./adapters/provider-session-fixture";
+import { hash, iso, none, NOW, presentedBearer, token } from "./adapters/credential-verifier-fixture";
+import { createControllerAuthentication } from "@/server/bootstrap/authentication-provider-lifetime";
+import { buildOperationsRuntime } from "@/server/bootstrap/operations-runtime";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
@@ -23,7 +23,10 @@ const cookie = { ...none(), browserHeaders: true, providerSession: { secret: "sy
 async function fixture(failLoad = false) {
   const root = mkdtempSync(join(tmpdir(), "operations-provider-bootstrap-")), paths = resolveAppPaths(join(root, "data"));
   const store = new SqliteStateStore(paths.databasePath, undefined, { admission: "strict" });
-  const authentication = await store.admission.run(() => new AuthenticationService(store));
+  const authentication = await store.admission.run(() => {
+    store.saveAuthenticationPolicy({ ...store.getAuthenticationPolicy(), mode: "better-auth" }, "fixture", "fixture");
+    return new AuthenticationService(store);
+  });
   const world = createProviderWorld({ now: NOW });
   const session = world.passwordLogin(world.account("human"));
   const storage = store.authenticationProviderStorage();
@@ -50,7 +53,7 @@ async function fixture(failLoad = false) {
   const admin = createControllerAuthentication({ store, dataDirectory: paths.dataDirectory, authentication, actor: "local-admin",
     maintenance: () => maintenance, loadProvider, holdLifetime: () => () => {} });
   // Same wiring as the production start command. Construct before loading.
-  const operations = buildOperationsRuntime({ store, activeMode: "better-auth", now: () => NOW, logs: { controller() {} },
+  const operations = buildOperationsRuntime({ store, activeMode: authentication.mode(), now: () => NOW, logs: { controller() {} },
     eligibility: admin, provider: admin.operationSessionAuthority(), requestBudget: admin.requestBudget,
     listeners: { api: () => true, unix: () => true } });
   if (!operations.supported) throw new Error("expected supported mode");
@@ -63,7 +66,7 @@ async function fixture(failLoad = false) {
   });
   const configuration = new FileProviderConfiguration(join(paths.dataDirectory, "authentication-provider.json"));
   const entry = join(root, "provider.mjs"); writeFileSync(entry, "export {};\n", { mode: 0o600 });
-  const configure = (origin = "https://fixture.example") => configuration.configure({ module: entry, origin, signingSecret: { kind: "generate" } }, false);
+  const configure = (origin = "https://fixture.example") => configuration.configure({ module: entry, origin, signingSecret: { kind: configuration.read() ? "preserve" : "generate" } }, false);
   const knowledge = new KnowledgeService(store, admin.identity);
   const prepare = () => admin.prepareBrowserAuthentication({ origin: "https://fixture.example", knowledge });
   const mintHuman = () => operations.mint("api", cookie, session, {});
@@ -130,6 +133,7 @@ describe("production provider administration and operations composition", () => 
     }
     // Configuration changes cannot reload this lifetime. The old resolved claim
     // never reaches staging, and retained human authority ends immediately.
+    const stageOwners = [...staged.mock.contexts];
     staged.mockClear(); f.configure("https://changed.example");
     await refused(); await f.otherPaths(); expect(staged).not.toHaveBeenCalled();
     expect(await c.runner.run(sessionDescribe, human.context, {})).toMatchObject({ ok: false });
@@ -137,7 +141,7 @@ describe("production provider administration and operations composition", () => 
     expect(f.loadProvider).toHaveBeenCalledTimes(1);
     // All stage/verify/current calls used one verifier instance. No production
     // transition can occur between stage and verify's synchronous admission.
-    const instances = [...verified.mock.contexts, ...current.mock.contexts];
+    const instances = [...stageOwners, ...verified.mock.contexts, ...current.mock.contexts];
     expect(instances.length).toBeGreaterThan(2);
     expect(new Set(instances).size).toBe(1);
     f.admin.stop(); await refused(); await f.otherPaths(false);
@@ -174,10 +178,10 @@ describe("production provider administration and operations composition", () => 
     const server = createServer((req, res) => { void browser.handle(req, res); });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     try {
-      const status = await new Promise<number>(resolve => {
-        const call = request({ host: "127.0.0.1", port: (server.address() as AddressInfo).port, path: "/api/auth/session",
+      const status = await new Promise<number>((resolve, reject) => {
+        const call = request({ host: "127.0.0.1", port: (server.address() as AddressInfo).port, path: "/api/auth/get-session",
           headers: { Host: "fixture.example" } }, response => { response.resume(); response.on("end", () => resolve(response.statusCode!)); });
-        call.end();
+        call.on("error", reject); call.end();
       });
       expect(status).toBe(503); expect(f.resolveRequest).not.toHaveBeenCalled();
       expect(f.admin.requestBudget.active).toBe(16);
@@ -185,6 +189,21 @@ describe("production provider administration and operations composition", () => 
       for (const slot of slots) { slot.responseFinished(); await slot.settle(Promise.resolve()); }
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
+  });
+
+  it("refuses pre-provider work when configuration cannot obtain synchronous admission", async () => {
+    const f = await fixture(); f.configure(); const prepared = f.prepare(); await f.started.promise; f.resume.resolve(); await prepared;
+    const entered = gate(), release = gate();
+    const borrowing = f.store.authenticationProviderStorage().borrow(async () => { entered.resolve(); await release.promise; });
+    try {
+      await entered.promise;
+      expect(f.operations.providerSessionEligible()).toBe(false);
+      const resolution = f.operations.resolveSession(new Headers());
+      expect(await resolution.result).toBeNull(); await resolution.settled;
+      expect(f.resolveRequest).not.toHaveBeenCalled();
+    } finally { release.resolve(); await borrowing; }
+    expect(f.operations.providerSessionEligible()).toBe(true);
+    expect(await f.mintHuman()).toMatchObject({ ok: true });
   });
 
   it("holds resolution and the shared slot through real settlement, and shutdown joins that work", async () => {

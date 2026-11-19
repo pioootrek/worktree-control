@@ -126,21 +126,30 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
     runtime: () => state === "ready" ? runtime : undefined,
   });
   const guard = eligibility.guard;
+  // File configuration validates its path against registered repository roots.
+  // Its reads therefore need core admission even before provider work starts.
+  // Never queue or borrow here: a synchronous predicate refuses contention.
+  const providerSessionEligible = () => {
+    try {
+      const checked = d.store.admission.tryRun(eligibility.providerSessionEligible);
+      return checked.ran && checked.value === true;
+    } catch { return false; }
+  };
   const requestBudget = new AuthenticationRequestBudget(CONTROLLER_AUTHENTICATION_POLICY.maxInFlight,
     CONTROLLER_AUTHENTICATION_POLICY.limits.reservedCompletionSlots);
   const operationSessions: ControllerOperationSessionAuthority = Object.freeze({
     providerId: "better-auth",
     reader: Object.freeze({ currentSession: (providerId: string, sessionId: string) => storage.currentSession(providerId, sessionId) }),
-    isSessionAuthorityEligible: eligibility.providerSessionEligible,
+    isSessionAuthorityEligible: providerSessionEligible,
     resolveRequest(headers: Headers, options: { signal?: AbortSignal } = {}) {
       const refused = () => ({ result: Promise.resolve(null), settled: Promise.resolve() });
-      if (!eligibility.providerSessionEligible()) return refused();
+      if (!providerSessionEligible()) return refused();
       const current = runtime!;
       try {
         const resolution = current.resolveRequest(headers, options);
         // Own real work even when its public result is cancelled or refused.
         track(resolution.settled);
-        const result = resolution.result.then(value => eligibility.providerSessionEligible() && runtime === current ? value : null);
+        const result = resolution.result.then(value => providerSessionEligible() && runtime === current ? value : null);
         result.catch(() => undefined);
         return { result, settled: resolution.settled };
       } catch { return refused(); }
@@ -273,7 +282,7 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
     /** Fence new shared cookie work before listener drain. */
     stop: () => { stopping = true; requestBudget.stop(); },
     controllerEligible: eligibility.controllerEligible,
-    providerSessionEligible: eligibility.providerSessionEligible,
+    providerSessionEligible,
     /** Server-owned adapter for converted browser workflows.
      * Uses this exact runtime and identity; an HTTPS deployment origin must match pinned config.
      * The caller owns listener drain before dispose(), as in createControllerShutdown.
