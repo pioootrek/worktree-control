@@ -1,19 +1,27 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
-last_reviewed: "2026-11-17"
-source_of_truth: "implemented, unmounted authorization contract for the unreleased breaking auth unification; Knowledge task 040062b4"
+last_reviewed: "2026-11-19"
+source_of_truth: "authorization contract with session.describe mounted on API and unix for the unreleased breaking auth unification; Knowledge task 040062b4"
 status: "active"
 ---
 
 # Authorization contract
 
-**Status: contract for an unreleased breaking change. The code exists but is
-unmounted.** No HTTP route, MCP tool, CLI command, policy function, schema or
-migration uses it. `unmounted.test.ts` fails if a file of a fixed inventory
-imports it or its contract file (see [Unmounted guard](#unmounted-guard)). Current behaviour is described in
-[authentication](authentication.md) and
-[identity and authorization plan](identity-authorization-plan.md) until the
-release that mounts this contract.
+**Status: unreleased breaking change.** Only `session.describe` is mounted,
+through `POST /api/operations/session.describe` on the API listener and private
+unix socket. Only the exact raw operation path can succeed. Aliases entering
+`/api/operations` or `/mcp/operations` through dot segments, encoded path syntax,
+backslashes or duplicate slashes receive the new not-found envelope on both
+listeners through normal request dispatch, for every method. Cookie refusal
+still comes first. Neither listener registers CONNECT or Upgrade handlers. Node
+closes every CONNECT connection without a response or dispatch, including targets
+inside the namespace. Upgrade headers keep normal HTTP request dispatch.
+Other routes and tools retain their existing authentication.
+Cookies on this route receive the fixed `unauthenticated` /
+`provider_cookie_not_supported` refusal before body reads or capacity admission.
+The import guard permits only the explicit composition and transport consumers
+(see [Unmounted guard](#unmounted-guard)). Current operator behaviour is in
+[authentication](authentication.md).
 
 Evidence: Knowledge task `040062b4`, discussion `8a2683b8`. The owner-accepted
 target is in replies `5583b882` and `1367c632`. Proposal v0 is `efa8c8e5`, the
@@ -166,8 +174,8 @@ from a token's format to an actor.
 ports on the store owner's admitted connection and open no connection.
 `CompositeCredentialVerifier` dispatches each accepted path to its configured
 verifier, including the existing provider-session verifier, without fallback.
-These adapters exist but are unmounted. They write no usage time or other
-state, including `last_used_at`.
+Installation and agent paths are mounted on API; unix uses operator authority.
+They write no usage time or other state, including `last_used_at`.
 
 The agent verifier compares SHA-256 of the entire presented token with the
 stored verifier hash in constant time, using an equal-length dummy for a
@@ -221,9 +229,8 @@ same-ID principal recreation, and retained contexts need a separate review.
 (`src/server/modules/operations/adapters/provider-session-verifier.ts`) is the
 existing `CredentialVerifier` for the `provider_session` path. It answers
 `null` for every other path. `CompositeCredentialVerifier` can dispatch that
-path to it alongside the installation and agent verifiers. Like the rest of
-the module it is unmounted: no transport creates it, and it is not exported
-from the module's `index.ts`. It reads committed authority and writes no usage
+path to it alongside the installation and agent verifiers. Bootstrap constructs it when a provider is present. The operations cookie
+transport remains unmounted until D1a-5b. It reads committed authority and writes no usage
 state.
 
 **Handoff.** The provider verifies its cookie asynchronously and outside this
@@ -401,12 +408,12 @@ status of its project (owner decision of 2026-11-17).
 
 ### SQLite adapters
 
-Slice 3 (C4) adds two unmounted adapters under
+Slice 3 (C4) adds two read adapters under
 `src/server/modules/operations/adapters/`. Neither imports SQLite: each takes a
 structural read port. The store exposes the SQLite query modules
 (`AccountGrantsQueries`, `ProjectDirectoryQueries`) on its owned core
-connection; only tests wire the adapters. Nothing exports or mounts the
-adapters yet.
+connection. The controller composition now wires these adapters for the
+API and unix session description.
 
 - `sqliteGrants` builds the runtime's `grants()`. Each call is one snapshot
   that reads each account at most once, together with its grants, in one
@@ -707,7 +714,7 @@ void callback may return an ordinary value; it is ignored. Commit runs at most
 once per call. Failed commit confirms no successful release, though it may
 have written some bytes. Admission never spans asynchronous SDK work or
 network drain. Committing bytes to Node promises neither client receipt nor
-revocation of bytes already committed. This entry point remains unmounted.
+revocation of bytes already committed. API and unix session descriptions use the direct commit shape.
 
 ### Commit point
 
@@ -931,8 +938,7 @@ replay and every stream error item. `run` never rejects.
 ## Contract extensions of slice 4
 
 These implement the planned deltas of `29cf8fa5` and the two additions of the
-same reply (`intent_origin`; coordination sessions are not part of this). All
-of it is unmounted, like the rest of the module.
+same reply (`intent_origin`; coordination sessions are not part of this). Queries, mutations and streams remain unmounted.
 
 ### Queries
 
@@ -1238,17 +1244,15 @@ A source file cannot hide an import behind a helper under `tests/`: that
 helper is itself scanned. Negative controls cover direct module and contract
 imports under `tests/`, and a `src/` importer of such a helper.
 
-The only approved importer of the module and shared contract is
-`src/server/bootstrap/operations-runtime.ts`. Its reason is concrete wiring
-of the store owner's read ports and controller policies. Approved entries
-must exist in the inventory and really import the module or contract. Missing
-files and stale entries fail. Negative controls exercise a listed importer,
-an unlisted importer, a missing entry and an entry that no longer imports.
-A second test forbids every production import of the composition itself,
-including imports from inside the operations module. A text scan also forbids
-its path or module name in allowlisted production files, including strings and
-templates used for computed imports. The first mounting pull request removes
-that second test and updates the approved-importer list.
+The approved importers of the module and shared contract are
+`src/server/bootstrap/operations-runtime.ts` (store-owner composition) and
+`src/server/transports/operations-http.ts` (the public wire classifier, error
+serializer and runtime types). The adapter receives the built runtime as a
+value and creates no boundary. Approved entries must exist and really import
+the module or contract. Missing and stale entries fail, with negative controls.
+A second exact-importer guard permits only `src/cli/index.ts` to import the
+composition. It still rejects imports from inside the operations module and
+computed composition imports in allowlisted production files.
 
 Within the inventory, the guard does three things:
 
@@ -1285,7 +1289,10 @@ outside decision U and listed as notes for slice 4.
 
 ## Obligations of later slices
 
-These are not implemented here. The slices that mount the contract own them.
+These obligations remain for later families and mounts. The API and unix
+`session.describe` mounts already use strict bounded JSON, cancellation, the
+shared composition and admitted read-release. Cookies, worker, MCP and CLI
+mounts remain for later steps.
 
 - **Transport handling of streams.** A transport must call `return()` when its
   consumer goes away or stops reading (abandonment). The runner provides no
@@ -1338,15 +1345,15 @@ These are not implemented here. The slices that mount the contract own them.
 
 ## Not implemented
 
-- Store adapters. Two SQLite adapters exist, unmounted (see
+- Store adapters. Two SQLite adapters exist (see
   [SQLite adapters](#sqlite-adapters)): the grants snapshot, and a resolver for
   the `registration` and `project` kinds only. The store exposes their read
-  ports; production does not wire the adapters. Every other resource kind has
+  ports; production wires them for the one mounted read. Every other resource kind has
   no resolver and answers `internal`. The idempotency store exists only as a
   port and an in-memory test double. The installation-token, anonymous,
   agent-token and provider-session verifiers exist, with a composite that
   dispatches without fallback (see [Actors and authentication](#actors-and-authentication)
-  and [Provider sessions](#provider-sessions)). The unmounted bootstrap
+  and [Provider sessions](#provider-sessions)). The bootstrap
   `buildOperationsRuntime` composes those adapters, one clock, the store's own
   admission, a fresh grants factory, disposal diagnostics and a registry pinned
   to `session.describe`, exposed through a frozen read-only view with bound read
@@ -1382,15 +1389,26 @@ These are not implemented here. The slices that mount the contract own them.
   condition through their own revalidation. Cookie transports check the returned
   `providerSessionEligible` before starting provider work; it is `null` without
   a provider.
-  No production caller imports the composition yet. Transport mounting,
-  credential usage recording and principal-incarnation detection remain
-  unimplemented.
+  Controller start builds this once from its immutable active mode. API and
+  unix mounts use it for `session.describe` only. HTTP success serializes and
+  ends the response inside `readRelease` admission. The API owns at most 32
+  new requests; unix shares its existing 32 accepted-work slots with `/auth`.
+  Capacity is retained through response completion and work settlement. Close
+  fences and aborts requests synchronously and drains before storage release.
+  Body ceilings are 65536 bytes on API and 16384 on unix; the response ceiling
+  is 262144 bytes. The total deadline is 10000 ms, including body and admission.
+  The error envelope is `{ error: { category, status, reason, retry, effect } }`,
+  with HTTP status taken from the public error. Method refusals use 400 /
+  `invalid_request` / `method_not_allowed`; malformed and unknown operation
+  targets use 404 / `not_found` / `operation_not_found`. All replies are no-store.
+  Cookie, worker, MCP and offline CLI mounts, credential usage recording and
+  principal-incarnation detection remain unimplemented.
 - Enforcement of the project ID grammar. A project ID in the contract matches
   `^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$` (`src/shared/contracts/operations.ts`),
   and the owner decided on 2026-11-17 that Knowledge project IDs must follow it
   as part of the breaking release. Nothing enforces it on Knowledge yet: the
   Knowledge create path and the Hub import still accept any trimmed ID of up
-  to 160 characters. The two unmounted adapters treat such an ID differently.
+  to 160 characters. The two read adapters treat such an ID differently.
   The resolver leaves the project out of its listing. The grants snapshot
   fails harder: `account_grants.project_id` checks length only, so a grant on
   such a project is a valid stored row, and the adapter validates every row

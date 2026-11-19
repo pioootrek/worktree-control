@@ -243,6 +243,31 @@ New installations differ from earlier releases:
 
 ## The explicit upgrade (unreleased integration build)
 
+The integration build mounts the read-only `session.describe` operation on
+API and the private socket. In `token` mode, with the installation bearer
+already in `WTC_INSTALLATION_TOKEN` and the controller using its default port:
+
+```sh
+curl --fail-with-body -X POST http://127.0.0.1:47831/api/operations/session.describe \
+  -H "Authorization: Bearer $WTC_INSTALLATION_TOKEN" \
+  -H 'Content-Type: application/json' --data '{}'
+```
+
+For the local operator, set `WTC_ADMIN_SOCKET` to the running controller's
+private admin socket path. No credential is needed:
+
+```sh
+curl --fail-with-body --unix-socket "$WTC_ADMIN_SOCKET" \
+  -X POST http://localhost/api/operations/session.describe \
+  -H 'Content-Type: application/json' --data '{}'
+```
+
+Cookies are refused on this route for now, including a cookie combined with a
+bearer. In `legacy` mode it answers `unauthenticated` / `unknown_mode`.
+Existing routes retain their authentication. Responses describe authority as
+an informational hint; every later operation must authorize again.
+
+
 This section describes `integration/auth-unification`, not a release. The
 build runs schema 52 and never migrates an existing database at an ordinary
 start. An installation's database is in one of four states:

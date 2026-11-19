@@ -1665,6 +1665,13 @@ remains.
 
 ## 10. Proposed cut of slice 4
 
+Approved exception, owner decision 5 (2026-11-18): `session.describe` moves
+from the first vertical family into the D1a adapter step. For this one read
+only, transports may mount before all boundaries exist. D1a-5a mounts it on
+the API listener and private unix socket; cookies remain refused until 5b.
+The other three reads and every mutation keep their prerequisites below.
+
+
 A proposal, not a decision. It reproduces the ordering of review `ce8aa214`.
 Treat the catalogue as a draft inventory, not as a single implementation pull
 request or a fixed final count. Split pull requests by security boundary rather

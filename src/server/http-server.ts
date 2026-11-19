@@ -11,6 +11,7 @@ import { BackupError, type BackupOperations, type RestoreOperations, type UserSc
 import { KnowledgeError, knowledgeFailure } from "./modules/knowledge";
 import { knowledgeRequestLimit } from "@/shared/contracts/knowledge";
 import { CONTROLLER_TOKEN_HEADER, LEGACY_CONTROLLER_TOKEN_HEADER } from "@/shared/controller-token";
+import { createOperationsHttp, type OperationsHttpRuntime } from "./transports/operations-http";
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -371,7 +372,10 @@ export function createControllerServer(options: {
    * admission (`idle`); SSE subscriptions return after registration.
    */
   admission?: DatabaseAdmission;
+  operations?: OperationsHttpRuntime;
 }): ControllerServer {
+  const operations = options.operations && createOperationsHttp({ runtime: options.operations, listener: "api",
+    originAllowed: request => hasValidOrigin(request, options.publicOrigin) });
   const admission = options.admission ?? directAdmission;
   const readBody = (request: IncomingMessage, limit?: number) => admission.idle(() => readRequestJson(request, limit));
   const readJson = async (request: IncomingMessage, limit?: number): Promise<unknown> => {
@@ -403,6 +407,7 @@ export function createControllerServer(options: {
   };
   const server = createServer((request, response) => {
     void (async () => {
+      if (operations?.claims(request)) { await operations.handle(request, response); return; }
       if (!(request.url ?? "/").startsWith("/")) {
         authenticationJson(response, 400, { code: "invalid_request" }); return;
       }
@@ -942,8 +947,10 @@ export function createControllerServer(options: {
   return {
     server,
     async close() {
+      operations?.stop();
       options.events.close();
       await closeServer();
+      await operations?.drain();
     },
   };
 }

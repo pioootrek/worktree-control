@@ -47,7 +47,7 @@ function mintFailure(error: unknown, admissionOptions: DatabaseAdmissionOptions)
   return Object.freeze({ ok: false, error: publicError(failure) });
 }
 
-/** Built and tested, but deliberately not called by any production path yet. */
+/** One store owner, shared by mounted transports. */
 export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   const { store, activeMode, now, logs, provider, eligibility } = options;
   // In particular, legacy boot must not construct a boundary or verifier.

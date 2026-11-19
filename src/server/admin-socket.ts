@@ -4,6 +4,7 @@ import { createServer, request as httpRequest, type Server } from "node:http";
 import { dirname } from "node:path";
 import { createHttpServerCloser } from "./http-server-lifecycle";
 import { ProviderAdminError, providerAdminErrorBody, parseStrictProviderJson } from "./modules/authentication";
+import { createOperationsHttp, operationsFailure, type OperationsHttpRuntime } from "./transports/operations-http";
 
 const BODY_LIMIT = 16 * 1024;
 /** Project commands carry Godot Web configuration files of up to 64 KiB plus the command envelope. */
@@ -26,13 +27,26 @@ export class AdminSocketStartupError extends Error {
 export async function listenAdminSocket(
   path: string,
   execute: (request: unknown) => unknown,
+  operationsRuntime?: OperationsHttpRuntime,
 ): Promise<AdminSocketServer> {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   chmodSync(dirname(path), 0o700);
   removeStaleSocket(path);
   const accepted = new Set<Promise<void>>();
   let closing: Promise<void> | undefined;
+  const operations = operationsRuntime && createOperationsHttp({ runtime: operationsRuntime, listener: "unix", externallyOwned: true });
   const server = createServer((request, response) => {
+    if (operations?.claims(request)) {
+      // Cookie refusal precedes even the shared owner's slot.
+      if (!operations.preflight(request, response)) return;
+      if (closing || accepted.size >= 32) {
+        operationsFailure(response, { category: "busy", status: 503, reason: "listener_capacity", retry: "retry", effect: null }); return;
+      }
+      const pending = operations.handle(request, response);
+      accepted.add(pending);
+      const forget = () => { accepted.delete(pending); }; pending.then(forget, forget);
+      return;
+    }
     const pending = (async () => {
       const reply = (status: number, body: unknown) => {
         if (response.destroyed || response.writableEnded) return;
@@ -83,6 +97,7 @@ export async function listenAdminSocket(
   const owner: AdminSocketServer = {
     server,
     close() {
+      operations?.stop();
       closing ??= Promise.resolve().then(async () => {
         await closeServer();
         // A disconnected response does NOT cancel its accepted command or initialization.
