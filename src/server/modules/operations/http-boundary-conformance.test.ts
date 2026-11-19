@@ -213,7 +213,7 @@ describe("real API and unix acceptance", () => {
       for (const method of ["CONNECT", "GET"]) {
         const raw = await new Promise<string>((resolve, reject) => {
           const socket = listener === "unix" ? createConnection(f.socketPath) : createConnection((f.controller.server.address() as AddressInfo).port, "127.0.0.1");
-          const chunks: Buffer[] = []; socket.on("data", c => chunks.push(c)); socket.on("error", reject);
+          const chunks: Buffer[] = []; socket.on("data", c => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c))); socket.on("error", reject);
           socket.on("end", () => resolve(Buffer.concat(chunks).toString()));
           socket.on("connect", () => socket.write(`${method} ${route} HTTP/1.1\r\nHost: localhost\r\n${method === "GET" ? "Connection: Upgrade\r\nUpgrade: websocket\r\n" : ""}\r\n`));
         });

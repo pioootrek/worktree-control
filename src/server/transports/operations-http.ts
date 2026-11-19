@@ -1,4 +1,5 @@
 import { ServerResponse, type IncomingMessage, type Server } from "node:http";
+import { Socket } from "node:net";
 import { CONTROLLER_TOKEN_HEADER, LEGACY_CONTROLLER_TOKEN_HEADER } from "@/shared/controller-token";
 import { containsProviderCookie } from "@/shared/contracts/authentication";
 import {
@@ -63,7 +64,7 @@ export function mountOperationsProtocolEvents(server: Server, operations: Return
   dispatch: (request: IncomingMessage, response: ServerResponse) => void): void {
   if (!operations) return;
   for (const event of ["connect", "upgrade"] as const) server.on(event, (request, socket) => {
-    if (!operations.claims(request)) { socket.destroy(); return; }
+    if (!operations.claims(request) || !(socket instanceof Socket)) { socket.destroy(); return; }
     const response = new ServerResponse(request);
     response.shouldKeepAlive = false;
     response.assignSocket(socket);
