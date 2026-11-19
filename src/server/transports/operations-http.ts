@@ -1,4 +1,4 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { ServerResponse, type IncomingMessage, type Server } from "node:http";
 import { CONTROLLER_TOKEN_HEADER, LEGACY_CONTROLLER_TOKEN_HEADER } from "@/shared/controller-token";
 import { containsProviderCookie } from "@/shared/contracts/authentication";
 import {
@@ -27,17 +27,19 @@ export const OPERATIONS_HTTP_LIMITS = Object.freeze({ bodyBytes: 64 * 1024, unix
 /** Preserve raw multiplicity, including headers Node would otherwise discard. */
 export function presentedCredentials(request: IncomingMessage): PresentedCredentials {
   const bearers: PresentedCredentials["bearers"][number][] = [];
-  let cookie = false, browserHeaders = false;
+  let cookie = false, browserHeaders = false, legacySecret = false;
   for (let i = 0; i < request.rawHeaders.length; i += 2) {
     const name = request.rawHeaders[i].toLowerCase(), value = request.rawHeaders[i + 1];
     if (name === "authorization" || name === CONTROLLER_TOKEN_HEADER.toLowerCase() || name === LEGACY_CONTROLLER_TOKEN_HEADER.toLowerCase()) {
       const secret = name === "authorization" ? (/^Bearer\s+(.+)$/i.exec(value)?.[1] ?? "") : value;
-      bearers.push({ class: classifyBearer(secret), secret });
+      const credentialClass = classifyBearer(secret);
+      if (name !== "authorization" && credentialClass === "unrecognized" && !legacySecret) legacySecret = true;
+      else bearers.push({ class: credentialClass, secret });
     }
     if (name === "cookie") cookie ||= containsProviderCookie(value);
     if (name === "cookie" || name === "origin" || name.startsWith("sec-fetch-")) browserHeaders = true;
   }
-  return { bearers, providerSession: cookie ? { secret: "" } : null, legacySecret: false, browserHeaders };
+  return { bearers, providerSession: cookie ? { secret: "" } : null, legacySecret, browserHeaders };
 }
 
 export function operationsFailure(response: ServerResponse, error: PublicOperationError): void {
@@ -54,6 +56,21 @@ function write(response: ServerResponse, status: number, body: string): void {
 }
 const failure = (category: ConstructorParameters<typeof OperationError>[0], reason: string) => publicError(new OperationError(category, reason));
 
+/** Node sends CONNECT and Upgrade through separate events. They must not escape
+ * terminal namespace dispatch. Other targets keep Node's default socket refusal.
+ */
+export function mountOperationsProtocolEvents(server: Server, operations: ReturnType<typeof createOperationsHttp> | undefined,
+  dispatch: (request: IncomingMessage, response: ServerResponse) => void): void {
+  if (!operations) return;
+  for (const event of ["connect", "upgrade"] as const) server.on(event, (request, socket) => {
+    if (!operations.claims(request)) { socket.destroy(); return; }
+    const response = new ServerResponse(request);
+    response.shouldKeepAlive = false;
+    response.assignSocket(socket);
+    dispatch(request, response);
+  });
+}
+
 /** Lifetime includes Node response completion AND all started application work. */
 export function createOperationsHttp(options: {
   runtime: OperationsHttpRuntime; listener: "api" | "unix";
@@ -64,7 +81,7 @@ export function createOperationsHttp(options: {
 }) {
   const { runtime, listener } = options, limits = { ...OPERATIONS_HTTP_LIMITS, ...options.limits };
   const accepted = new Set<Promise<void>>();
-  const cancellations = new Set<AbortController>();
+  const cancellations = new Set<() => void>();
   let closing = false;
   const path = (request: IncomingMessage) => parseOperationsPath(request.url ?? "", runtime.supported ? runtime.registry.idsOn(listener) : ["session.describe"]);
   const preflight = (request: IncomingMessage, response: ServerResponse): boolean => {
@@ -76,8 +93,11 @@ export function createOperationsHttp(options: {
   };
   const execute = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const abort = new AbortController();
-    cancellations.add(abort);
-    const cancel = () => { abort.abort(); };
+    const cancel = () => {
+      abort.abort();
+      if (response.writableEnded && !response.writableFinished) response.destroy();
+    };
+    cancellations.add(cancel);
     let complete!: () => void;
     const completed = new Promise<void>(resolve => { complete = resolve; });
     const finished = () => { complete(); };
@@ -141,7 +161,7 @@ export function createOperationsHttp(options: {
       // Never relinquish ownership merely because the handler returned or the client disconnected.
       await completed;
       clearTimeout(timer);
-      cancellations.delete(abort);
+      cancellations.delete(cancel);
       request.off("aborted", cancel); request.off("error", cancel);
       response.off("finish", finished); response.off("close", closed);
     }
@@ -161,7 +181,7 @@ export function createOperationsHttp(options: {
       }
       return work;
     },
-    stop() { closing = true; for (const abort of cancellations) abort.abort(); },
+    stop() { closing = true; for (const cancel of cancellations) cancel(); },
     async drain() { await Promise.allSettled([...accepted]); },
   };
 }

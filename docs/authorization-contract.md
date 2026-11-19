@@ -167,8 +167,8 @@ from a token's format to an actor.
 ports on the store owner's admitted connection and open no connection.
 `CompositeCredentialVerifier` dispatches each accepted path to its configured
 verifier, including the existing provider-session verifier, without fallback.
-These adapters exist but are unmounted. They write no usage time or other
-state, including `last_used_at`.
+Installation and agent paths are mounted on API; unix uses operator authority.
+They write no usage time or other state, including `last_used_at`.
 
 The agent verifier compares SHA-256 of the entire presented token with the
 stored verifier hash in constant time, using an equal-length dummy for a
@@ -222,9 +222,8 @@ same-ID principal recreation, and retained contexts need a separate review.
 (`src/server/modules/operations/adapters/provider-session-verifier.ts`) is the
 existing `CredentialVerifier` for the `provider_session` path. It answers
 `null` for every other path. `CompositeCredentialVerifier` can dispatch that
-path to it alongside the installation and agent verifiers. Like the rest of
-the module it is unmounted: no transport creates it, and it is not exported
-from the module's `index.ts`. It reads committed authority and writes no usage
+path to it alongside the installation and agent verifiers. Bootstrap constructs it when a provider is present. The operations cookie
+transport remains unmounted until D1a-5b. It reads committed authority and writes no usage
 state.
 
 **Handoff.** The provider verifies its cookie asynchronously and outside this
@@ -402,12 +401,12 @@ status of its project (owner decision of 2026-11-17).
 
 ### SQLite adapters
 
-Slice 3 (C4) adds two unmounted adapters under
+Slice 3 (C4) adds two read adapters under
 `src/server/modules/operations/adapters/`. Neither imports SQLite: each takes a
 structural read port. The store exposes the SQLite query modules
 (`AccountGrantsQueries`, `ProjectDirectoryQueries`) on its owned core
-connection; only tests wire the adapters. Nothing exports or mounts the
-adapters yet.
+connection. The controller composition now wires these adapters for the
+API and unix session description.
 
 - `sqliteGrants` builds the runtime's `grants()`. Each call is one snapshot
   that reads each account at most once, together with its grants, in one
@@ -708,7 +707,7 @@ void callback may return an ordinary value; it is ignored. Commit runs at most
 once per call. Failed commit confirms no successful release, though it may
 have written some bytes. Admission never spans asynchronous SDK work or
 network drain. Committing bytes to Node promises neither client receipt nor
-revocation of bytes already committed. This entry point remains unmounted.
+revocation of bytes already committed. API and unix session descriptions use the direct commit shape.
 
 ### Commit point
 
@@ -932,8 +931,7 @@ replay and every stream error item. `run` never rejects.
 ## Contract extensions of slice 4
 
 These implement the planned deltas of `29cf8fa5` and the two additions of the
-same reply (`intent_origin`; coordination sessions are not part of this). All
-of it is unmounted, like the rest of the module.
+same reply (`intent_origin`; coordination sessions are not part of this). Queries, mutations and streams remain unmounted.
 
 ### Queries
 
@@ -1403,7 +1401,7 @@ mounts remain for later steps.
   and the owner decided on 2026-11-17 that Knowledge project IDs must follow it
   as part of the breaking release. Nothing enforces it on Knowledge yet: the
   Knowledge create path and the Hub import still accept any trimmed ID of up
-  to 160 characters. The two unmounted adapters treat such an ID differently.
+  to 160 characters. The two read adapters treat such an ID differently.
   The resolver leaves the project out of its listing. The grants snapshot
   fails harder: `account_grants.project_id` checks length only, so a grant on
   such a project is a valid stored row, and the adapter validates every row

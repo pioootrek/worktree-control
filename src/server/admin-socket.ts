@@ -1,10 +1,10 @@
 import { decodeProviderJson } from "./authentication-provider-configuration";
 import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
-import { createServer, request as httpRequest, type Server } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname } from "node:path";
 import { createHttpServerCloser } from "./http-server-lifecycle";
 import { ProviderAdminError, providerAdminErrorBody, parseStrictProviderJson } from "./modules/authentication";
-import { createOperationsHttp, operationsFailure, type OperationsHttpRuntime } from "./transports/operations-http";
+import { createOperationsHttp, mountOperationsProtocolEvents, operationsFailure, type OperationsHttpRuntime } from "./transports/operations-http";
 
 const BODY_LIMIT = 16 * 1024;
 /** Project commands carry Godot Web configuration files of up to 64 KiB plus the command envelope. */
@@ -35,7 +35,7 @@ export async function listenAdminSocket(
   const accepted = new Set<Promise<void>>();
   let closing: Promise<void> | undefined;
   const operations = operationsRuntime && createOperationsHttp({ runtime: operationsRuntime, listener: "unix", externallyOwned: true });
-  const server = createServer((request, response) => {
+  const dispatch = (request: IncomingMessage, response: ServerResponse) => {
     if (operations?.claims(request)) {
       // Cookie refusal precedes even the shared owner's slot.
       if (!operations.preflight(request, response)) return;
@@ -92,7 +92,9 @@ export async function listenAdminSocket(
     accepted.add(pending);
     const forget = () => { accepted.delete(pending); };
     pending.then(forget, forget);
-  });
+  };
+  const server = createServer(dispatch);
+  mountOperationsProtocolEvents(server, operations, dispatch);
   const closeServer = createHttpServerCloser(server);
   const owner: AdminSocketServer = {
     server,

@@ -2,9 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request, type ClientRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AddressInfo } from "node:net";
+import { createConnection, type AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { listenAdminSocket } from "@/server/admin-socket";
+import { AuthenticationService } from "@/server/modules/authentication";
 import { buildOperationsRuntime } from "@/server/bootstrap/operations-runtime";
 import { createControllerOperationEligibility } from "@/server/bootstrap/authentication-provider-lifetime";
 import { createControllerShutdown } from "@/server/bootstrap/controller-shutdown";
@@ -45,16 +46,21 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   let apiOpen = true, unixOpen = true;
   const eligibility = createControllerOperationEligibility({ maintenance: () => fault === "omit_guard" ? false : state.maintenance, stopping: () => state.stopping,
     configurationRestartRequired: () => state.configChanged, runtime: () => undefined });
+  const provider = { isSessionAuthorityEligible: vi.fn(() => true) };
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs: { controller() {} },
-    eligibility, provider: null, listeners: { api: () => apiOpen, unix: () => unixOpen } });
+    eligibility, provider: mode === "better-auth" ? provider : null, listeners: { api: () => apiOpen, unix: () => unixOpen } });
   const hooks: { afterMint?: () => void | Promise<void>; legacy?: (body: unknown) => unknown } = {};
   const runtime = { ...built, mint: async (...args: Parameters<Extract<typeof built, { supported: true }>["mint"]>) => {
     const result = built.supported ? await built.mint(...args) : await built.mint(); if (result.ok) await hooks.afterMint?.(); return result;
   } };
-  const oldAuthentication = { mode: () => mode as "open", authenticateInstallation: vi.fn(() => null), anonymousInstallation: vi.fn(() => null) };
-  const legacy = vi.fn((body: unknown) => hooks.legacy ? hooks.legacy(body) : { echo: body });
+  const authentication = await store.admission.run(() => new AuthenticationService(store));
+  const oldAuthentication = { mode: () => authentication.mode(),
+    authenticateInstallation: vi.fn((secret: string) => authentication.authenticateInstallation(secret)),
+    anonymousInstallation: vi.fn(() => authentication.anonymousInstallation()) };
+  const addProject = vi.fn(async () => ({ id: "fixture" }));
+  const legacy = vi.fn((body: unknown) => { if (state.maintenance) throw new Error("Controller is in maintenance."); return hooks.legacy ? hooks.legacy(body) : { echo: body }; });
   writeFileSync(join(root, "index.html"), "fixture");
-  const controller = createControllerServer({ service: {} as ControlService, directoryBrowser: new DirectoryBrowser(root),
+  const controller = createControllerServer({ service: { addProject } as unknown as ControlService, directoryBrowser: new DirectoryBrowser(root),
     events: new EventStream(), webRoot: root, host: "127.0.0.1", port: 0, accessToken: "synthetic-pairing",
     mcpStatus: () => ({ phase: "disabled", endpoint: null, transport: "streamable-http", network: "loopback", authentication: "none", activeSessions: 0 }),
     authentication: oldAuthentication, operations: runtime, maintenance: () => state.maintenance, admission: store.admission });
@@ -76,7 +82,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
         path: options.path ?? route, method: options.method ?? "POST",
         headers: options.headers ?? { "Content-Type": "application/json" } }, res => {
         const chunks: Buffer[] = []; res.on("data", c => chunks.push(c)); res.on("error", reject);
-        res.on("end", () => { try { resolve({ status: res.statusCode!, headers: res.headers, body: JSON.parse(Buffer.concat(chunks).toString()) }); } catch (e) { reject(e); } });
+        res.on("end", () => { try { resolve({ status: res.statusCode!, headers: res.headers, body: chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {} }); } catch (e) { reject(e); } });
       });
       call.on("error", reject);
       if (options.slow) { call.flushHeaders(); call.write("{"); } else call.end(options.body ?? "{}");
@@ -86,7 +92,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
     return { call, reply };
   };
   const grant = () => store.admission.run(() => db.prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('agent','reader','project','project-a',?)").run(iso(NOW)));
-  return { store, state, db, built, runtime, send, hooks, oldAuthentication, legacy, controller, admin, installation, agent, credentialId, grant, clock };
+  return { store, state, db, built, runtime, send, hooks, oldAuthentication, legacy, controller, admin, installation, agent, credentialId, grant, clock, socketPath, provider, addProject };
 }
 const auth = (secret: string) => ({ "Content-Type": "application/json", Authorization: `Bearer ${secret}` });
 const refusal = (reason: string, category = "unauthenticated", status = 401, retry = "reauthenticate") => ({ error: { category, status, reason, retry, effect: null } });
@@ -124,14 +130,14 @@ describe("real API and unix acceptance", () => {
         expect(r.headers["cache-control"]).toBe("no-store");
       } else {
         const reason = credential === "cookie" ? "provider_cookie_not_supported" : mode === "legacy" ? "unknown_mode"
-          : listener === "unix" ? "credential_on_local_listener" : credential === "unknown" || credential === "header" ? "unrecognized_credential"
+          : listener === "unix" ? "credential_on_local_listener" : credential === "header" ? "legacy_credential" : credential === "unknown" ? "unrecognized_credential"
           : mode === "open" ? "credential_in_open_mode" : credential === "none" ? "credential_required"
           : mode === "better-auth" && credential === "installation" ? "installation_token_in_account_mode"
           : mode === "better-auth" ? "invalid_credential" : "credential_not_accepted_here";
         expect(r.body).toEqual(refusal(reason));
       }
     }
-    expect(f.oldAuthentication.authenticateInstallation).not.toHaveBeenCalled(); expect(f.oldAuthentication.anonymousInstallation).not.toHaveBeenCalled(); expect(f.legacy).not.toHaveBeenCalled();
+    expect(f.oldAuthentication.authenticateInstallation.mock.calls.length).toBe(0); expect(f.oldAuthentication.anonymousInstallation.mock.calls.length).toBe(0); expect(f.legacy).not.toHaveBeenCalled();
     await f.store.admission.run(() => expect(f.store.getCredentialForAuthentication(f.credentialId)?.lastUsedAt).toBeNull());
   });
 
@@ -147,7 +153,8 @@ describe("real API and unix acceptance", () => {
 
   it("cookie refusal precedes body, admission and even saturated unix capacity", async () => {
     const f = await fixture("better-auth"), release = pause(), entered = pause();
-    f.hooks.legacy = async () => { entered.done(); await release.promise; return {}; };
+    let count = 0;
+    f.hooks.legacy = async () => { if (++count === 32) entered.done(); await release.promise; return {}; };
     const held = Array.from({ length: 32 }, () => f.send("unix", { path: "/auth" }));
     await entered.promise;
     let dataListeners = 0;
@@ -158,8 +165,16 @@ describe("real API and unix acceptance", () => {
       for (let i = 0; i < 35; i++) {
         expect((await f.send("unix", { slow: true, headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("provider_cookie_not_supported"));
       }
-      expect(dataListeners).toBe(0); expect(mint).not.toHaveBeenCalled();
+      expect(dataListeners).toBe(0); expect(mint.mock.calls.length).toBe(0); expect(f.provider.isSessionAuthorityEligible.mock.calls.length).toBe(0);
     } finally { release.done(); await Promise.all(held.map(h => h.reply)); }
+  });
+
+  it.each(["token", "better-auth"])("accepts bearer-like token headers in %s without invoking the old resolver", async mode => {
+    const f = await fixture(mode);
+    for (const name of ["X-Worktree-Control-Token", "X-Worktree-Switcher-Token"]) {
+      expect((await f.send("api", { headers: { "Content-Type": "application/json", [name]: mode === "token" ? f.installation : f.agent } }).reply).status).toBe(200);
+    }
+    expect(f.oldAuthentication.authenticateInstallation.mock.calls.length).toBe(0);
   });
 
   it("refuses browser headers and every credential on unix", async () => {
@@ -188,7 +203,24 @@ describe("real API and unix acceptance", () => {
       }
       for (const method of ["GET", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"]) expect((await f.send(listener, { method }).reply).body).toEqual(refusal("method_not_allowed", "invalid_request", 400, "none"));
     }
-    expect(f.legacy).not.toHaveBeenCalled(); expect(f.oldAuthentication.anonymousInstallation).not.toHaveBeenCalled();
+    expect(f.legacy).not.toHaveBeenCalled(); expect(f.oldAuthentication.anonymousInstallation.mock.calls.length).toBe(0);
+  });
+
+  it("answers HEAD, CONNECT and Upgrade inside the namespace on both actual listeners", async () => {
+    const f = await fixture();
+    for (const listener of ["api", "unix"] as const) {
+      expect((await f.send(listener, { method: "HEAD" }).reply).status).toBe(400);
+      for (const method of ["CONNECT", "GET"]) {
+        const raw = await new Promise<string>((resolve, reject) => {
+          const socket = listener === "unix" ? createConnection(f.socketPath) : createConnection((f.controller.server.address() as AddressInfo).port, "127.0.0.1");
+          const chunks: Buffer[] = []; socket.on("data", c => chunks.push(c)); socket.on("error", reject);
+          socket.on("end", () => resolve(Buffer.concat(chunks).toString()));
+          socket.on("connect", () => socket.write(`${method} ${route} HTTP/1.1\r\nHost: localhost\r\n${method === "GET" ? "Connection: Upgrade\r\nUpgrade: websocket\r\n" : ""}\r\n`));
+        });
+        expect(raw).toContain("400 Bad Request"); expect(raw).toContain('"reason":"method_not_allowed"');
+      }
+    }
+    expect(f.oldAuthentication.authenticateInstallation.mock.calls.length).toBe(0); expect(f.legacy.mock.calls.length).toBe(0);
   });
 
   it("keeps legacy paths working in legacy mode, five per listener", async () => {
@@ -210,6 +242,10 @@ describe("boundary conformance through real listeners", () => {
     const f = await fixture(), mint = vi.spyOn(f.runtime, "mint");
     f.state.maintenance = true;
     assertRefused(await f.send(listener).reply, mint.mock.calls.length);
+    // Run the same outcome assertion against the existing neighbour.
+    const effect = vi.fn(); f.hooks.legacy = effect;
+    const old = await f.send(listener, { path: listener === "api" ? "/api/projects" : "/auth" }).reply;
+    assertRefused(old, listener === "api" ? f.addProject.mock.calls.length : effect.mock.calls.length);
     f.state.maintenance = false;
     if (listener === "api") assertRefused(await f.send(listener, { headers: { "Content-Type": "application/json", Origin: "https://foreign.example" } }).reply, mint.mock.calls.length);
     // Configuration belongs to provider sessions. No provider call is permitted in 5a.
@@ -219,7 +255,11 @@ describe("boundary conformance through real listeners", () => {
 
   it.each(["api", "unix"] as const)("%s enforces byte ceilings before mint", async listener => {
     const f = await fixture(), mint = vi.spyOn(f.runtime, "mint");
-    assertRefused(await f.send(listener, { body: JSON.stringify({ padding: "x".repeat(listener === "api" ? 65536 : 16384) }) }).reply, mint.mock.calls.length);
+    const body = JSON.stringify({ padding: "x".repeat(listener === "api" ? 65536 : 16384) });
+    assertRefused(await f.send(listener, { body }).reply, mint.mock.calls.length);
+    const effect = vi.fn(); f.hooks.legacy = effect;
+    assertRefused(await f.send(listener, { path: listener === "api" ? "/api/projects" : "/auth", body }).reply,
+      listener === "api" ? f.addProject.mock.calls.length : effect.mock.calls.length);
   });
 
   it("bounds a slow body and response on real HTTP", async () => {
@@ -249,6 +289,34 @@ describe("boundary conformance through real listeners", () => {
       if (change === "grant") { expect(reply.status).toBe(200); expect(reply.body.projects).toEqual([]); }
       else expect(reply.status).toBeGreaterThanOrEqual(400);
     }
+  });
+
+  it("keeps the API's 32-request bound before body reads, with cookies excluded", async () => {
+    const f = await fixture(); let reading = 0; const ready = pause();
+    f.controller.server.prependListener("request", req => req.on("newListener", event => { if (event === "data" && ++reading === 32) ready.done(); }));
+    const held = Array.from({ length: 32 }, () => f.send("api", { slow: true }));
+    await ready.promise;
+    try {
+      expect((await f.send("api").reply).body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
+      expect((await f.send("api", { slow: true, headers: { Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("provider_cookie_not_supported"));
+      expect(reading).toBe(32);
+    } finally { for (const pending of held) pending.call.destroy(); }
+  });
+
+  it("refuses admission contention while real provider storage is pending, and cancels a queued disconnected request", async () => {
+    const f = await fixture(), entered = pause(), release = pause();
+    const borrow = f.store.authenticationProviderStorage().borrow(async () => { entered.done(); await release.promise; });
+    await entered.promise;
+    const effect = vi.fn(); f.hooks.afterMint = effect;
+    try {
+      const reply = await f.send("api").reply;
+      expect(reply.body).toEqual(refusal("admission_refused", "busy", 503, "retry"));
+      assertRefused(reply, effect.mock.calls.length);
+      const pending = f.send("api"); pending.call.destroy();
+      await expect(pending.reply).rejects.toThrow();
+    } finally { release.done(); await borrow; }
+    expect(effect.mock.calls.length).toBe(0);
+    expect((await f.send("api").reply).status).toBe(200);
   });
 
   it("shares the unix ceiling with /auth and drains started work after disconnect", async () => {
@@ -319,6 +387,22 @@ describe("boundary conformance through real listeners", () => {
     f.state.maintenance = true; release.done();
     const reply = await pending.reply;
     expect(() => assertRefused(reply, 0)).toThrow();
+  });
+
+  it.each(["api", "unix"] as const)("%s writes success only inside real core admission and hides credential IDs", async listener => {
+    const f = await fixture("token"); let admittedWrite = false;
+    const server = listener === "api" ? f.controller.server : f.admin.server;
+    server.prependListener("request", (_req, response) => {
+      const writeHead = response.writeHead.bind(response);
+      response.writeHead = ((...args: Parameters<ServerResponse["writeHead"]>) => {
+        if (args[0] === 200) { f.store.getAuthenticationPolicy(); admittedWrite = true; }
+        return writeHead(...args);
+      }) as ServerResponse["writeHead"];
+    });
+    const reply = await f.send(listener, { headers: listener === "api" ? auth(f.installation) : undefined }).reply;
+    expect(reply.status).toBe(200); expect(admittedWrite).toBe(true);
+    expect(JSON.stringify(reply.body).includes(f.credentialId)).toBe(false);
+    expect(JSON.stringify(reply.body).includes(f.installation.slice(4, 40))).toBe(false);
   });
 
   it("holds capacity through response completion, after admitted work returns", async () => {
