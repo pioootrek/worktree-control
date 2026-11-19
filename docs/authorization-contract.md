@@ -1387,8 +1387,38 @@ mounts remain for later steps.
   multiplicity. The returned `eligible` is the controller-level predicate for
   every request's read-release; human contexts enforce the additional provider
   condition through their own revalidation. Cookie transports check the returned
-  `providerSessionEligible` before starting provider work; it is `null` without
-  a provider.
+  `providerSessionEligibility` before starting provider work. It answers
+  `eligible`, `ineligible` or `busy`; the boolean `providerSessionEligible`
+  convenience returns false for both ineligibility and contention. Provider
+  administration owns a stable accessor with the fixed `better-auth` ID and the store's session reader,
+  which exists before loading. Its synchronous eligibility check uses existing
+  core admission for configuration validation. Entry contention rejects resolution
+  with `busy` / `admission_refused`, without starting provider work. The same
+  composition and verifier work when that provider later becomes ready. Failed loads remain failed; configuration changes
+  require a new controller boot, not replacement within this lifetime. Stage and
+  verify share one synchronous admission callback, so no staged handle crosses
+  a provider replacement. `resolveSession` uses the current provider outside
+  admission and retains its real settlement independently of the public result.
+  Its delivery check queues for core admission with the request's abort signal.
+  Contention delays delivery; refused admission rejects with retryable
+  `busy` / `admission_refused`, and an aborted wait with
+  `unavailable` / `request_cancelled`. An evaluated refusal still returns null.
+  The accessor rejects with `ControllerOperationSessionResolutionError` only
+  when the entry check could not run or the request was already cancelled.
+  Connection errors from provider work and from the delivery check reach the
+  operations composition unchanged, which classifies them: contention is
+  retryable `busy`; a closed, draining or poisoned store and a provider fault
+  such as an expired borrow are `unavailable` / `database_unavailable` without
+  a retry instruction. The provider's own cancellation, raised when the request
+  is aborted after its borrow was admitted, is `unavailable` /
+  `request_cancelled` like every other aborted wait.
+  Administration also owns the browser's shared 16-slot request budget, with
+  four slots reserved for completions. Its initiating acquisition and release
+  after both response completion and work settlement are ready for the operations
+  cookie path; the mounted operations adapters still refuse provider cookies.
+  Settlement must be called exactly once, with all started work joined.
+  Shutdown and listener-start failure stop the budget synchronously before
+  listener drain.
   Controller start builds this once from its immutable active mode. API and
   unix mounts use it for `session.describe` only. HTTP success serializes and
   ends the response inside `readRelease` admission. The API owns at most 32
