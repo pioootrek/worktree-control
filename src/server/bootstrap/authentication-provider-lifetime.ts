@@ -24,6 +24,46 @@ export const CONTROLLER_AUTHENTICATION_POLICY = Object.freeze({
     knowledgeJson: Object.freeze({ maxDepth: 16, maxFields: 2048 }), reservedCompletionSlots: 4 }),
 });
 
+/** Stage and mint happen in one synchronous admission. Sixteen handles match
+ * maxInFlight; five seconds bounds an abandoned handoff without a timer.
+ */
+export const CONTROLLER_OPERATION_SESSION_POLICY = Object.freeze({ stagedCapacity: 16, stagedTtlMs: 5_000 });
+
+/** Only a synchronous boolean is evidence. Absorb misplaced promises. */
+function synchronousBoolean(value: unknown): boolean | null {
+  if (value === true || value === false) return value;
+  try { Promise.resolve(value).catch(() => undefined); } catch { /* refused */ }
+  return null;
+}
+
+/** Shared with the legacy throwing guard. No I/O beyond the supplied reads. */
+export function createControllerOperationEligibility(input: {
+  maintenance(): boolean;
+  stopping(): boolean;
+  configurationRestartRequired(): boolean;
+  runtime(): Pick<AuthenticationProviderRuntime, "isSessionAuthorityEligible"> | undefined;
+}) {
+  const controllerOpen = () => synchronousBoolean(input.stopping()) === false && synchronousBoolean(input.maintenance()) === false;
+  const controllerEligible = () => {
+    try { return controllerOpen(); } catch { return false; }
+  };
+  const guard = () => {
+    if (!controllerOpen()) throw new AuthenticationProviderError("maintenance", "Controller provider administration is in maintenance.");
+    if (synchronousBoolean(input.configurationRestartRequired()) !== false) throw new AuthenticationProviderError("provider_configuration_restart_required", "Provider configuration requires a new owner boot.");
+  };
+  const providerSessionEligible = () => {
+    try {
+      guard();
+      const runtime = input.runtime();
+      if (runtime && typeof (runtime as { then?: unknown }).then === "function") {
+        Promise.resolve(runtime).catch(() => undefined); return false;
+      }
+      return synchronousBoolean(runtime?.isSessionAuthorityEligible()) === true;
+    } catch { return false; }
+  };
+  return Object.freeze({ controllerEligible, providerSessionEligible, guard });
+}
+
 /** Deployment resource/guess bounds; enabling a ceremony does not select it for an account. */
 const FACTOR_LIMITS = Object.freeze({
   totp: { attempts: 5, windowMs: 60_000 }, passkey: { attempts: 10, windowMs: 60_000 },
@@ -71,10 +111,12 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
   const changed = (current: ProviderConfiguration | null) => pinned !== undefined &&
     (!current || current.entry !== pinned.entry || current.baseURL !== pinned.baseURL || current.secret !== pinned.secret);
   const maintenance = () => stopping || Boolean(d.maintenance?.());
-  const guard = () => {
-    if (maintenance()) throw new AuthenticationProviderError("maintenance", "Controller provider administration is in maintenance.");
-    if (changed(configuration.read())) throw new AuthenticationProviderError("provider_configuration_restart_required", "Provider configuration requires a new owner boot.");
-  };
+  const eligibility = createControllerOperationEligibility({
+    maintenance: () => d.maintenance?.() ?? false, stopping: () => stopping,
+    configurationRestartRequired: () => changed(configuration.read()),
+    runtime: () => state === "ready" ? runtime : undefined,
+  });
+  const guard = eligibility.guard;
   // Reuse the ONE existing connection gate. New work checks the current config in its actual borrow.
   // Reserved work is runtime-owned cleanup of exact sessions minted here, never new authentication.
   // It must still be able to settle after maintenance/configuration changes fence new work.
@@ -196,6 +238,8 @@ export function createControllerAuthentication(d: ControllerAuthenticationOption
   });
   return {
     identity,
+    controllerEligible: eligibility.controllerEligible,
+    providerSessionEligible: eligibility.providerSessionEligible,
     /** Server-owned adapter for converted browser workflows.
      * Uses this exact runtime and identity; an HTTPS deployment origin must match pinned config.
      * The caller owns listener drain before dispose(), as in createControllerShutdown.

@@ -6,9 +6,8 @@ import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 
 /**
- * Slice 1 is unmounted (decision U): no file of a fixed inventory may import
- * the module or its shared contract. Remove this guard in the slice that
- * mounts the module.
+ * Decision U: only the exact approved bootstrap importers may import the
+ * module or its shared contract. The composition itself is still unmounted.
  *
  * Inventory: every source file under `src`, `packages`, `scripts` and `tests`,
  * without build or dependency trees, plus the root entry and configuration
@@ -52,6 +51,12 @@ const ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
   "scripts/package-smoke.mjs": "loads the MCP SDK from the packed package directory under test",
   "scripts/package-smoke.test.mjs": "imports a copy of package-smoke.mjs from a temporary directory",
 });
+
+/** Concrete wiring only. No transport or controller-start caller yet. */
+const APPROVED_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
+  "src/server/bootstrap/operations-runtime.ts": "composes the unmounted runtime from the store owner's read ports and controller policies",
+});
+const COMPOSITION = "src/server/bootstrap/operations-runtime.ts";
 
 interface Analysis { literals: string[]; dynamic: string[] }
 
@@ -113,11 +118,11 @@ function realOrSelf(path: string): string {
 }
 
 /** Guard over one repository root. Separate so that the self-test can run it on a temporary tree. */
-function createGuard(root: string) {
-  const moduleDirectory = realOrSelf(join(root, "src/server/modules/operations"));
-  const contractsFile = realOrSelf(join(root, "src/shared/contracts/operations.ts"));
-  const contractsBase = join(root, "src/shared/contracts/operations");
-  const moduleBase = join(root, "src/server/modules/operations");
+function createGuard(root: string, composition = false) {
+  const moduleDirectory = realOrSelf(join(root, composition ? COMPOSITION : "src/server/modules/operations"));
+  const contractsFile = realOrSelf(join(root, composition ? COMPOSITION : "src/shared/contracts/operations.ts"));
+  const contractsBase = join(root, composition ? COMPOSITION.slice(0, -3) : "src/shared/contracts/operations");
+  const moduleBase = join(root, composition ? COMPOSITION.slice(0, -3) : "src/server/modules/operations");
 
   const insideTarget = (path: string) => path === moduleDirectory || path.startsWith(moduleDirectory + sep) || path === contractsFile;
 
@@ -144,7 +149,8 @@ function createGuard(root: string) {
     return false;
   }
 
-  const exempt = (file: string) => file === join(root, "src/shared/contracts/operations.ts") || file.startsWith(moduleBase + sep);
+  const exempt = (file: string) => composition ? /\.(test|spec)\.[cm]?[jt]sx?$/.test(file)
+    : file === join(root, "src/shared/contracts/operations.ts") || file.startsWith(moduleBase + sep);
 
   /** The inventory: files to scan and symbolic links found inside it. */
   function inventory(): { files: string[]; symlinks: string[]; missing: string[] } {
@@ -169,14 +175,14 @@ function createGuard(root: string) {
   }
 
   /** Every violation, as stable text lines. */
-  function violations(allowlist: Readonly<Record<string, string>>): string[] {
+  function violations(allowlist: Readonly<Record<string, string>>, importers: Readonly<Record<string, string>> = {}): string[] {
     const { files, symlinks } = inventory();
     const found: string[] = [];
     for (const link of symlinks) found.push(`${relative(root, link)}: symbolic link inside the inventory`);
     for (const file of files) {
       const name = relative(root, file).split(sep).join("/");
       const { literals, dynamic } = analyse(file, readFileSync(file, "utf8"));
-      for (const specifier of literals) if (reaches(file, specifier)) found.push(`${name}: imports ${specifier}`);
+      for (const specifier of literals) if (reaches(file, specifier) && !Object.prototype.hasOwnProperty.call(importers, name)) found.push(`${name}: imports ${specifier}`);
       if (dynamic.length > 0 && !Object.prototype.hasOwnProperty.call(allowlist, name)) {
         for (const each of dynamic) found.push(`${name}: non-literal ${each}`);
       }
@@ -184,7 +190,15 @@ function createGuard(root: string) {
     return found;
   }
 
-  return { reaches, inventory, violations };
+  function invalidImporters(importers: Readonly<Record<string, string>>): string[] {
+    const files = new Set(inventory().files);
+    return Object.entries(importers).flatMap(([name, reason]) => {
+      const path = join(root, name);
+      return reason.length > 10 && files.has(path) && analyse(path, readFileSync(path, "utf8")).literals.some(specifier => reaches(path, specifier))
+        ? [] : [`${name}: approved importer must be a real inventory file importing the module`];
+    });
+  }
+  return { reaches, inventory, violations, invalidImporters };
 }
 
 const repository = resolve(".");
@@ -192,7 +206,7 @@ const temporary: string[] = [];
 afterEach(() => { for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true }); });
 
 describe("authorization contract stays unmounted", () => {
-  it("is imported by no file of the fixed inventory, and no file there uses an unlisted non-literal specifier", () => {
+  it("has exactly the approved importers and no unlisted non-literal specifier", () => {
     const guard = createGuard(repository);
     const { files, missing } = guard.inventory();
     expect(missing).toEqual([]);
@@ -203,7 +217,32 @@ describe("authorization contract stays unmounted", () => {
     const rootSources = readdirSync(repository, { withFileTypes: true })
       .filter(entry => entry.isFile() && SOURCE_EXTENSIONS.has(extname(entry.name))).map(entry => entry.name).sort();
     expect(rootSources).toEqual([...ROOT_FILES].sort());
-    expect(guard.violations(ALLOWLIST)).toEqual([]);
+    expect(guard.violations(ALLOWLIST, APPROVED_IMPORTERS)).toEqual([]);
+    expect(guard.invalidImporters(APPROVED_IMPORTERS)).toEqual([]);
+  });
+
+  it("has no production importer of the composition yet", () => {
+    expect(createGuard(repository, true).violations(ALLOWLIST)).toEqual([]);
+  });
+
+  it("rejects unlisted importers and stale approved entries", () => {
+    const root = mkdtempSync(join(tmpdir(), "approved-operations-importers-")); temporary.push(root);
+    const write = (path: string, text: string) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), text); };
+    const approved = { [COMPOSITION]: "concrete runtime composition" };
+    const guard = createGuard(root);
+    expect(guard.invalidImporters(approved)).toHaveLength(1);
+    write(COMPOSITION, "export {};\n");
+    expect(guard.invalidImporters(approved)).toHaveLength(1);
+    write(COMPOSITION, 'import "../modules/operations";\n');
+    expect(guard.invalidImporters(approved)).toEqual([]);
+    expect(guard.violations({}, approved)).toEqual([]);
+    write("src/unlisted.ts", 'import "@/server/modules/operations";\n');
+    expect(guard.violations({}, approved)).toEqual(["src/unlisted.ts: imports @/server/modules/operations"]);
+    // The second guard also sees production imports from inside the module.
+    write("src/server/modules/operations/accidental.ts", 'import "../../bootstrap/operations-runtime";\n');
+    expect(createGuard(root, true).violations({})).toEqual([
+      "src/server/modules/operations/accidental.ts: imports ../../bootstrap/operations-runtime",
+    ]);
   });
 
   it("lists only existing files that really use non-literal specifiers", () => {

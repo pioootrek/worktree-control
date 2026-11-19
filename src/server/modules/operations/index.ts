@@ -45,3 +45,6 @@ export { MAX_DESCRIBED_PROJECTS, sessionDescribe } from "./session-describe";
 export { InstallationVerifier, type InstallationPolicy, type InstallationPolicyReader, type InstallationVerifierOptions } from "./adapters/installation-verifier";
 export { AgentTokenVerifier, type AgentCredentialReader, type AgentCredentialRecord, type AgentTokenVerifierOptions } from "./adapters/agent-token-verifier";
 export { CompositeCredentialVerifier, type CompositeCredentialVerifierOptions } from "./adapters/composite-credential-verifier";
+export { sqliteGrants, type AccountGrantsReader } from "./adapters/sqlite-grants";
+export { SqliteResourceResolver } from "./adapters/sqlite-resolver";
+export { ProviderSessionVerifier } from "./adapters/provider-session-verifier";

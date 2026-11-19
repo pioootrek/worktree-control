@@ -1183,6 +1183,16 @@ A source file cannot hide an import behind a helper under `tests/`: that
 helper is itself scanned. Negative controls cover direct module and contract
 imports under `tests/`, and a `src/` importer of such a helper.
 
+The only approved importer of the module and shared contract is
+`src/server/bootstrap/operations-runtime.ts`. Its reason is concrete wiring
+of the store owner's read ports and controller policies. Approved entries
+must exist in the inventory and really import the module or contract. Missing
+files and stale entries fail. Negative controls exercise a listed importer,
+an unlisted importer, a missing entry and an entry that no longer imports.
+A second test forbids every production import of the composition itself,
+including imports from inside the operations module. The first mounting pull
+request removes that second test and updates the approved-importer list.
+
 Within the inventory, the guard does three things:
 
 - It resolves every literal specifier: static imports, re-exports, type
@@ -1190,7 +1200,8 @@ Within the inventory, the guard does three things:
   `import.meta.resolve()` and `import x = require()`. It resolves relative
   paths, the `@/` alias, absolute paths and `file:` URLs. A specifier fails when
   its path names the module or its contract file, or when a resolved file's
-  real path lies inside them, so a symlink on the way cannot hide the target.
+  real path lies inside them, unless its importer is explicitly approved.
+  A symlink on the way cannot hide the target.
 - It fails on every non-literal specifier unless the file is on `ALLOWLIST`
   with a reason. The result of `createRequire` may only be bound to `require`,
   called at once, or used as `createRequire(...).resolve("literal")`.
@@ -1278,9 +1289,26 @@ These are not implemented here. The slices that mount the contract own them.
   port and an in-memory test double. The installation-token, anonymous,
   agent-token and provider-session verifiers exist, with a composite that
   dispatches without fallback (see [Actors and authentication](#actors-and-authentication)
-  and [Provider sessions](#provider-sessions)). Production composition and
-  transport mounting remain unimplemented. Credential usage recording and
-  principal-incarnation detection are not implemented.
+  and [Provider sessions](#provider-sessions)). The unmounted bootstrap
+  `buildOperationsRuntime` composes those adapters, one clock, the store's own
+  admission, a fresh grants factory, disposal diagnostics and a registry pinned
+  to `session.describe`. Its explicit active mode fixes both installation
+  verification and each served listener boundary. Unknown modes, including
+  `legacy`, construct no boundary or verifier and answer `unauthenticated` /
+  `unknown_mode` on this new surface alone.
+
+  Bootstrap's provider eligibility shares the existing throwing guard's
+  maintenance, stopping and pinned-configuration checks, then requires a
+  synchronous `true` from the runtime's session-authority predicate. Modes
+  without a provider use the controller maintenance and stopping predicate.
+  Mint, provider stage and provider verification run in one synchronous core
+  admission callback. Cookie resolution belongs outside it. Staging is bounded
+  to 16 handles and 5000 ms; no timer or new connection is created. Transports
+  must supply the resolution for the current request, retain raw credential
+  multiplicity and pass the returned eligibility predicate to read-release.
+  No production caller imports the composition yet. Transport mounting,
+  credential usage recording and principal-incarnation detection remain
+  unimplemented.
 - Enforcement of the project ID grammar. A project ID in the contract matches
   `^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$` (`src/shared/contracts/operations.ts`),
   and the owner decided on 2026-11-17 that Knowledge project IDs must follow it
