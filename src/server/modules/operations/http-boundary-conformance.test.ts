@@ -16,7 +16,7 @@ import type { ControlService } from "@/server/control-service";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
 import { resolveAppPaths } from "@/server/paths";
-import { createOperationsHttp, OPERATIONS_HTTP_LIMITS } from "@/server/transports/operations-http";
+import { createOperationsHttp, operationsFailure, OPERATIONS_HTTP_LIMITS } from "@/server/transports/operations-http";
 import { parseOperationsPath } from "@/server/transports/operations-path";
 import { hash, iso, NOW, token } from "./adapters/credential-verifier-fixture";
 
@@ -49,8 +49,9 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const provider = { isSessionAuthorityEligible: vi.fn(() => true) };
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs: { controller() {} },
     eligibility, provider: mode === "better-auth" ? provider : null, listeners: { api: () => apiOpen, unix: () => unixOpen } });
-  const hooks: { afterMint?: () => void | Promise<void>; legacy?: (body: unknown) => unknown } = {};
+  const hooks: { beforeMint?: (signal: AbortSignal | undefined) => void; afterMint?: () => void | Promise<void>; legacy?: (body: unknown) => unknown } = {};
   const runtime = { ...built, mint: async (...args: Parameters<Extract<typeof built, { supported: true }>["mint"]>) => {
+    hooks.beforeMint?.(args[3].signal);
     const result = built.supported ? await built.mint(...args) : await built.mint(); if (result.ok) await hooks.afterMint?.(); return result;
   } };
   const authentication = await store.admission.run(() => new AuthenticationService(store));
@@ -72,7 +73,16 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   if (limits) {
     const adapter = createOperationsHttp({ runtime, listener: "api", limits, externallyOwned: fault === "early_release" });
     controller.server.removeAllListeners("request");
-    controller.server.on("request", (req, res) => { void adapter.handle(req, res); });
+    let active = 0;
+    controller.server.on("request", (req, res) => {
+      if (fault === "early_release") {
+        if (active >= 1) { operationsFailure(res, { category: "busy", status: 503, reason: "listener_capacity", retry: "retry", effect: null }); return; }
+        active++;
+        // Deliberately broken owner: releases on disconnect while application work is pending.
+        res.once("close", () => { active--; });
+      }
+      void adapter.handle(req, res);
+    });
     cleanups.push(async () => { adapter.stop(); await adapter.drain(); });
   }
   const send = (listener: "api" | "unix", options: { path?: string; method?: string; headers?: Headers; body?: string; slow?: boolean } = {}) => {
@@ -314,7 +324,10 @@ describe("boundary conformance through real listeners", () => {
       const reply = await f.send("api").reply;
       expect(reply.body).toEqual(refusal("admission_refused", "busy", 503, "retry"));
       assertRefused(reply, effect.mock.calls.length);
-      const pending = f.send("api"); pending.call.destroy();
+      const queued = pause(), cancelled = pause();
+      f.hooks.beforeMint = signal => { queued.done(); signal?.addEventListener("abort", cancelled.done, { once: true }); };
+      const pending = f.send("api"); await queued.promise;
+      pending.call.destroy(); await cancelled.promise;
       await expect(pending.reply).rejects.toThrow();
     } finally { release.done(); await borrow; }
     expect(effect.mock.calls.length).toBe(0);
@@ -360,17 +373,20 @@ describe("boundary conformance through real listeners", () => {
   });
 
   async function disconnectedCapacity(f: Awaited<ReturnType<typeof fixture>>) {
-    const entered = pause(), release = pause(); let first = true;
+    const entered = pause(), release = pause(), disconnected = pause(); let first = true;
+    f.hooks.beforeMint = signal => { if (first) signal?.addEventListener("abort", disconnected.done, { once: true }); };
     f.hooks.afterMint = async () => { if (first) { first = false; entered.done(); await release.promise; } };
     const pending = f.send("api"); await entered.promise;
-    pending.call.destroy(); await new Promise<void>(done => setImmediate(done));
+    pending.call.destroy(); await expect(pending.reply).rejects.toThrow();
+    // Observe the exact abort propagated to the pending request rather than a timer tick.
+    await disconnected.promise;
     try { expect((await f.send("api").reply).status).toBe(503); }
     finally { release.done(); }
   }
   it("retains API capacity until disconnected work settles", async () => {
     await disconnectedCapacity(await fixture("open", { maxInFlight: 1 }));
   });
-  it("negative control: the same capacity assertion fails with an unowned early release", async () => {
+  it("negative control: the same capacity assertion fails when its owner releases early", async () => {
     await expect(disconnectedCapacity(await fixture("open", { maxInFlight: 1 }, "early_release"))).rejects.toThrow();
   });
 
