@@ -1527,8 +1527,10 @@ const mcpError = (reply: Reply) => reply.body.error?.data ?? reply.body.error;
 async function mcpFixture(mode = "open", fault?: "early_release") {
   const f = await fixture(mode);
   const identity = new IdentityService(f.store), authenticate = vi.spyOn(identity, "authenticateBearer"), usage = vi.spyOn(f.store, "recordCredentialUsed");
-  const mcpOptions = { service: { admission: f.store.admission } as unknown as ControlService,
+  const diagnostics: Record<string, unknown>[] = [];
+  const mcpOptions = { service: { admission: f.store.admission, remoteVerificationEnabled: () => false } as unknown as ControlService,
     port: 0, accessToken: "synthetic-mcp-secret", authentication: f.oldAuthentication, identity, operations: f.runtime,
+    onDiagnostic: (_message: string, details?: Record<string, unknown>) => { if (details?.error) diagnostics.push(details); },
     sessionLimits: { maxSessions: 2, maxSessionsPerCredential: 1 } };
   const mcp = createMcpControllerServer(mcpOptions);
   await new Promise<void>(r => mcp.server.listen(0, "127.0.0.1", r));
@@ -1551,7 +1553,8 @@ async function mcpFixture(mode = "open", fault?: "early_release") {
   const driver = createBoundaryDriver({ kind: "mcp", server: mcp.server, close: mcp.close, legacyPath: "/mcp", acceptedCredentials: [] });
   const client = async (legacy = false, secret?: string) => {
     const client = new Client({ name: "mounted-conformance", version: "1" }); cleanups.push(() => client.close());
-    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(mcp.server.address() as AddressInfo).port}${legacy ? "/mcp" : "/mcp/operations"}`), { requestInit: { headers: mcpHeaders(secret) } }));
+    try { await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(mcp.server.address() as AddressInfo).port}${legacy ? "/mcp" : "/mcp/operations"}`), { requestInit: { headers: mcpHeaders(secret) } })); }
+    catch (cause) { throw new Error(`MCP fixture diagnostics: ${JSON.stringify(diagnostics)}`, { cause }); }
     return client;
   };
   return { ...f, mcp, driver, identity, authenticate, usage, client };
@@ -1585,7 +1588,7 @@ describe("MCP listener boundary conformance", () => {
     if (f.built.supported) expect(OPERATIONS_MCP_TOOLS.map(tool => tool.operation)).toEqual(f.built.registry.idsOn("mcp"));
     const calls = mint.mock.calls.length;
     const legacy = await f.client(true, mode === "legacy" ? "synthetic-mcp-secret" : mode === "token" ? f.installation : mode === "better-auth" ? f.agent : undefined);
-    expect((await legacy.listTools()).tools.map(tool => tool.name)).toContain("list_projects");
+    expect((await legacy.listTools()).tools.map(tool => tool.name)).toContain(mode === "better-auth" ? "get_identity" : "list_projects");
     expect(mint).toHaveBeenCalledTimes(calls);
     if (mode === "token" || mode === "legacy") {
       const scopedLegacy = await f.client(true, f.storedLegacy[0].secret);
@@ -1601,7 +1604,7 @@ describe("MCP listener boundary conformance", () => {
   });
 
   it("mixed and duplicate raw credentials, cookie preflight and no provider/budget work", async () => {
-    const f = await mcpFixture("better-auth"), mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run"), budget = vi.spyOn(f.built.requestBudget, "acquire");
+    const f = await mcpFixture("better-auth"), mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run"), budget = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire");
     for (const headers of [["Authorization", `Bearer ${f.agent}`, "Authorization", `Bearer ${f.agent}`], ["Authorization", `Bearer ${f.agent}`, "X-Worktree-Control-Token", f.installation]]) {
       const reply = await f.driver.send({ headers: ["Content-Type", "application/json", "Accept", "application/json, text/event-stream", ...headers] }).reply;
       expect(reply.body).toEqual(refusal("mixed_credentials"));
@@ -1614,7 +1617,7 @@ describe("MCP listener boundary conformance", () => {
 
   it("shared Origin guard and independent canonical rule; Host grants no authority", async () => {
     const f = await mcpFixture(), port = (f.mcp.server.address() as AddressInfo).port;
-    for (const path of ["/mcp", "/mcp/operations"]) for (const origin of ["http://attacker.invalid", `https://localhost:${port}`, `http://localhost:${port + 1}`]) {
+    for (const path of ["/mcp", "/mcp/operations", "/mcp/operations/"]) for (const origin of ["http://attacker.invalid", `https://localhost:${port}`, `http://localhost:${port + 1}`]) {
       const reply = await f.driver.send({ path, headers: { ...mcpHeaders(), Origin: origin }, body: JSON.stringify(mcpInitialize) }).reply;
       expect(reply.status).toBe(403);
       expect(path === "/mcp" ? reply.body.error.message : reply.body.error.reason).toBe(path === "/mcp" ? "The request origin was rejected." : "origin_forbidden");
@@ -1632,13 +1635,15 @@ describe("MCP listener boundary conformance", () => {
     }
   });
 
-  it("negative control: omitting both Origin guards fails exactly 200 versus 403", async () => {
-    const f = await mcpFixture();
-    // Deletes Origin before the production dispatcher, removing both checks.
-    // This proves the assertion, not a single-guard mutation.
-    f.mcp.server.prependOnceListener("request", req => { delete req.headers.origin; });
-    const reply = await f.driver.send({ headers: { ...mcpHeaders(), Origin: "http://attacker.invalid" } }).reply;
-    expectFailure(() => conform("MCP shared Origin boundary", reply.status, 403), "MCP shared Origin boundary", 200, 403);
+  it("negative control: omitted shared Origin guard fails exactly 404 versus 403", async () => {
+    const f = await mcpFixture(), owner = createOperationsMcp({ runtime: f.runtime });
+    // Replaces the complete production dispatcher and closer request hook with
+    // direct adapter dispatch. Its own Origin check stays intact, but aliases
+    // are refused before that check. This isolates the shared guard's outcome.
+    f.mcp.server.removeAllListeners("request"); f.mcp.server.on("request", (req, res) => { void owner.handle(req, res); });
+    cleanups.push(async () => { owner.stop(); await owner.drain(); });
+    const reply = await f.driver.send({ path: "/mcp/operations/", headers: { ...mcpHeaders(), Origin: "http://attacker.invalid" } }).reply;
+    expectFailure(() => conform("MCP shared Origin boundary", reply.status, 403), "MCP shared Origin boundary", 404, 403);
   });
 
   it("raw aliases, reserved HTTP namespace, methods and batches are terminal", async () => {
@@ -1667,7 +1672,7 @@ describe("MCP listener boundary conformance", () => {
 
   it("real admission contention and aborted admission preserve exact reasons", async () => {
     const f = await mcpFixture(), entered = pause(), release = pause();
-    const held = f.store.admission.run(async () => { entered.done(); await release.promise; }); await entered.promise;
+    const held = f.store.authenticationProviderStorage().borrow(async () => { entered.done(); await release.promise; }); await entered.promise;
     try {
       const reply = await f.driver.send().reply; expect(reply.status).toBe(503); expect(reply.body.error.reason).toBe("admission_refused"); expect(reply.headers["retry-after"]).toBe("1");
       const reached = pause(), cancelled = pause();
@@ -1687,7 +1692,8 @@ describe("MCP listener boundary conformance", () => {
 
   it.each(["maintenance", "credential", "grant", "deadline", "disconnect", "stop", "listener", "configuration"])("post-SDK-buffer release rechecks %s", async change => {
     const f = await mcpFixture("better-auth"); if (!f.built.supported) throw new Error("supported fixture"); await f.grant();
-    const runner = f.built.runner, real = runner.readRelease.bind(runner), entered = pause(), release = pause(); let writes = 0;
+    const runner = f.built.runner, real = runner.readRelease.bind(runner), entered = pause(), release = pause(), disconnected = pause(); let writes = 0;
+    f.hooks.beforeMint = signal => signal?.addEventListener("abort", disconnected.done, { once: true });
     vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
       if (options.expectedCanonical !== undefined) {
         entered.done(); await release.promise;
@@ -1701,7 +1707,7 @@ describe("MCP listener boundary conformance", () => {
       if (change === "credential") await f.store.admission.run(() => f.db.prepare("UPDATE principal_credentials SET status='revoked' WHERE id=?").run(f.credentialId));
       if (change === "grant") await f.store.admission.run(() => f.db.prepare("DELETE FROM account_grants WHERE account_id='agent'").run());
       if (change === "deadline") f.clock.offset = OPERATIONS_HTTP_LIMITS.deadlineMs + 1;
-      if (change === "disconnect") pending.call.destroy();
+      if (change === "disconnect") { pending.call.destroy(); await disconnected.promise; }
       if (change === "stop") f.mcp.stopOperations();
       if (change === "listener") f.state.mcpOpen = false;
       if (change === "configuration") f.state.configChanged = true;
