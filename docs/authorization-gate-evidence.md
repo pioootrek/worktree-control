@@ -385,5 +385,6 @@ post-runner release refusal on socket and `unknown_mode` offline. Cookie wrong
 and revoked session probes assert `invalid_credential`.
 
 Restore handoff evidence distinguishes malformed content from unreadability.
-The latter uses mode 000 for non-root runs; root uses an injected EACCES at
-`readFileSync` for the exact fixture file, never a malformed-content substitute.
+The unreadable case uses a valid handoff record. It checks mode 000 on
+non-root runs. On every host it also injects EACCES at `openSync` for that
+file and asserts that the denial occurred.

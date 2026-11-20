@@ -330,22 +330,24 @@ describe("session describe CLI mount", () => {
     const payload = { format: 1, actor: { actorId: "local-admin", idempotencyKey: "fixture", backupId: "00000000-0000-4000-8000-000000000001" },
       operationId: "00000000-0000-4000-8000-000000000002", createdAt: "2026-01-01T00:00:00.000Z", state: "executing", authentication: null, local: true };
     const path = join(directory, "handoff.json");
-    writeFileSync(path, kind === "pending" ? JSON.stringify({ payload, sha256: recordHash(payload) }) : "private-session-row", { mode: 0o600 });
-    if (kind === "unreadable") {
-      if (process.getuid?.() !== 0) chmodSync(path, 0o000);
-      else {
-        // Root ignores mode 000; inject EACCES at the fs read boundary only.
-        const read = fs.readFileSync;
-        vi.spyOn(fs, "readFileSync").mockImplementation(((...args: Parameters<typeof read>) => {
-          if (args[0] === path) throw Object.assign(new Error("fixture read denied"), { code: "EACCES" });
-          return read(...args);
-        }) as typeof read);
-      }
-    }
+    writeFileSync(path, kind === "malformed" ? "private-session-row" : JSON.stringify({ payload, sha256: recordHash(payload) }), { mode: 0o600 });
     const seen = observe();
     if (kind === "pending") {
       expect(() => assertBackupHandoffCompleted(f.paths.databasePath)).toThrow("Start the controller to complete restore authentication recovery before offline administration.");
       await expect(f.run()).rejects.toThrow("Start the controller to complete restore authentication recovery before offline administration.");
+    } else if (kind === "unreadable") {
+      if (process.getuid?.() !== 0) {
+        chmodSync(path, 0o000);
+        await expect(f.run()).rejects.toMatchObject({ error: operationError("restore_handoff_unreadable") });
+        chmodSync(path, 0o600);
+      }
+      // Exercise the privileged-runner fallback on every host.
+      const open = fs.openSync;
+      const denied = vi.fn(() => { throw Object.assign(new Error("fixture open denied"), { code: "EACCES" }); });
+      vi.spyOn(fs, "openSync").mockImplementation((file, flags, mode) =>
+        file === path ? denied() : open(file, flags, mode));
+      await expect(f.run()).rejects.toMatchObject({ error: operationError("restore_handoff_unreadable") });
+      expect(denied).toHaveBeenCalled();
     } else await expect(f.run()).rejects.toMatchObject({ error: operationError("restore_handoff_unreadable") });
     expect(seen.opened).toEqual([]); expect(f.lines).toEqual([]); expect(existsSync(f.paths.controllerLockPath)).toBe(false);
   });

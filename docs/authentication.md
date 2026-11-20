@@ -64,13 +64,15 @@ there refuses `credential_in_open_mode`.
 WTC_API='http://127.0.0.1:4310'
 WTC_MCP='http://127.0.0.1:4311'
 WTC_WORKER='https://127.0.0.1:4312'
-# At the prompt, supply <INSTALLATION_TOKEN> (or <AGENT_TOKEN>) without echo.
-IFS= read -r -s -p 'Bearer token: ' WTC_BEARER
+# Press Enter in open mode. Otherwise enter the installation or agent token.
+IFS= read -r -s -p 'Bearer token (empty for open mode): ' WTC_BEARER
 printf '\n'
 WTC_HEADER_FILE=$(mktemp)
 chmod 600 "$WTC_HEADER_FILE"
 trap 'rm -f -- "$WTC_HEADER_FILE"; unset WTC_BEARER WTC_HEADER_FILE' EXIT
-printf 'Authorization: Bearer %s\n' "$WTC_BEARER" > "$WTC_HEADER_FILE"
+if [[ -n $WTC_BEARER ]]; then
+  printf 'Authorization: Bearer %s\n' "$WTC_BEARER" > "$WTC_HEADER_FILE"
+fi
 unset WTC_BEARER
 ```
 
