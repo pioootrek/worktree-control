@@ -22,7 +22,8 @@ const publicKeys = Object.freeze(["actor", "mode", "listener", "fullAuthority", 
 
 /**
  * Describes the caller's current authority as a hint. Works with zero roles.
- * Lists installation permissions and every visible project (decision M: any
+ * Lists installation permissions and a bounded, sorted prefix of the visible
+ * projects, flagged by `projectsTruncated` (decision M: any
  * active project role there, `admin`, or full authority) with the project
  * permissions actually held, which may be only `worker:execute` or
  * `secrets:*`. Never a cached authorization decision: every operation decides
