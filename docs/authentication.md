@@ -42,8 +42,11 @@ phase and drains asynchronously; the socket path writes after validating the rep
 Slow or late readers receive the complete JSON and exit 0, with no drain deadline.
 The process stays alive for pending writes; offline cleanup drains and closes the
 store, then releases the lock without waiting for stdout to flush.
-A closed or failing stdout exits 1 with `unavailable / output_unavailable` in
-that error envelope, without a stack trace; if stderr is also closed, exit 1 is silent. If a pipe closes
+A stdout whose reader has gone away, or a failing stdout stream, exits 1 with
+`unavailable / output_unavailable` in that error envelope, without a stack
+trace; if stderr is also closed, exit 1 is silent. Node replaces a standard
+descriptor that is already closed when the process starts with the null
+device, so that case succeeds and prints nothing. If a pipe closes
 mid-write, a consumer may receive truncated JSON on stdout; the command exits 1
 with the sanitized error on usable stderr.
 See the [error mapping](authorization-contract.md#mounted-cli-boundary-d1a-8b).
