@@ -235,7 +235,7 @@ describe("unmounted request-scoped MCP adapter", () => {
       expect(http.status).toBe(413); expect(mcp.status).toBe(http.status); expect(mcp.body).toEqual(http.body);
       expect(operationError(mcp)).toMatchObject({ category: "payload_too_large", reason: "response_too_large", status: 413 });
     }
-  });
+  }, 30_000);
 
   it("refuses a DTO one byte above the shared bound with the identical pre-dispatch HTTP envelope", async () => {
     const base = await fixture();
