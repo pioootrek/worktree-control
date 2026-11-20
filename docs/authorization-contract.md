@@ -132,6 +132,38 @@ or a proxy of one is `unauthenticated` with reason `unrecognized_context`.
 Test fixtures mint through the same boundaries. The context is frozen and its
 `toJSON` throws, so the strict release serializer rejects it.
 
+### Offline ownership (D1a-8a)
+
+Built, unmounted: `buildOfflineOperationsRuntime` binds the real
+`ControllerLock.held()` to offline mint and retained-context revalidation.
+It checks before mint admission, inside mint, and inside execution and final
+read-release admission. Loss refuses `unauthenticated` / `offline_lock_not_held`
+without returning a DTO. No listener or CLI command is added; `session describe`
+and its lock-first socket/offline choice remain D1a-8b.
+
+The record identity is its PID and random token plus filesystem device/inode.
+`held()` synchronously refuses missing, malformed, foreign-owned, aliased,
+non-regular, permission-changed (not exactly 0600, including special bits),
+replaced or released records. Before one read of at most 512 bytes, it checks
+the opened descriptor's type, identity, ownership, mode, link count and size;
+afterward it re-verifies the descriptor and path, including size, mtime and
+ctime against the pre-read descriptor. UID comparison is skipped when
+`process.getuid` is unavailable, as in the existing private-storage checks.
+It never throws, repairs, writes or releases; observed loss stays false for the
+lock object's lifetime, even if the original bytes or inode return. Any error,
+including transient open/read errors or a failed close, fails closed and is
+sticky. Changes after the final check, unobserved byte-identical rewrites on
+the same inode, a same-size rewrite during the check that the filesystem's
+timestamp granularity or the millisecond comparison cannot tell apart, and a
+hostile same-UID process remain outside this accidental-loss check.
+
+Offline callers dispose producers, then drain and close their store before
+releasing the controller lock. `closeOfflineStore` extracts the existing auth
+CLI sequence; its callers retain ownership if cleanup is unconfirmed. The new
+offline composition is import-guarded against production callers until D1a-8b.
+
+### Credential revalidation
+
 At mint, the boundary copies and deep-freezes the credential identity, actor,
 provider evidence and coordination session returned by the
 `CredentialVerifier`. This copy is the baseline. Each revalidation copies the

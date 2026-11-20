@@ -14,6 +14,7 @@ import { createAuthenticationAdministration, retainAuthenticationOwnership, type
 import { ProviderAdminError, providerAdminFailure } from "../server/modules/authentication";
 import { AdminRequestError } from "../server/admin-socket";
 import { isProviderCommandArgs, providerCommandFromArgs } from "./auth-provider-input";
+import { closeOfflineStore } from "../server/bootstrap/offline-store-ownership";
 
 export interface AuthCommandDependencies {
   write?: (line: string) => void;
@@ -70,7 +71,7 @@ export async function runAuthCommand(
     const { result } = executeAuthenticationCommand(authentication, request, AUTH_CLI_ACTOR);
     write(JSON.stringify(result, null, 2));
   } finally {
-    try { await administration?.dispose(); await store?.closeAfterDrain(); lock.release(); }
+    try { await administration?.dispose(); await closeOfflineStore(store, lock); }
     catch { retainAuthenticationOwnership({ store, administration, lock }); throw new ProviderAdminError("disposal_unconfirmed", undefined, false); }
   }
 }
@@ -107,8 +108,7 @@ async function runProviderCommand(args: string[], paths: AppPaths, dependencies:
   } catch (error) { effectFailure = providerAdminFailure(error); }
   try {
     await administration?.dispose();
-    await store.closeAfterDrain();
-    lock.release();
+    await closeOfflineStore(store, lock);
   } catch {
     retainAuthenticationOwnership({ store, administration, lock });
     const mutation = !["status", "human-list", "knowledge-access-list", "runtime-access-list"].includes(request.action)

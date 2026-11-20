@@ -56,6 +56,7 @@ const ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
 const APPROVED_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
   "packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts": "runs cookie listener proofs through production bootstrap and reuses the mounted boundary driver and exact conformance assertions",
   "src/server/bootstrap/operations-runtime.ts": "composes the runtime from the store owner's read ports and controller policies",
+  "src/server/bootstrap/offline-operations-runtime.ts": "binds the real offline owner lock; remains unmounted until the CLI step",
   "src/server/transports/operations-mcp.ts": "mounted request adapter uses public release and error policy and receives the runtime as a value",
   "src/server/transports/operations-http.ts": "uses the public classifier and error serializer to avoid duplicating wire and failure policy; receives the runtime as a value",
 });
@@ -301,11 +302,16 @@ describe("authorization contract stays unmounted", () => {
     }
   });
 
-  it("allows only controller start to import the composition", () => {
-    const approved = { "src/cli/index.ts": "controller start constructs the one shared runtime" };
+  it("allows only controller start and the unmounted offline composition to import the composition", () => {
+    const approved = { "src/cli/index.ts": "controller start constructs the one shared runtime",
+      "src/server/bootstrap/offline-operations-runtime.ts": "unmounted offline composition binds the real owner lock" };
     const guard = createGuard(repository, true);
     expect(guard.violations(ALLOWLIST, approved)).toEqual([]);
     expect(guard.invalidImporters(approved)).toEqual([]);
+  }, 30_000);
+
+  it("keeps the offline composition unmounted", () => {
+    expect(createGuard(repository, false, "src/server/bootstrap/offline-operations-runtime.ts").violations(ALLOWLIST)).toEqual([]);
   }, 30_000);
 
   it("text-scans allowlisted production files for computed composition imports", () => {
