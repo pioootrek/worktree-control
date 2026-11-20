@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, lstatSync, rmdirSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, lstatSync, rmdirSync } from "node:fs";
 import { privateDirectory, privateFile } from "./private-storage";
 import { dirname } from "node:path";
 
@@ -10,6 +10,8 @@ interface LockRecord {
 }
 
 export interface ControllerLock {
+  /** Read-only, sticky ownership check; detects accidental loss, not a hostile same-UID process. */
+  held(): boolean;
   release(): void;
 }
 
@@ -46,8 +48,10 @@ function acquireLock(path: string): ControllerLock {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const descriptor = openSync(path, "wx", 0o600);
+      let acquired: ReturnType<typeof fstatSync>;
       try {
         writeFileSync(descriptor, `${JSON.stringify(record)}\n`, "utf8");
+        acquired = fstatSync(descriptor);
       } catch (error) {
         unlinkSync(path);
         throw error;
@@ -55,7 +59,29 @@ function acquireLock(path: string): ControllerLock {
         closeSync(descriptor);
       }
       let released = false;
+      let lost = false;
       return {
+        held() {
+          if (released || lost) return false;
+          let fd: number | undefined;
+          try {
+            // Use the acquisition reader's safety rules without its permission repair.
+            privateFile(path, false, true);
+            fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+            const opened = fstatSync(fd);
+            const current = parseLock(readFileSync(fd, "utf8"));
+            privateFile(path, false, true);
+            const named = lstatSync(path);
+            lost = ![opened, named].every(stat => stat.isFile() && stat.nlink === 1
+              && (!process.getuid || stat.uid === process.getuid()) && (stat.mode & 0o777) === 0o600
+              && stat.dev === acquired.dev && stat.ino === acquired.ino)
+              || current?.pid !== record.pid || current?.token !== record.token;
+          } catch { lost = true; }
+          finally {
+            if (fd !== undefined) { try { closeSync(fd); } catch { lost = true; } }
+          }
+          return !lost;
+        },
         release() {
           if (released) return;
           released = true;

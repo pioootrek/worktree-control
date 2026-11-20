@@ -132,6 +132,31 @@ or a proxy of one is `unauthenticated` with reason `unrecognized_context`.
 Test fixtures mint through the same boundaries. The context is frozen and its
 `toJSON` throws, so the strict release serializer rejects it.
 
+### Offline ownership (D1a-8a)
+
+Built, unmounted: `buildOfflineOperationsRuntime` binds the real
+`ControllerLock.held()` to offline mint and retained-context revalidation.
+It checks before mint admission, inside mint, and inside execution and final
+read-release admission. Loss refuses `unauthenticated` / `offline_lock_not_held`
+without returning a DTO. No listener or CLI command is added; `session describe`
+and its lock-first socket/offline choice remain D1a-8b.
+
+The record identity is its PID and random token plus filesystem device/inode.
+`held()` synchronously refuses missing, malformed, foreign-owned, aliased,
+non-regular, permission-changed (not 0600), replaced or released records. It
+never throws, repairs, writes or releases. Once it observes loss it stays
+false, even if the original bytes or inode return. An unobserved rewrite that
+restores the same bytes on the same inode is indistinguishable from continued
+ownership. This detects accidental ownership loss, not a hostile same-UID
+process.
+
+Offline callers dispose producers, then drain and close their store before
+releasing the controller lock. `closeOfflineStore` extracts the existing auth
+CLI sequence; its callers retain ownership if cleanup is unconfirmed. The new
+offline composition is import-guarded against production callers until D1a-8b.
+
+### Credential revalidation
+
 At mint, the boundary copies and deep-freezes the credential identity, actor,
 provider evidence and coordination session returned by the
 `CredentialVerifier`. This copy is the baseline. Each revalidation copies the

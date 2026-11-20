@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
-last_reviewed: "2026-11-19"
+last_reviewed: "2026-11-20"
 source_of_truth: "accepted disposition of every current operation under the unreleased authorization contract; Knowledge task 040062b4, discussion 8a2683b8, replies e06943b7, 42019833, ce8aa214 and 29cf8fa5"
 status: "active"
 ---
@@ -1664,6 +1664,16 @@ remains.
   change or fetch it; no account sees it.
 
 ## 10. Proposed cut of slice 4
+
+D1a-8a builds the real lock's sticky, read-only `held()` and an unmounted
+offline composition that binds it at mint, execution and admitted read-release.
+Ownership loss refuses `unauthenticated` / `offline_lock_not_held`. The shared
+auth CLI cleanup sequence drains and closes the store before releasing the
+lock, retaining ownership on unconfirmed cleanup. See the
+[offline ownership rule](authorization-contract.md#offline-ownership-d1a-8a).
+No CLI command, listener, schema step or usage writer is added. D1a-8b retains
+`session describe`, lock-first socket selection and the existing restore-handoff
+check before ordinary store construction.
 
 D1a-7b mounts the D1a-7a request-scoped MCP adapter for `/mcp/operations`.
 Each POST authenticates through `mint("mcp", ...)` and owns a fresh stateless SDK
