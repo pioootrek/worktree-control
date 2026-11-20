@@ -1680,8 +1680,11 @@ adapter owns 32 in-flight requests independently of legacy logical sessions.
 The MCP boundary never promotes either legacy secret header name, even when it
 carries a valid installation or agent token; bearer authority comes only from
 Authorization. The shared acceptance table chooses the refusal.
-MCP close and authentication-policy close drain its request owners before
-storage/lock release; policy close replaces the drained owner unless stopping.
+MCP close and authentication-policy close drain request owners before storage/lock
+release. Policy close replaces the drained owner unless stopping, even when legacy
+cleanup fails; that failure propagates and a later policy attempt can retry.
+Shutdown closes the legacy runtime before the Node listener, leaves the listener
+open on legacy failure, and shares one attempt and result across repeated calls.
 The linked contract contains the neighbour checklist, credential matrix and
 installed-artifact evidence for every supported mode. D1c retains session binding
 and cross-request cancellation. This mount changes no schema or legacy endpoint and

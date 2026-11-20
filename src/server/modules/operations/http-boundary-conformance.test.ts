@@ -1605,9 +1605,19 @@ describe("MCP listener boundary conformance", () => {
 
   it.each(["open", "token", "better-auth", "legacy"])("%s mixed and duplicate raw credentials, cookie preflight and no provider/budget work", async mode => {
     const f = await mcpFixture(mode), mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run"), budget = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire");
-    for (const headers of [["Authorization", `Bearer ${f.agent}`, "Authorization", `Bearer ${f.agent}`], ["Authorization", `Bearer ${f.agent}`, "X-Worktree-Control-Token", f.installation]]) {
+    const carriers = [
+      { headers: ["Authorization", `Bearer ${f.agent}`, "Authorization", `Bearer ${f.agent}`], reason: "mixed_credentials" },
+      ...["X-Worktree-Control-Token", "X-Worktree-Switcher-Token", "x-WoRkTrEe-CoNtRoL-tOkEn", "x-WoRkTrEe-SwItChEr-ToKeN"].flatMap(name => [
+        { headers: [name, ""], reason: "legacy_credential" },
+        { headers: [name, f.installation, name, f.agent], reason: "mixed_credentials" },
+        { headers: [name, f.installation, "Authorization", `Bearer ${f.agent}`], reason: "mixed_credentials" },
+        { headers: ["Authorization", `Bearer ${f.agent}`, name, f.installation], reason: "mixed_credentials" },
+      ]),
+      { headers: ["X-Worktree-Control-Token", f.installation, "X-Worktree-Switcher-Token", f.agent], reason: "mixed_credentials" },
+    ];
+    for (const { headers, reason } of carriers) {
       const reply = await f.driver.send({ body: JSON.stringify(mcpCall), headers: ["Host", "localhost", "Content-Length", String(Buffer.byteLength(JSON.stringify(mcpCall))), "Content-Type", "application/json", "Accept", "application/json, text/event-stream", ...headers] }).reply;
-      expect(reply.body).toEqual(refusal(mode === "legacy" ? "unknown_mode" : "mixed_credentials"));
+      expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal(mode === "legacy" ? "unknown_mode" : reason));
     }
     mint.mockClear(); admission.mockClear();
     let reads = 0; f.mcp.server.prependListener("request", req => req.on("newListener", name => { if (name === "data") reads++; }));
@@ -1765,6 +1775,125 @@ describe("MCP listener boundary conformance", () => {
     await f.mcp.close(); await f.mcp.close();
   }, 20_000);
 
+  it("policy close recovers after drain independently of legacy failure and retries", async () => {
+    const f = await mcpFixture(), entered = pause(), release = pause(), cancelled = pause(), legacyEntered = pause(), legacyRelease = pause();
+    const { McpRuntime } = await import("@/server/transports/mcp/mcp-runtime");
+    expect((await f.driver.send({ path: "/mcp", body: JSON.stringify(mcpInitialize) }).reply).status).toBe(200);
+    const failure = new Error("synthetic legacy policy failure");
+    const legacyClose = vi.spyOn(McpRuntime.prototype, "close").mockImplementationOnce(async reason => {
+      expect(reason).toBe("authentication-policy"); legacyEntered.done(); await legacyRelease.promise; throw failure;
+    });
+    f.hooks.beforeMint = signal => signal?.addEventListener("abort", cancelled.done, { once: true });
+    f.hooks.afterMint = async () => { entered.done(); await release.promise; };
+    const pending = f.driver.send(); await entered.promise;
+    const policy = f.mcp.closeSessions(), rejected = expect(policy).rejects.toBe(failure);
+    expect(f.mcp.closeSessions()).toBe(policy);
+    await Promise.all([cancelled.promise, legacyEntered.promise]);
+    try {
+      const during = await f.driver.send().reply;
+      expect(during.status).toBe(503); expect(during.headers["retry-after"]).toBe("1");
+      expect(during.body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
+    } finally { release.done(); }
+    try {
+      expect((await pending.reply).body.error.reason).toBe("request_cancelled");
+      // Policy close is still waiting for legacy, but the drained owner can be replaced.
+      await expect.poll(async () => (await f.driver.send().reply).body.result?.structuredContent.listener).toBe("mcp");
+      expect(f.mcp.closeSessions()).toBe(policy); expect(legacyClose).toHaveBeenCalledTimes(1);
+    } finally { legacyRelease.done(); }
+    await rejected;
+    expect((await f.driver.send().reply).body.result.structuredContent.listener).toBe("mcp");
+    await expect(f.mcp.closeSessions()).resolves.toBeUndefined();
+    expect(legacyClose.mock.calls).toEqual([["authentication-policy"], ["authentication-policy"]]);
+    expect((await f.driver.send().reply).body.result.structuredContent.listener).toBe("mcp");
+  });
+
+  it("policy close joins drain when legacy fails first before allowing a retry", async () => {
+    const f = await mcpFixture(), entered = pause(), release = pause(), cancelled = pause();
+    const { McpRuntime } = await import("@/server/transports/mcp/mcp-runtime");
+    expect((await f.driver.send({ path: "/mcp", body: JSON.stringify(mcpInitialize) }).reply).status).toBe(200);
+    const failure = new Error("synthetic early policy failure"), legacyClose = vi.spyOn(McpRuntime.prototype, "close").mockRejectedValueOnce(failure);
+    f.hooks.beforeMint = signal => signal?.addEventListener("abort", cancelled.done, { once: true });
+    f.hooks.afterMint = async () => { entered.done(); await release.promise; };
+    const pending = f.driver.send(); await entered.promise;
+    const policy = f.mcp.closeSessions(), rejected = expect(policy).rejects.toBe(failure); let settled = false;
+    void policy.then(() => { settled = true; }, () => { settled = true; });
+    await cancelled.promise;
+    try {
+      await new Promise<void>(r => setImmediate(r)); expect(settled).toBe(false);
+      expect(f.mcp.closeSessions()).toBe(policy); expect(legacyClose).toHaveBeenCalledTimes(1);
+      expect((await f.driver.send().reply).body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
+    } finally { release.done(); }
+    await pending.reply; await rejected;
+    expect((await f.driver.send().reply).body.result.structuredContent.listener).toBe("mcp");
+    await f.mcp.closeSessions(); expect(legacyClose).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["runtime construction", "runtime close"])("legacy %s failure propagates without closing the listener; policy remains retryable", async fault => {
+    const f = await fixture(), legacyModule = await import("@/server/transports/mcp/mcp-runtime"), failure = new Error(`synthetic ${fault} failure`);
+    if (fault === "runtime construction") {
+      vi.spyOn(legacyModule, "McpRuntime").mockImplementationOnce(class extends legacyModule.McpRuntime {
+        constructor(...args: ConstructorParameters<typeof legacyModule.McpRuntime>) { super(...args); throw failure; }
+      });
+    }
+    const mcp = createMcpControllerServer({ service: { admission: f.store.admission, remoteVerificationEnabled: () => false } as unknown as ControlService,
+      port: 0, accessToken: "synthetic", operations: f.runtime });
+    await new Promise<void>(r => mcp.server.listen(0, "127.0.0.1", r)); f.state.mcpOpen = true;
+    // A failed legacy shutdown deliberately leaves the listener open. Dispose
+    // this synthetic listener explicitly; the production closer must not do so.
+    cleanups.push(async () => { f.state.mcpOpen = false; await new Promise<void>((resolve, reject) => mcp.server.close(error => error ? reject(error) : resolve())); });
+    const driver = createBoundaryDriver({ kind: "mcp", server: mcp.server, close: mcp.close, legacyPath: "/mcp", acceptedCredentials: [] });
+    expect((await driver.send({ path: "/mcp", body: JSON.stringify(mcpInitialize) }).reply).status).toBe(fault === "runtime construction" ? 500 : 200);
+    const legacyClose = fault === "runtime close" ? vi.spyOn(legacyModule.McpRuntime.prototype, "close").mockRejectedValue(failure) : undefined;
+    const firstPolicy = mcp.closeSessions(); await expect(firstPolicy).rejects.toBe(failure);
+    expect((await driver.send().reply).body.result.structuredContent.listener).toBe("mcp");
+    const secondPolicy = mcp.closeSessions(); expect(secondPolicy).not.toBe(firstPolicy); await expect(secondPolicy).rejects.toBe(failure);
+    expect((await driver.send().reply).body.result.structuredContent.listener).toBe("mcp");
+    const listenerClose = vi.spyOn(mcp.server, "close");
+    const shutdown = mcp.close(); expect(mcp.close()).toBe(shutdown); await expect(shutdown).rejects.toBe(failure);
+    expect(listenerClose).not.toHaveBeenCalled(); expect(mcp.server.listening).toBe(true);
+    expect((await driver.send().reply).body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
+    expect(legacyClose?.mock.calls).toEqual(fault === "runtime close" ? [["authentication-policy"], ["authentication-policy"], []] : undefined);
+  });
+
+  it("shutdown closes legacy runtime before listener and shares one completion", async () => {
+    const f = await mcpFixture(), entered = pause(), release = pause(), { McpRuntime } = await import("@/server/transports/mcp/mcp-runtime");
+    expect((await f.driver.send({ path: "/mcp", body: JSON.stringify(mcpInitialize) }).reply).status).toBe(200);
+    const original = McpRuntime.prototype.close, listenerClose = vi.spyOn(f.mcp.server, "close");
+    const legacyClose = vi.spyOn(McpRuntime.prototype, "close").mockImplementationOnce(async function (this: InstanceType<typeof McpRuntime>, reason) {
+      expect(reason).toBeUndefined(); expect(f.mcp.server.listening).toBe(true); entered.done(); await release.promise;
+      expect(f.mcp.server.listening).toBe(true); await original.call(this, reason);
+    });
+    const shutdown = f.mcp.close(); expect(f.mcp.close()).toBe(shutdown); await entered.promise;
+    try {
+      expect(listenerClose).not.toHaveBeenCalled();
+      expect((await f.driver.send().reply).body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
+    } finally { release.done(); }
+    await shutdown; expect(f.mcp.server.listening).toBe(false); expect(listenerClose).toHaveBeenCalledOnce();
+    await f.mcp.close(); expect(legacyClose).toHaveBeenCalledOnce();
+    await expect(f.mcp.closeSessions()).resolves.toBeUndefined();
+  });
+
+  it.each(["stopOperations", "close"])("%s during policy close prevents owner replacement", async action => {
+    const f = await mcpFixture(), policyEntered = pause(), policyRelease = pause(), shutdownRelease = pause(), { McpRuntime } = await import("@/server/transports/mcp/mcp-runtime");
+    expect((await f.driver.send({ path: "/mcp", body: JSON.stringify(mcpInitialize) }).reply).status).toBe(200);
+    const original = McpRuntime.prototype.close;
+    vi.spyOn(McpRuntime.prototype, "close").mockImplementation(async function (this: InstanceType<typeof McpRuntime>, reason) {
+      if (reason === "authentication-policy") { policyEntered.done(); await policyRelease.promise; }
+      else await shutdownRelease.promise;
+      await original.call(this, reason);
+    });
+    const policy = f.mcp.closeSessions(); await policyEntered.promise;
+    const shutdown = action === "close" ? f.mcp.close() : (f.mcp.stopOperations(), Promise.resolve());
+    try {
+      policyRelease.done(); await policy;
+      expect(f.mcp.server.listening).toBe(true);
+      expect((await f.driver.send().reply).body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
+    } finally { policyRelease.done(); shutdownRelease.done(); }
+    await shutdown;
+    await expect(f.mcp.closeSessions()).resolves.toBeUndefined();
+    if (action === "stopOperations") expect((await f.driver.send().reply).body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
+  });
+
   it("concurrent distinct principals with identical IDs and forged session headers stay isolated", async () => {
     const f = await mcpFixture("better-auth"), other = token("wts");
     await f.store.admission.run(() => {
@@ -1803,6 +1932,9 @@ describe("MCP listener boundary conformance", () => {
     await new Promise<void>(r => noMount.server.listen(0, "127.0.0.1", r)); cleanups.push(noMount.close);
     const driver = createBoundaryDriver({ kind: "mcp", server: noMount.server, legacyPath: "/mcp", close: noMount.close, acceptedCredentials: [] });
     expect((await driver.send().reply).body.error.message).toBe("MCP endpoint not found.");
+    expect(() => noMount.mountOperations(f.runtime)).toThrow("mcp_operations_already_configured");
+    await noMount.close(); await expect(noMount.closeSessions()).resolves.toBeUndefined();
+    expect(() => noMount.mountOperations(f.runtime)).toThrow("mcp_operations_already_configured");
   });
 });
 

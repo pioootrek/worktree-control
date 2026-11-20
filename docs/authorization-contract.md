@@ -698,9 +698,13 @@ and pending provider work are inapplicable on MCP; the same conformance suite
 retains their API proofs.
 
 `stopOperations` fences/aborts synchronously at startup failure, admin-socket
-failure and normal shutdown. Listener close joins request work, SDK disposal and
-Node completion; policy close stops and drains the current owner before replacing
-it. During policy drain requests receive `listener_capacity`; shutdown prevents
+failure and normal shutdown. `close()` closes the legacy runtime before starting
+Node listener close; legacy failure propagates without closing the listener.
+Repeated calls share one shutdown attempt and result, joining request work, SDK
+disposal and Node completion. Policy close replaces its stopped owner only after
+that owner's drain, independently of legacy cleanup. Legacy failure still reaches
+the caller after both sides settle and clears the policy attempt for retry.
+During policy drain requests receive `listener_capacity`; shutdown prevents
 replacement. SQLite and its lock remain owned until listener cleanup succeeds.
 A never-settling request retains ownership rather than declaring success.
 
@@ -740,8 +744,8 @@ policy or shared owner. Test names identify executable assertions in
 | Tool/resource work and cleanup (`transports/mcp/mcp-runtime.ts:201`, `:205`) | Adapter owns work through SDK disposal and Node finish/close | `disconnect retains all 32 slots and cookies bypass saturation without work`; `MCP body/DTO ceilings and Node completion retain the production owner`; `negative control: early release admits request 33 while work remains pending` |
 | Response size (no legacy transport ceiling) | 256 KiB DTO and bounded SDK envelope before Node commit | `MCP body/DTO ceilings and Node completion retain the production owner`; adapter `bounds SDK Responses that bypass send while buffering, including across chunks` |
 | Release after async work (legacy reauth at `mcp-http-server.ts:170`) | Full witness recomputed after SDK buffering; no stale success | `post-SDK-buffer release rechecks %s`; `MCP full witness gates post-buffer release for $method`; `negative control: premature SDK success fails exactly with stale result true versus false` |
-| Policy close (`mcp-http-server.ts:201`) | Stops/drains request owner then replaces it; no replacement during shutdown | `%s close joins pending owners before SQLite/lock release; repeated cleanup` (`policy`) |
-| Listener close/keepalive drain (`mcp-http-server.ts:217`; `http-server-lifecycle.ts:4`) | Stops synchronously; joins adapter and Node closer; never releases storage early | `%s close joins pending owners before SQLite/lock release; repeated cleanup` (`shutdown`, `policy then shutdown`); `listener absent refuses mint and no namespace is mounted; late mounting is forbidden` |
+| Policy close (`mcp-http-server.ts:201`) | Replaces only after owner drain, even on legacy failure; failure propagates and permits retry; stopping prevents replacement | `policy close recovers after drain independently of legacy failure and retries`; `policy close joins drain when legacy fails first before allowing a retry`; `legacy %s failure propagates without closing the listener; policy remains retryable`; `%s during policy close prevents owner replacement` |
+| Listener close/keepalive drain (`mcp-http-server.ts:223`; `http-server-lifecycle.ts:4`) | Stops synchronously; closes legacy before Node listener; shares one shutdown result and joins work; legacy failure leaves listener open | `shutdown closes legacy runtime before listener and shares one completion`; `legacy %s failure propagates without closing the listener; policy remains retryable`; `%s close joins pending owners before SQLite/lock release; repeated cleanup` (`shutdown`, `policy then shutdown`); `listener absent refuses mint and no namespace is mounted; late mounting is forbidden` |
 | SQLite/lock (`bootstrap/controller-shutdown.ts:58`) | Existing owner releases only after confirmed listeners | `%s close joins pending owners before SQLite/lock release; repeated cleanup` (`shutdown`, `policy then shutdown`) |
 | Installed listener/bootstrap | SDK from installed package, synthetic paths only, all supported modes | `scripts/package-rbac.mjs` `operationMcp` via `operationApi`; `scripts/package-smoke.mjs` `operations-installed-mcp-token` |
 

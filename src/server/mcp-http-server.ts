@@ -204,22 +204,35 @@ export function createMcpControllerServer(options: {
       // work settles; no replacement may let capacity escape the drain.
       const owner = operations;
       owner?.stop();
-      policyClose = Promise.all([
-        owner?.drain(),
-        runtimePromise?.then(runtime => runtime.close("authentication-policy")),
-      ]).then(() => {
+      const drained = (owner?.drain() ?? Promise.resolve()).then(() => {
         if (!stopped && operationsRuntime) operations = createOperationsMcp({ runtime: operationsRuntime });
       });
+      // Legacy failure must not strand the request owner. Join both sides before
+      // permitting another policy attempt, even when legacy cleanup fails first.
+      policyClose = Promise.allSettled([
+        drained,
+        runtimePromise?.then(runtime => runtime.close("authentication-policy")),
+      ]).then(results => {
+        for (const result of results) if (result.status === "rejected") throw result.reason;
+      });
       const current = policyClose;
-      void current.then(() => { if (policyClose === current) policyClose = undefined; }, () => undefined);
+      const clear = () => { if (policyClose === current) policyClose = undefined; };
+      void current.then(clear, clear);
       return current;
     },
     close() {
       stopOperations();
-      return completion ??= Promise.all([
-        closeServer(), operations?.drain(), policyClose,
-        runtimePromise?.then(runtime => runtime.close()),
-      ]).then(() => undefined);
+      // One shutdown attempt/result for all callers. Preserve legacy ordering:
+      // a failed runtime close propagates without starting listener close.
+      return completion ??= Promise.allSettled([
+        (async () => {
+          if (runtimePromise) await (await runtimePromise).close();
+          await closeServer();
+        })(),
+        operations?.drain(), policyClose,
+      ]).then(results => {
+        for (const result of results) if (result.status === "rejected") throw result.reason;
+      });
     },
   };
 }
