@@ -153,7 +153,9 @@ It never throws, repairs, writes or releases; observed loss stays false for the
 lock object's lifetime, even if the original bytes or inode return. Any error,
 including transient open/read errors or a failed close, fails closed and is
 sticky. Changes after the final check, unobserved byte-identical rewrites on
-the same inode, and a hostile same-UID process remain outside this accidental-loss check.
+the same inode, a same-size rewrite during the check that the filesystem's
+timestamp granularity or the millisecond comparison cannot tell apart, and a
+hostile same-UID process remain outside this accidental-loss check.
 
 Offline callers dispose producers, then drain and close their store before
 releasing the controller lock. `closeOfflineStore` extracts the existing auth
