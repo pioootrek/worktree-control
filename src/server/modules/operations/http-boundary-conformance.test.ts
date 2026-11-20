@@ -1836,7 +1836,7 @@ describe("MCP listener boundary conformance", () => {
       });
     }
     const mcp = createMcpControllerServer({ service: { admission: f.store.admission, remoteVerificationEnabled: () => false } as unknown as ControlService,
-      port: 0, accessToken: "synthetic", operations: f.runtime });
+      port: 0, accessToken: "synthetic", authentication: f.oldAuthentication, operations: f.runtime });
     await new Promise<void>(r => mcp.server.listen(0, "127.0.0.1", r)); f.state.mcpOpen = true;
     // A failed legacy shutdown deliberately leaves the listener open. Dispose
     // this synthetic listener explicitly; the production closer must not do so.
@@ -1853,6 +1853,7 @@ describe("MCP listener boundary conformance", () => {
     expect(listenerClose).not.toHaveBeenCalled(); expect(mcp.server.listening).toBe(true);
     expect((await driver.send().reply).body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
     expect(legacyClose?.mock.calls).toEqual(fault === "runtime close" ? [["authentication-policy"], ["authentication-policy"], []] : undefined);
+    if (legacyClose) { legacyClose.mockRestore(); await mcp.closeSessions(); }
   });
 
   it("shutdown closes legacy runtime before listener and shares one completion", async () => {
