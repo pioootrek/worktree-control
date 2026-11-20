@@ -35,7 +35,7 @@ function fixture(mode: AuthenticationMode = "open") {
   const releaseOptions = (commit = vi.fn()) => ({ eligible: runtime.eligible, connected: () => true, deadline: 2000, commit });
   return { root, paths, lock, store, runtime, build, replace, releaseOptions };
 }
-const error = { category: "unauthenticated", status: 401, reason: "offline_lock_not_held", retry: "none", effect: null };
+const error = { category: "unauthenticated", status: 401, reason: "offline_lock_not_held", retry: "reauthenticate", effect: null };
 const refused = { ok: false, error };
 
 /** Pause before the next real admitted callback; no SQL or admission ticket is held by the wait. */
