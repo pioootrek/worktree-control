@@ -2239,6 +2239,11 @@ it("mounted responses and diagnostic sinks never disclose stored session or cred
   const cliRefused = await cliPending; responses.push(cliRefused); cliHeld.restore(); f.state.maintenance = false;
   expect(cliRefused.code).toBe(1); expect(cliRefused.stdout).toBe(""); expect(JSON.parse(cliRefused.stderr)).toEqual(refusal("listener_closed"));
   const drivers = [f.drivers.api, f.drivers.unix, worker.driver, mcp.driver];
+  // Include headers from SDK initialize/notification/list/call and SDK errors,
+  // whose client return values expose only protocol content.
+  for (const driver of drivers) driver.server.prependListener("request", (_request, response) => {
+    response.once("finish", () => { responses.push({ headers: response.getHeaders() }); });
+  });
   const remember = (reply: Reply) => { responses.push(reply); return reply; };
   // The public wts_<uuid>_<secret> prefix embeds precisely the stored ID.
   expect(f.agent.slice(4, 40)).toBe(f.credentialId);
@@ -2259,6 +2264,10 @@ it("mounted responses and diagnostic sinks never disclose stored session or cred
   expect(cookieRelease.status).toBe(401); expect(cookieRelease.body).toEqual(refusal("listener_closed"));
   const sdk = await mcp.client(false, f.agent);
   responses.push(await sdk.listTools(), await sdk.callTool({ name: "session_describe", arguments: {} }));
+  for (const message of [mcpInitialize, mcpList]) {
+    const reply = remember(await mcp.driver.send({ headers: mcpHeaders(f.agent), body: JSON.stringify(message) }).reply);
+    expect(reply.status).toBe(200); expect(reply.body).toHaveProperty("result");
+  }
   const rpcError = remember(await mcp.driver.send({ headers: mcpHeaders(f.agent), body: JSON.stringify({ ...mcpCall, method: "unknown_method" }) }).reply);
   expect(rpcError.body.error.code).toBe(-32601);
   await f.store.admission.run(() => f.db.prepare("UPDATE principal_credentials SET status='revoked' WHERE id=?").run(f.credentialId));

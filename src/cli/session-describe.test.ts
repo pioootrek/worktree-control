@@ -166,7 +166,7 @@ describe("session describe CLI mount", () => {
         cwd: repository, env: { PATH: process.env.PATH, HOME: f.root, NODE_ENV: "test" }, stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "", stderr = "";
-      const timer = setTimeout(() => { child.kill("SIGKILL"); });
+      const timer = setTimeout(() => { child.kill("SIGKILL"); }, 20_000);
       child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
       child.once("error", reject); child.once("close", code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
     });
@@ -568,7 +568,7 @@ describe("session describe real-process output", () => {
     });
     let stderr = "", stdout = "", forced = false;
     child.stderr!.on("data", chunk => { stderr += chunk; });
-    const timer = setTimeout(() => { forced = true; child.kill("SIGKILL"); });
+    const timer = setTimeout(() => { forced = true; child.kill("SIGKILL"); }, 20_000);
     const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal }));
     });
