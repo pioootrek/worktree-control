@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
-last_reviewed: "2026-11-19"
+last_reviewed: "2026-11-20"
 source_of_truth: "authorization contract with session.describe mounted on API, unix and worker for the unreleased breaking auth unification; Knowledge task 040062b4"
 status: "active"
 ---
@@ -525,12 +525,14 @@ binding in `open` mode unless the operator explicitly acknowledges the disclosed
 authority and data exposure; settle this before the release. D1a-6 does not
 implement that restriction.
 
-### MCP request adapter (built and unmounted, D1a-7a)
+### Mounted MCP boundary (D1a-7b)
 
 `createOperationsMcp` handles the exact raw `/mcp/operations` target through
-`operations-path.ts`. No production listener imports it in this step. D1a-7b
-will mount it before the separate MCP listener's legacy checks, reserve the
-namespace on API and unix, and extend listener and installed-artifact evidence.
+`operations-path.ts`. The separate loopback MCP listener mounts it before legacy
+routing and authentication. API, unix and worker reserve `/mcp/operations` as
+terminal `operation_not_found` for every method. The MCP port likewise refuses
+`/api/operations/...`: the registry has `session.describe` on MCP, but only the
+explicit `session_describe` descriptor invokes it there.
 The legacy `/mcp` endpoint and its sessions are unchanged.
 
 Each POST owns a fresh SDK `Server` and
@@ -543,7 +545,8 @@ selects the verifier. Supplied session and resumption headers are not forwarded
 to the SDK, confer no authority and bind no session. Cross-request cancellation
 and session binding belong to D1c. There is no usage writer.
 
-The fixed provider-cookie refusal precedes path, method, capacity, body and
+The listener first applies its shared legacy Origin function to claimed targets.
+The fixed provider-cookie refusal then precedes path, method, capacity, body and
 admission checks, matching the HTTP adapter's preflight. Other requests check
 the exact path and POST method, current eligibility, Origin, raw singleton
 headers and JSON content type, then read
@@ -637,13 +640,107 @@ The in-process suite uses real HTTP, SDK clients, composition and synthetic
 SQLite fixtures. It covers the mode/method matrix, concurrent identical IDs,
 forged headers, aliases, strict bodies, limits, post-buffer release changes,
 admission refusal, disconnect/deadline ownership and exact negative controls.
-The import guard rejects literal imports of the new adapter anywhere in its
-source inventory, including test files reached by production imports. It also
-rejects non-literal loaders outside the allowlist and text-scans allowlisted
-production files for the adapter name in computed imports. It does not resolve
-arbitrarily computed names in allowlisted files. Its one new module-consumer
-exemption permits the adapter to use the public error,
-release and contract APIs; it grants no production mount.
+The import guard permits exactly `src/server/mcp-http-server.ts` to import the
+adapter in production: it owns the mount, shared Origin policy and close/drain.
+It follows indirect production imports, retains computed-import checks and
+rejects unapproved or stale importer entries.
+
+The MCP boundary uses the same credential matrix as the worker boundary above,
+with `listener=mcp`: open accepts only no credential; token only an installation
+token; better-auth only a current agent token. Stored owner/worker tokens are
+refused as `credential_in_open_mode`, `credential_not_accepted_here` and
+`invalid_credential`, respectively. Missing credentials in token/account mode
+are `credential_required`; installation tokens in account mode are
+`installation_token_in_account_mode`. Legacy secret headers are `legacy_credential`,
+unrecognized bearers `unrecognized_credential`, mixed/duplicate bearers
+`mixed_credentials`. A provider cookie is always `provider_cookie_not_supported`
+after the shared Origin check, without body, budget, provider or database work.
+Legacy mode is unsupported (`unknown_mode`). Session IDs alone never authenticate.
+
+The legacy endpoint differs: open ignores presented credentials; token accepts
+installation and scoped identity credentials (including stored owner/worker
+kinds); legacy accepts its MCP secret and scoped credentials. Better-auth keeps
+its existing agent-only path. It requires a session ID after initialize and binds
+that ID to the original authentication key. Operations are request-scoped.
+
+Both surfaces use one legacy Origin function. Neither imposes Host or peer
+validation, DNS-rebinding checks or a canonical Host requirement; production
+bootstrap binds the MCP listener to 127.0.0.1. The adapter additionally requires
+an absent Origin or the canonical HTTP loopback Origin at the actual socket
+port. The legacy parser accepts a URL with a path, userinfo, query or fragment,
+an empty Origin, uppercase or normalized host spellings and other URL parser
+normalizations; the adapter requires exact equality with `URL.origin` and
+refuses these noncanonical representations. Both require HTTP and a loopback
+hostname and reject foreign origins or ports. At port 80 the adapter accepts an
+omitted port as effective 80, whereas the legacy parser requires an explicit
+nonempty parsed port (URL normalizes explicit :80 away); the conjunction refuses.
+Duplicate singleton Host/Origin headers are additionally rejected by operations.
+Legacy authentication precedes its Origin check; the new shared Origin check
+precedes credential handling and returns a structured public refusal.
+
+The legacy server has no configured connection or accepted-request limit. Node
+owns its unchanged defaults: 300000 ms request timeout, 60000 ms headers timeout,
+zero maxRequestsPerSocket (unlimited) and no maxConnections. Legacy logical
+sessions retain their governor (64 globally, 32 per credential by default,
+including initializing/draining sessions), idle/absolute/reconnect deadlines,
+claim renewal and cooperative drain. Operations allocate no logical sessions,
+claims, SSE streams or global cancellation map. Their sole aggregate owner is
+the adapter's 32-request set, not the session governor or browser budget.
+Saturation tests retain 32 pending operations across disconnect and deadline,
+refuse request 33 and still admit the legacy endpoint. Cookie completion reserve
+and pending provider work are inapplicable on MCP; the same conformance suite
+retains their API proofs.
+
+`stopOperations` fences/aborts synchronously at startup failure, admin-socket
+failure and normal shutdown. Listener close joins request work, SDK disposal and
+Node completion; policy close stops and drains the current owner before replacing
+it. During policy drain requests receive `listener_capacity`; shutdown prevents
+replacement. SQLite and its lock remain owned until listener cleanup succeeds.
+A never-settling request retains ownership rather than declaring success.
+
+Anonymous callers in open mode can now obtain the operation description and
+`session_describe` tool, including installation authority, mode, listener,
+permissions and the bounded project-ID prefix described above. Legacy open mode
+already exposed broader controller data; the additional DTO is new. In token
+and account modes an unauthenticated or wrongly authenticated caller receives
+only public boundary/protocol refusals, including credential classification,
+mode-specific reasons and pre-authentication Origin/path/method/content-type
+refusals. It receives no successful initialize/list/call payload or project data.
+A valid agent with no roles can describe its own empty authority. The legacy
+secret in legacy mode can still use `/mcp`, but learns only `unknown_mode` on
+the exact operations route. These observations do not authorize live exposure.
+
+#### MCP neighbour checklist
+
+Paths below are relative to `src/server/`; line references identify the legacy
+policy or shared owner. Test names identify executable assertions in
+`modules/operations/http-boundary-conformance.test.ts` unless qualified.
+
+| Legacy check, limit or owner (source:line) | Operations treatment | Named assertion or deferral |
+| --- | --- | --- |
+| Exact route, terminal methods (`mcp-http-server.ts:147`, `:164`) | Raw shared parser claims first; API namespace refused; POST only; batches refused | `raw aliases, reserved HTTP namespace, methods and batches are terminal` |
+| Legacy mode/secret, token and identity resolver (`mcp-http-server.ts:38`, `:148`) | Acceptance table only; no old authenticator or usage writer | `stored matrix in %s on every method; unchanged legacy authentication` |
+| Provider cookie (`mcp-http-server.ts:153`) | Fixed refusal before work; no provider/budget/reserve needed | `mixed and duplicate raw credentials, cookie preflight and no provider/budget work`; API reserve proof remains `cookie capacity until settlement` scenarios |
+| Origin (`mcp-http-server.ts:59`, `:163`) | Shared function before adapter; additional canonical rule; differences above | `shared Origin guard and independent canonical rule; Host grants no authority`; `negative control: omitting both Origin guards fails exactly 200 versus 403` |
+| Host/DNS/peer (no legacy guard; bootstrap `../cli/index.ts:465`) | Same listener bound to loopback; no added Host authority | `shared Origin guard and independent canonical rule; Host grants no authority` |
+| Admission, retry-safe failures (`mcp-http-server.ts:155`, `:171`, `:178`) | Same store gate, mint and final release; no duplicate gate | `real admission contention and aborted admission preserve exact reasons` |
+| Body (`mcp-http-server.ts:81`, `:169`) | Legacy 1 MiB/Knowledge exceptions unchanged; operations 64 KiB strict object, depth 8/128 fields | `MCP body/DTO ceilings and Node completion retain the production owner`; adapter `rejects batches, methods, aliases, bad Origin and strict-body/header violations` |
+| Maintenance/configuration (CLI auth closure `../cli/index.ts:405`) | Shared runtime eligibility; provider-only config does not disable bearers | `maintenance and pinned configuration reuse shared refusal and bearer eligibility`; `post-SDK-buffer release rechecks %s` |
+| No-store/JSON/nosniff (`mcp-http-server.ts:74`, `:136`) | Shared operations serializer adds CSP and finite errors | `stored matrix in %s on every method; unchanged legacy authentication`; adapter security header assertions |
+| Reauthentication/session binding (`transports/mcp/mcp-runtime.ts:179`, `:192`) | Fresh mint each method; full DTO witness at final Node write; session headers confer nothing | `concurrent distinct principals with identical IDs and forged session headers stay isolated`; `%s SDK sequential initialize/list/call has no session authority` |
+| Connections/request timers (`mcp-http-server.ts:135`, `:187`) | One Node owner with unchanged defaults; no legacy request counter to share | `legacy session capacity is independent; Node connection/request defaults cover both surfaces`; slow-header timing deferral D1a-10 |
+| Logical sessions (`transports/mcp/mcp-runtime.ts:141`; `modules/mcp-sessions/session-limits.ts:28`) | Governor unchanged; stateless request pair needs no session slot | `legacy session capacity is independent; Node connection/request defaults cover both surfaces` |
+| Session idle/absolute/reconnect/renewal (`modules/mcp-sessions/session-limits.ts:28`) | Inapplicable: no retained sessions/claims; ten-second request deadline instead | `MCP deadline retains capacity until real work settles; legacy requests retain independent admission`; unchanged `transports/mcp/mcp-session-policy.test.ts` |
+| Tool/resource work and cleanup (`transports/mcp/mcp-runtime.ts:201`, `:205`) | Adapter owns work through SDK disposal and Node finish/close | `disconnect retains all 32 slots and cookies bypass saturation without work`; `MCP body/DTO ceilings and Node completion retain the production owner`; `negative control: early release admits request 33 while work remains pending` |
+| Response size (no legacy transport ceiling) | 256 KiB DTO and bounded SDK envelope before Node commit | `MCP body/DTO ceilings and Node completion retain the production owner`; adapter `bounds SDK Responses that bypass send while buffering, including across chunks` |
+| Release after async work (legacy reauth at `mcp-http-server.ts:171`) | Full witness recomputed after SDK buffering; no stale success | `post-SDK-buffer release rechecks %s`; `negative control: premature SDK success fails exactly with stale result true versus false` |
+| Policy close (`mcp-http-server.ts:202`) | Stops/drains request owner then replaces it; no replacement during shutdown | `%s close joins pending owners before SQLite/lock release; repeated cleanup` (`policy`) |
+| Listener close/keepalive drain (`mcp-http-server.ts:218`; `http-server-lifecycle.ts:4`) | Stops synchronously; joins adapter and Node closer; never releases storage early | `%s close joins pending owners before SQLite/lock release; repeated cleanup` (`shutdown`); `listener absent refuses mint and no namespace is mounted; late mounting is forbidden` |
+| SQLite/lock (`bootstrap/controller-shutdown.ts:58`) | Existing owner releases only after confirmed listeners | `%s close joins pending owners before SQLite/lock release; repeated cleanup` (`shutdown`) |
+| Installed listener/bootstrap | SDK from installed package, synthetic paths only, all supported modes | `scripts/package-rbac.mjs` `operationMcp` via `operationApi`; `scripts/package-smoke.mjs` `operations-installed-mcp-token` |
+
+D1c retains cross-request cancellation and session binding. D1a-10 retains full
+slow-header timing and final transport coverage. No schema or usage writer changes.
 
 ## Permissions and roles
 
@@ -1539,9 +1636,10 @@ imports under `tests/`, and a `src/` importer of such a helper.
 The approved importers of the module and shared contract are
 `src/server/bootstrap/operations-runtime.ts` (store-owner composition) and
 `src/server/transports/operations-http.ts` (the public wire classifier, error
-serializer and runtime types), plus the unmounted
+serializer and runtime types), plus the mounted
 `src/server/transports/operations-mcp.ts` request adapter. A separate import guard
-prohibits production imports of that adapter. The exact provider proof importer
+permits only `src/server/mcp-http-server.ts` to import that adapter, owning its
+mount, shared Origin policy and shutdown drain. The exact provider proof importer
 `packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts`
 reuses the listener driver and conformance assertions under real production
 bootstrap. It is test-only and mounts no additional operation. The adapter receives the built runtime as a

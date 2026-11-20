@@ -32,7 +32,7 @@ export function isOperationsMcpOrigin(originHeader: string, localPort: number | 
   } catch { return false; }
 }
 
-/** Built in D1a-7a, deliberately unmounted. Each handle owns exactly one SDK pair. */
+/** Mounted on the separate MCP listener. Each handle owns exactly one SDK pair. */
 export function createOperationsMcp(options: {
   runtime: OperationsHttpRuntime;
   limits?: { bodyBytes?: number; responseBytes?: number; deadlineMs?: number; maxInFlight?: number };

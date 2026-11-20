@@ -460,6 +460,15 @@ async function main() {
   const { StreamableHTTPClientTransport } = await import(pathToFileURL(join(packageRoot, "node_modules", "@modelcontextprotocol", "sdk", "dist", "esm", "client", "streamableHttp.js")));
   client = new Client({ name: "portable-package-smoke", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${mcpPort}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+  await step("operations-installed-mcp-token", async () => {
+    const operations = new Client({ name: "portable-operations", version: "1" });
+    try {
+      await operations.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${mcpPort}/mcp/operations`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+      check((await operations.listTools()).tools.map(tool => tool.name).join(",") === "session_describe", "Installed operations descriptors differ.");
+      const result = await operations.callTool({ name: "session_describe", arguments: {} });
+      check(!result.isError && result.structuredContent.actor.kind === "installation" && result.structuredContent.listener === "mcp" && result.structuredContent.mode === "token", "Installed MCP operations actor differs.");
+    } finally { await operations.close(); }
+  });
   check(client.getServerVersion()?.version === metadata.version, "MCP server version does not match the installed package.");
   const call = async (name, args = {}) => {
     const result = await client.callTool({ name, arguments: args });

@@ -1,3 +1,7 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { createMcpControllerServer } from "@/server/mcp-http-server";
+import { createOperationsMcp, OPERATIONS_MCP_TOOLS } from "@/server/transports/operations-mcp";
 import { execFileSync } from "node:child_process";
 import { IdentityService } from "@/server/modules/identity";
 import type { RemoteVerificationController } from "@/server/modules/remote-verification";
@@ -74,7 +78,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const admission = store.admission;
   vi.spyOn(store, "admission", "get").mockReturnValue(admission);
   const clock = { offset: 0 };
-  const db = ownedFixtureDatabase(store), state = { maintenance: false, stopping: false, workerOpen: false, configChanged: false, providerState: "ready" as "ready" | "not_loaded" | "failed" };
+  const db = ownedFixtureDatabase(store), state = { maintenance: false, stopping: false, workerOpen: false, mcpOpen: false, configChanged: false, providerState: "ready" as "ready" | "not_loaded" | "failed" };
   const installation = token("wsi"), agent = token("wts"), credentialId = agent.slice(4, 40);
   const storedLegacy = [
     { principal: "owner", principalKind: "owner", kind: "owner_session", secret: token("wts") },
@@ -104,7 +108,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const provider = { isSessionAuthorityEligible: vi.fn(() => true), providerId: "better-auth" as const,
     reader: cookieMount ? world.store : store.authenticationProviderStorage(), resolveRequest: vi.fn(() => ({ result: Promise.resolve(cookieMount ? { session, principalId: "human" } : null), settled: Promise.resolve() })) };
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs: { controller() {} },
-    eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), provider: mode === "better-auth" ? provider : null, listeners: { worker: () => state.workerOpen, api: () => apiOpen, unix: () => unixOpen } });
+    eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), provider: mode === "better-auth" ? provider : null, listeners: { mcp: () => state.mcpOpen, worker: () => state.workerOpen, api: () => apiOpen, unix: () => unixOpen } });
   const hooks: { beforeMint?: (signal: AbortSignal | undefined) => void; afterMint?: () => void | Promise<void>; legacy?: (body: unknown) => unknown } = {};
   const runtime = { ...built, mint: async (...args: Parameters<Extract<typeof built, { supported: true }>["mint"]>) => {
     hooks.beforeMint?.(args[3].signal);
@@ -273,7 +277,7 @@ async function disconnectedCapacity(f: Fixture, driver: BoundaryDriver, mutant: 
     for (const pending of held) pending.call.destroy();
     for (const pending of held) await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
     await disconnected.promise;
-    if (driver.kind === "worker" && !mutant) {
+    if ((driver.kind === "worker" || driver.kind === "mcp") && !mutant) {
       const cookie = await driver.send({ slow: true, headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply;
       expect(cookie.body).toEqual(refusal("provider_cookie_not_supported"));
     }
@@ -281,7 +285,7 @@ async function disconnectedCapacity(f: Fixture, driver: BoundaryDriver, mutant: 
     expect(started - settled).toBe(mutant ? 33 : 32);
     expect(settled).toBe(0);
     if (mutant) {
-      expect(reply.body).toHaveProperty("actor.kind", "installation");
+      expect(driver.kind === "mcp" ? reply.body.result.structuredContent : reply.body).toHaveProperty("actor.kind", "installation");
       expectFailure(() => assertCapacity(reply, driver.capacity), "capacity while 32 works remain unsettled", 200, 503);
     } else assertCapacity(reply, driver.capacity);
   } finally { release.done(); }
@@ -1512,3 +1516,328 @@ describe("worker HTTPS boundary conformance", () => {
     expect(minted).toMatchObject({ ok: false, error: { reason: "listener_closed" } });
   });
 });
+
+const mcpInitialize = { jsonrpc: "2.0", id: 7, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "mounted-conformance", version: "1" } } };
+const mcpNotification = { jsonrpc: "2.0", method: "notifications/initialized" };
+const mcpList = { jsonrpc: "2.0", id: 7, method: "tools/list" };
+const mcpCall = { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "session_describe", arguments: {} } };
+const mcpHeaders = (secret?: string) => ({ "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) });
+const mcpError = (reply: Reply) => reply.body.error?.data ?? reply.body.error;
+
+async function mcpFixture(mode = "open", fault?: "early_release") {
+  const f = await fixture(mode);
+  const identity = new IdentityService(f.store), authenticate = vi.spyOn(identity, "authenticateBearer"), usage = vi.spyOn(f.store, "recordCredentialUsed");
+  const mcpOptions = { service: { admission: f.store.admission } as unknown as ControlService,
+    port: 0, accessToken: "synthetic-mcp-secret", authentication: f.oldAuthentication, identity, operations: f.runtime,
+    sessionLimits: { maxSessions: 2, maxSessionsPerCredential: 1 } };
+  const mcp = createMcpControllerServer(mcpOptions);
+  await new Promise<void>(r => mcp.server.listen(0, "127.0.0.1", r));
+  mcpOptions.port = (mcp.server.address() as AddressInfo).port; f.state.mcpOpen = true;
+  cleanups.push(() => { f.state.mcpOpen = false; return mcp.close(); });
+  if (fault === "early_release") {
+    // Replaces the complete MCP dispatcher (routing, shared Origin guard and
+    // closer listener included) AND substitutes ownership around the real
+    // adapter. Not a single mutation: recreating a stopped adapter per request
+    // removes its aggregate owner; the broken outer owner releases on close.
+    let active = 0; const owners: ReturnType<typeof createOperationsMcp>[] = [];
+    mcp.server.removeAllListeners("request");
+    mcp.server.on("request", (req, res) => {
+      if (active >= 32) { operationsFailure(res, { category: "busy", status: 503, reason: "listener_capacity", retry: "retry", effect: null }); return; }
+      active++; res.once("close", () => { active--; });
+      const owner = createOperationsMcp({ runtime: f.runtime }); owners.push(owner); void owner.handle(req, res);
+    });
+    cleanups.push(async () => { owners.forEach(owner => owner.stop()); await Promise.all(owners.map(owner => owner.drain())); });
+  }
+  const driver = createBoundaryDriver({ kind: "mcp", server: mcp.server, close: mcp.close, legacyPath: "/mcp", acceptedCredentials: [] });
+  const client = async (legacy = false, secret?: string) => {
+    const client = new Client({ name: "mounted-conformance", version: "1" }); cleanups.push(() => client.close());
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(mcp.server.address() as AddressInfo).port}${legacy ? "/mcp" : "/mcp/operations"}`), { requestInit: { headers: mcpHeaders(secret) } }));
+    return client;
+  };
+  return { ...f, mcp, driver, identity, authenticate, usage, client };
+}
+
+describe("MCP listener boundary conformance", () => {
+  it.each(["open", "token", "better-auth", "legacy"])("stored matrix in %s on every method; unchanged legacy authentication", async mode => {
+    const f = await mcpFixture(mode), mint = vi.spyOn(f.runtime, "mint");
+    for (const message of [mcpInitialize, mcpNotification, mcpList, mcpCall]) {
+      for (const row of ["none", "installation", "agent", "owner", "worker", "unknown-machine", "unknown", "header", "cookie"]) {
+        const secret = row === "installation" ? f.installation : row === "agent" ? f.agent : row === "owner" ? f.storedLegacy[0].secret : row === "worker" ? f.storedLegacy[1].secret : row === "unknown-machine" ? f.unknownMachine : row === "unknown" ? "unrecognized" : undefined;
+        const headers = { ...mcpHeaders(secret), ...(row === "header" ? { "X-Worktree-Control-Token": "synthetic-mcp-secret" } : {}), ...(row === "cookie" ? { Cookie: "wtc.session=x" } : {}) };
+        const reply = await f.driver.send({ headers, body: JSON.stringify(message) }).reply;
+        const accepted = mode === "open" && row === "none" || mode === "token" && row === "installation" || mode === "better-auth" && row === "agent";
+        if (accepted) {
+          expect(reply.status).toBe(message === mcpNotification ? 202 : 200);
+          if (message === mcpCall) expect(reply.body.result.structuredContent).toMatchObject({ listener: "mcp", mode, actor: { kind: mode === "better-auth" ? "agent" : "installation" } });
+        } else {
+          const reason = row === "cookie" ? "provider_cookie_not_supported" : mode === "legacy" ? "unknown_mode" : row === "header" ? "legacy_credential" : row === "unknown" ? "unrecognized_credential" : mode === "open" ? "credential_in_open_mode" : row === "none" ? "credential_required" : mode === "token" ? "credential_not_accepted_here" : row === "installation" ? "installation_token_in_account_mode" : "invalid_credential";
+          expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal(reason));
+        }
+      }
+    }
+    expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
+    expect(f.oldAuthentication.authenticateInstallation).not.toHaveBeenCalled(); expect(f.oldAuthentication.anonymousInstallation).not.toHaveBeenCalled();
+    expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+    await f.store.admission.run(() => {
+      expect(f.store.getCredentialForAuthentication(f.credentialId)?.lastUsedAt).toBeNull();
+      for (const row of f.storedLegacy) expect(f.store.getCredentialForAuthentication(row.secret.slice(4, 40))?.lastUsedAt).toBe(iso(NOW - 1000));
+    });
+    if (f.built.supported) expect(OPERATIONS_MCP_TOOLS.map(tool => tool.operation)).toEqual(f.built.registry.idsOn("mcp"));
+    const calls = mint.mock.calls.length;
+    const legacy = await f.client(true, mode === "legacy" ? "synthetic-mcp-secret" : mode === "token" ? f.installation : mode === "better-auth" ? f.agent : undefined);
+    expect((await legacy.listTools()).tools.map(tool => tool.name)).toContain("list_projects");
+    expect(mint).toHaveBeenCalledTimes(calls);
+    if (mode === "token" || mode === "legacy") {
+      const scopedLegacy = await f.client(true, f.storedLegacy[0].secret);
+      expect((await scopedLegacy.listTools()).tools.length).toBeGreaterThan(0);
+    }
+  }, 30_000);
+
+  it.each(["open", "token", "better-auth"])("%s SDK sequential initialize/list/call has no session authority", async mode => {
+    const f = await mcpFixture(mode), client = await f.client(false, mode === "token" ? f.installation : mode === "better-auth" ? f.agent : undefined);
+    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["session_describe"]);
+    expect((await client.callTool({ name: "session_describe", arguments: {} })).structuredContent).toMatchObject({ listener: "mcp", mode });
+    expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
+  });
+
+  it("mixed and duplicate raw credentials, cookie preflight and no provider/budget work", async () => {
+    const f = await mcpFixture("better-auth"), mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run"), budget = vi.spyOn(f.built.requestBudget, "acquire");
+    for (const headers of [["Authorization", `Bearer ${f.agent}`, "Authorization", `Bearer ${f.agent}`], ["Authorization", `Bearer ${f.agent}`, "X-Worktree-Control-Token", f.installation]]) {
+      const reply = await f.driver.send({ headers: ["Content-Type", "application/json", "Accept", "application/json, text/event-stream", ...headers] }).reply;
+      expect(reply.body).toEqual(refusal("mixed_credentials"));
+    }
+    mint.mockClear(); admission.mockClear();
+    let reads = 0; f.mcp.server.prependListener("request", req => req.on("newListener", name => { if (name === "data") reads++; }));
+    for (const method of ["POST", "DELETE"]) expect((await f.driver.send({ method, slow: true, path: "/mcp/operations/%2e", headers: { Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("provider_cookie_not_supported"));
+    expect(reads).toBe(0); expect(mint).not.toHaveBeenCalled(); expect(admission).not.toHaveBeenCalled(); expect(budget).not.toHaveBeenCalled(); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+  });
+
+  it("shared Origin guard and independent canonical rule; Host grants no authority", async () => {
+    const f = await mcpFixture(), port = (f.mcp.server.address() as AddressInfo).port;
+    for (const path of ["/mcp", "/mcp/operations"]) for (const origin of ["http://attacker.invalid", `https://localhost:${port}`, `http://localhost:${port + 1}`]) {
+      const reply = await f.driver.send({ path, headers: { ...mcpHeaders(), Origin: origin }, body: JSON.stringify(mcpInitialize) }).reply;
+      expect(reply.status).toBe(403);
+      expect(path === "/mcp" ? reply.body.error.message : reply.body.error.reason).toBe(path === "/mcp" ? "The request origin was rejected." : "origin_forbidden");
+    }
+    for (const origin of [undefined, `http://localhost:${port}`, `http://127.0.0.1:${port}`, `http://[::1]:${port}`]) for (const path of ["/mcp", "/mcp/operations"]) {
+      const reply = await f.driver.send({ path, headers: { ...mcpHeaders(), Host: "arbitrary.invalid", ...(origin ? { Origin: origin } : {}) }, body: JSON.stringify(mcpInitialize) }).reply;
+      // Legacy reaches session admission (one retained session per credential).
+      expect(path === "/mcp" ? [200, 503] : [200]).toContain(reply.status);
+    }
+    for (const origin of [`http://localhost:${port}/path`, `http://user@localhost:${port}`, `http://localhost:${port}?q=1`, `http://localhost:${port}#fragment`, ""]) {
+      const reply = await f.driver.send({ headers: { ...mcpHeaders(), Origin: origin }, body: JSON.stringify(mcpInitialize) }).reply;
+      expect(reply.body).toEqual(refusal("origin_forbidden", "forbidden", 403, "none"));
+      const legacy = await f.driver.send({ path: "/mcp", headers: { ...mcpHeaders(), Origin: origin }, body: JSON.stringify(mcpInitialize) }).reply;
+      expect(legacy.status).toBe(503); // shared guard allowed it; legacy session owner refused.
+    }
+  });
+
+  it("negative control: omitting both Origin guards fails exactly 200 versus 403", async () => {
+    const f = await mcpFixture();
+    // Deletes Origin before the production dispatcher, removing both checks.
+    // This proves the assertion, not a single-guard mutation.
+    f.mcp.server.prependOnceListener("request", req => { delete req.headers.origin; });
+    const reply = await f.driver.send({ headers: { ...mcpHeaders(), Origin: "http://attacker.invalid" } }).reply;
+    expectFailure(() => conform("MCP shared Origin boundary", reply.status, 403), "MCP shared Origin boundary", 200, 403);
+  });
+
+  it("raw aliases, reserved HTTP namespace, methods and batches are terminal", async () => {
+    const f = await mcpFixture(), legacy = f.authenticate;
+    for (const path of ["/api/operations/session.describe", "/mcp/operations/", "/mcp/operations?x", "/mcp//operations", "/mcp/%6fperations", "/x/../mcp/operations", "/mcp/operations/%2e"]) for (const method of ["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"]) {
+      const reply = await f.driver.send({ path, method }).reply; expect(reply.status).toBe(404);
+      if (method !== "HEAD") expect(reply.body).toEqual(refusal("operation_not_found", "not_found", 404, "none"));
+    }
+    for (const method of ["GET", "DELETE", "PUT", "OPTIONS", "HEAD"]) {
+      const reply = await f.driver.send({ method }).reply; expect(reply.status).toBe(405); expect(reply.headers.allow).toBe("POST");
+    }
+    expect((await f.driver.send({ body: JSON.stringify([mcpCall]) }).reply).body.error.reason).toBe("invalid_request");
+    expect(legacy).not.toHaveBeenCalled(); expect(f.oldAuthentication.anonymousInstallation).not.toHaveBeenCalled();
+    const worker = await workerFixture("open", true);
+    for (const driver of [f.drivers.api, f.drivers.unix, worker.driver]) for (const method of ["POST", "GET", "DELETE", "PUT", "HEAD", "OPTIONS"]) {
+      const reply = await driver.send({ path: "/mcp/operations", method }).reply; expect(reply.status).toBe(404);
+      if (method !== "HEAD") expect(reply.body.error.reason).toBe("operation_not_found");
+    }
+  });
+
+  it("maintenance and pinned configuration reuse shared refusal and bearer eligibility", async () => {
+    const f = await mcpFixture(); assertMaintenance(await maintenanceObservation(f, f.driver));
+    f.state.maintenance = false; f.state.configChanged = true;
+    expect((await f.driver.send().reply).body.result.structuredContent.actor.kind).toBe("installation");
+  });
+
+  it("real admission contention and aborted admission preserve exact reasons", async () => {
+    const f = await mcpFixture(), entered = pause(), release = pause();
+    const held = f.store.admission.run(async () => { entered.done(); await release.promise; }); await entered.promise;
+    try {
+      const reply = await f.driver.send().reply; expect(reply.status).toBe(503); expect(reply.body.error.reason).toBe("admission_refused"); expect(reply.headers["retry-after"]).toBe("1");
+      const reached = pause(), cancelled = pause();
+      f.hooks.beforeMint = signal => { signal?.addEventListener("abort", cancelled.done, { once: true }); reached.done(); };
+      const pending = f.driver.send(); await reached.promise; pending.call.destroy(); await cancelled.promise;
+      await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
+    } finally { release.done(); await held; }
+  });
+
+  it("disconnect retains all 32 slots and cookies bypass saturation without work", async () => {
+    const f = await mcpFixture(); await disconnectedCapacity(f, f.driver, false);
+    expect(f.authenticate).not.toHaveBeenCalled();
+  }, 20_000);
+  it("negative control: early release admits request 33 while work remains pending", async () => {
+    const f = await mcpFixture("open", "early_release"); await disconnectedCapacity(f, f.driver, true);
+  }, 20_000);
+
+  it.each(["maintenance", "credential", "grant", "deadline", "disconnect", "stop", "listener", "configuration"])("post-SDK-buffer release rechecks %s", async change => {
+    const f = await mcpFixture("better-auth"); if (!f.built.supported) throw new Error("supported fixture"); await f.grant();
+    const runner = f.built.runner, real = runner.readRelease.bind(runner), entered = pause(), release = pause(); let writes = 0;
+    vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
+      if (options.expectedCanonical !== undefined) {
+        entered.done(); await release.promise;
+        return real(operation, context, raw, { ...options, commit(dto) { writes++; options.commit(dto); } });
+      }
+      return real(operation, context, raw, options);
+    });
+    const pending = f.driver.send({ headers: mcpHeaders(f.agent) }); await entered.promise;
+    try {
+      if (change === "maintenance") f.state.maintenance = true;
+      if (change === "credential") await f.store.admission.run(() => f.db.prepare("UPDATE principal_credentials SET status='revoked' WHERE id=?").run(f.credentialId));
+      if (change === "grant") await f.store.admission.run(() => f.db.prepare("DELETE FROM account_grants WHERE account_id='agent'").run());
+      if (change === "deadline") f.clock.offset = OPERATIONS_HTTP_LIMITS.deadlineMs + 1;
+      if (change === "disconnect") pending.call.destroy();
+      if (change === "stop") f.mcp.stopOperations();
+      if (change === "listener") f.state.mcpOpen = false;
+      if (change === "configuration") f.state.configChanged = true;
+    } finally { release.done(); }
+    if (change === "disconnect") await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
+    else {
+      const reply = await pending.reply;
+      if (change === "configuration") expect(reply.body.result.structuredContent.actor.kind).toBe("agent");
+      else {
+        expect(reply.status).toBe(200); expect(reply.body).not.toHaveProperty("result");
+        expect(mcpError(reply).reason).toBe(change === "maintenance" || change === "listener" ? "listener_closed" : change === "credential" ? "credential_no_longer_valid" : change === "grant" ? "release_payload_changed" : change === "deadline" ? "release_timed_out" : "request_cancelled");
+      }
+    }
+    expect(writes).toBe(change === "configuration" ? 1 : 0);
+  });
+
+  it("negative control: premature SDK success fails exactly with stale result true versus false", async () => {
+    const f = await mcpFixture(); if (!f.built.supported) throw new Error("supported fixture");
+    const runner = f.built.runner, real = runner.readRelease.bind(runner), entered = pause(), release = pause();
+    vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
+      if (options.expectedCanonical !== undefined) {
+        // Replace only the final release with a direct stale SDK-buffer commit.
+        entered.done(); await release.promise; options.commit({}); return { status: "committed" };
+      }
+      return real(operation, context, raw, options);
+    });
+    const pending = f.driver.send(); await entered.promise; f.state.maintenance = true; release.done();
+    const reply = await pending.reply; expect(reply.status).toBe(200);
+    expectFailure(() => conform("MCP stale successful payload", !!reply.body.result, false), "MCP stale successful payload", true, false);
+  });
+
+  it.each(["policy", "shutdown"])("%s close joins pending owners before SQLite/lock release; repeated cleanup", async kind => {
+    const f = await mcpFixture(), entered = pause(), release = pause(), cancelled = pause();
+    f.hooks.beforeMint = signal => signal?.addEventListener("abort", cancelled.done, { once: true });
+    f.hooks.afterMint = async () => { entered.done(); await release.promise; };
+    const lockPath = join(f.root, "mcp.lock"), lock = acquireControllerLock(lockPath); cleanups.push(() => lock.release());
+    const pending = f.driver.send(); await entered.promise;
+    const closed = vi.fn(), unlocked = vi.fn();
+    const shutdown = createControllerShutdown({ service: { closeAdmission() { f.state.stopping = true; }, async shutdown() { closed(); f.store.close(); } },
+      stopping: f.mcp.stopOperations, userSchedules: undefined, backups: { close() {} }, remoteVerification: null, mcp: f.mcp,
+      controller: f.controller, adminSocket: f.admin, controllerLock: { ...lock, release() { unlocked(); lock.release(); } }, removeServiceAccess() {} });
+    let done = false;
+    const drain = (kind === "policy" ? f.mcp.closeSessions() : shutdown()).then(() => { done = true; }); await cancelled.promise;
+    try {
+      await new Promise<void>(r => setImmediate(r)); expect(done).toBe(false); expect(closed).not.toHaveBeenCalled(); expect(unlocked).not.toHaveBeenCalled(); expect(existsSync(lockPath)).toBe(true);
+      await f.store.admission.run(() => expect(f.db.prepare("SELECT 1 AS present").get()).toEqual({ present: 1 }));
+      if (kind === "policy") expect((await f.driver.send().reply).body.error.reason).toBe("listener_capacity");
+    } finally { release.done(); }
+    expect((await pending.reply).body.error.reason).toBe("request_cancelled"); await drain;
+    if (kind === "policy") {
+      expect((await f.driver.send().reply).body.result.structuredContent.listener).toBe("mcp");
+      await f.mcp.closeSessions(); await f.mcp.closeSessions();
+    } else { expect(unlocked).toHaveBeenCalledOnce(); await shutdown(); }
+    await f.mcp.close(); await f.mcp.close();
+  }, 20_000);
+
+  it("concurrent distinct principals with identical IDs and forged session headers stay isolated", async () => {
+    const f = await mcpFixture("better-auth"), other = token("wts");
+    await f.store.admission.run(() => {
+      f.store.savePrincipal({ id: "other", kind: "agent", status: "active" }, "fixture");
+      f.store.saveCredential({ id: other.slice(4, 40), principalId: "other", kind: "agent_token", label: "fixture", tokenPrefix: other.slice(0, 40), verifierHash: hash(other), status: "active", expiresAt: null, createdAt: iso(NOW), revokedAt: null, lastUsedAt: null }, "fixture");
+    });
+    const replies = await Promise.all([f.agent, other].map(secret => f.driver.send({ headers: { ...mcpHeaders(secret), "Mcp-Session-Id": "forged", "Last-Event-ID": "forged" } }).reply));
+    expect(replies.map(r => r.body.id)).toEqual([7, 7]); expect(replies.map(r => r.body.result.structuredContent.actor.accountId)).toEqual(["agent", "other"]);
+    expect(replies.every(r => r.headers["mcp-session-id"] === undefined)).toBe(true);
+    expect((await f.driver.send({ headers: { ...mcpHeaders(), "Mcp-Session-Id": "forged" } }).reply).body.error.reason).toBe("credential_required");
+  });
+
+  it("legacy session capacity is independent; Node connection/request defaults cover both surfaces", async () => {
+    const f = await mcpFixture();
+    const client = await f.client(true); expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+    const refused = await f.driver.send({ path: "/mcp", body: JSON.stringify(mcpInitialize) }).reply;
+    expect(refused.status).toBe(503); expect(refused.body.error.data).toEqual({ reason: "admission-refused", scope: "credential", limit: 1 });
+    expect((await f.driver.send().reply).status).toBe(200);
+    expect(f.mcp.server.maxConnections).toBeUndefined(); expect(f.mcp.server.maxRequestsPerSocket).toBe(0);
+    expect(f.mcp.server.requestTimeout).toBe(300_000); expect(f.mcp.server.headersTimeout).toBe(60_000);
+    // No custom connection ceiling: keep 33 actual sockets open alongside both
+    // surfaces, unlike the worker's capped listener. No new counter is added.
+    const sockets = Array.from({ length: 33 }, () => f.driver.connection());
+    try {
+      await Promise.all(sockets.map(socket => new Promise<void>((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject); })));
+      expect(await connectionCount(f.mcp.server)).toBeGreaterThanOrEqual(33);
+      expect((await f.driver.send().reply).status).toBe(200);
+    } finally { sockets.forEach(socket => socket.destroy()); }
+  }, 20_000);
+
+  it("listener absent refuses mint and no namespace is mounted; late mounting is forbidden", async () => {
+    const f = await mcpFixture(); f.state.mcpOpen = false;
+    expect((await f.driver.send().reply).body.error.reason).toBe("listener_closed");
+    expect(() => f.mcp.mountOperations(f.runtime)).toThrow("mcp_operations_already_configured");
+    const noMount = createMcpControllerServer({ service: {} as ControlService, port: 0, accessToken: "synthetic" });
+    await new Promise<void>(r => noMount.server.listen(0, "127.0.0.1", r)); cleanups.push(noMount.close);
+    const driver = createBoundaryDriver({ kind: "mcp", server: noMount.server, legacyPath: "/mcp", close: noMount.close, acceptedCredentials: [] });
+    expect((await driver.send().reply).body.error.message).toBe("MCP endpoint not found.");
+  });
+});
+
+it("MCP deadline retains capacity until real work settles; legacy requests retain independent admission", async () => {
+  const f = await mcpFixture(), entered = pause(), cancelled = pause(), release = pause(); let started = 0, aborted = 0;
+  f.hooks.beforeMint = signal => signal?.addEventListener("abort", () => { if (++aborted === 32) cancelled.done(); }, { once: true });
+  f.hooks.afterMint = async () => { if (++started === 32) entered.done(); await release.promise; };
+  const pending = Array.from({ length: 32 }, () => f.driver.send()); await entered.promise;
+  try {
+    expect((await f.driver.send().reply).body.error.reason).toBe("listener_capacity");
+    // Session capacity and request capacity are different owners.
+    const legacy = await f.client(true); expect((await legacy.listTools()).tools.length).toBeGreaterThan(0);
+    await cancelled.promise;
+    expect((await f.driver.send().reply).body.error.reason).toBe("listener_capacity");
+    f.mcp.stopOperations();
+  } finally { release.done(); }
+  for (const request of pending) {
+    const reply = await request.reply; expect(reply.body.error.reason).toBe("request_timed_out"); expect(reply.status).toBe(503); expect(reply.headers["retry-after"]).toBe("1");
+  }
+  await f.mcp.close();
+}, 30_000);
+
+it("MCP body/DTO ceilings and Node completion retain the production owner", async () => {
+  const f = await mcpFixture(), mint = vi.spyOn(f.runtime, "mint");
+  const tooLarge = await f.driver.send({ body: JSON.stringify({ value: "x".repeat(65536) }) }).reply;
+  expect(tooLarge.body.error.reason).toBe("request_too_large"); expect(tooLarge.status).toBe(413); expect(mint).not.toHaveBeenCalled();
+  const completions: (() => void)[] = [], reached = pause();
+  const hook = (_req: IncomingMessage, response: ServerResponse) => {
+    const original = response.end.bind(response);
+    vi.spyOn(response, "end").mockImplementation((...args: Parameters<ServerResponse["end"]>) => {
+      completions.push(() => { original(...args); }); if (completions.length === 32) reached.done(); return response;
+    });
+  };
+  f.mcp.server.prependListener("request", hook);
+  const pending = Array.from({ length: 32 }, () => f.driver.send()); await reached.promise;
+  f.mcp.server.off("request", hook);
+  try { expect((await f.driver.send().reply).body.error.reason).toBe("listener_capacity"); }
+  finally { completions.forEach(finish => finish()); }
+  expect((await Promise.all(pending.map(p => p.reply))).every(reply => reply.status === 200)).toBe(true);
+  if (!f.built.supported) throw new Error("supported fixture");
+  vi.spyOn(f.built.runner, "readRelease").mockImplementation(async (_operation, _context, _raw, options) => {
+    options.commit({ value: "x".repeat(OPERATIONS_HTTP_LIMITS.responseBytes) }); return { status: "committed" };
+  });
+  const oversized = await f.driver.send().reply; expect(oversized.status).toBe(413); expect(oversized.body.error.reason).toBe("response_too_large");
+}, 20_000);
