@@ -15,7 +15,7 @@ export type BoundaryDriver = ReturnType<typeof createBoundaryDriver>;
 /** Only mounted transports belong here. Capacity is observed through saturation,
  * not a second counter or access to the listener's private accepted-work set. */
 export function createBoundaryDriver(options: {
-  kind: "api" | "unix" | "worker"; tls?: { ca: Buffer }; server: Server; localAddress?: string; socketPath?: string; close(): Promise<void>;
+  kind: "api" | "unix" | "worker" | "mcp"; tls?: { ca: Buffer }; server: Server; localAddress?: string; socketPath?: string; close(): Promise<void>;
   legacyPath: string; acceptedCredentials: readonly string[];
 }) {
   const address = () => options.socketPath ? { socketPath: options.socketPath }
@@ -24,8 +24,8 @@ export function createBoundaryDriver(options: {
   const send = (input: RequestOptions = {}) => {
     let call!: ClientRequest;
     const reply = new Promise<Reply>((resolve, reject) => {
-      call = http({ ...address(), ...options.tls, path: input.path ?? operationRoute, method: input.method ?? "POST",
-        localAddress: options.localAddress, headers: input.headers ?? { "Content-Type": "application/json" } }, response => {
+      call = http({ ...address(), ...options.tls, path: input.path ?? (options.kind === "mcp" ? "/mcp/operations" : operationRoute), method: input.method ?? "POST",
+        localAddress: options.localAddress, headers: input.headers ?? { "Content-Type": "application/json", ...(options.kind === "mcp" ? { Accept: "application/json, text/event-stream" } : {}) } }, response => {
         const chunks: Buffer[] = [];
         response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
         response.on("end", () => {
@@ -34,7 +34,7 @@ export function createBoundaryDriver(options: {
         });
       });
       call.on("error", reject);
-      if (input.slow) { call.flushHeaders(); call.write("{"); } else call.end(input.body ?? "{}");
+      if (input.slow) { call.flushHeaders(); call.write("{"); } else call.end(input.body ?? (options.kind === "mcp" ? JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "session_describe", arguments: {} } }) : "{}"));
     });
     void reply.catch(() => undefined); // Cancellation scenarios explicitly await their expected reset.
     return { call, reply };

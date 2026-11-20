@@ -1,3 +1,5 @@
+import { createOperationsMcp } from "./transports/operations-mcp";
+import { operationsFailure, type OperationsHttpRuntime } from "./transports/operations-http";
 import { containsProviderCookie } from "@/shared/contracts/authentication";
 import type { DevVaultOperations } from "./modules/dev-vault";
 import type { McpDiagnosticsSnapshot } from "@/shared/contracts/mcp-diagnostics";
@@ -27,6 +29,8 @@ export interface McpControllerServer {
   server: Server;
   /** Ends every MCP session so clients must reconnect under the current authentication policy. */
   closeSessions(): Promise<void>;
+  stopOperations(): void;
+  mountOperations(runtime: OperationsHttpRuntime): void;
   diagnosticsSnapshot(): Promise<McpDiagnosticsSnapshot>;
   close(): Promise<void>;
 }
@@ -103,7 +107,12 @@ export function createMcpControllerServer(options: {
   sessionLimits?: Partial<McpSessionLimits>;
   /** Timer port for session policy; tests supply a manual clock. */
   sessionClock?: McpSessionClock;
+  operations?: OperationsHttpRuntime;
 }): McpControllerServer {
+  let operationsRuntime = options.operations;
+  let operations = operationsRuntime ? createOperationsMcp({ runtime: operationsRuntime }) : null;
+  let stopped = false, completion: Promise<void> | undefined, policyClose: Promise<void> | undefined;
+  const stopOperations = () => { stopped = true; operations?.stop(); };
   const diagnostics = new McpDiagnostics();
   const governor = new McpSessionGovernor(options.sessionLimits, options.sessionClock);
   let runtimePromise: Promise<McpRuntimeLike> | null = null;
@@ -125,6 +134,15 @@ export function createMcpControllerServer(options: {
   const server = createServer((request, response) => {
     response.setHeader("Cache-Control", "no-store");
     void (async () => {
+      // Claim the raw namespace before legacy routing or authentication. The
+      // neighbour's Origin check and the adapter's stricter check both apply.
+      if (operations?.claims(request)) {
+        if (!validOrigin(request, options.port)) {
+          operationsFailure(response, { category: "forbidden", status: 403, reason: "origin_forbidden", retry: "none", effect: null });
+          return;
+        }
+        await operations.handle(request, response); return;
+      }
       if (request.url !== "/mcp") return jsonError(response, 404, "MCP endpoint not found.");
       if (options.authentication?.mode() === "better-auth" &&
         (request.headers["x-worktree-control-token"] !== undefined || request.headers["x-worktree-switcher-token"] !== undefined)) {
@@ -171,16 +189,50 @@ export function createMcpControllerServer(options: {
   });
   const closeServer = createHttpServerCloser(server);
   return {
-    server,
+    server, stopOperations,
+    mountOperations(runtime) {
+      if (server.listening || operations || stopped || completion) throw new Error("mcp_operations_already_configured");
+      operationsRuntime = runtime;
+      operations = createOperationsMcp({ runtime });
+    },
     async diagnosticsSnapshot() {
       return runtimePromise ? (await runtimePromise).diagnosticsSnapshot() : { ...diagnostics.snapshot(), sessions: [], runtimeRetryEntries: 0, ...governor.describe() };
     },
-    async closeSessions() {
-      if (runtimePromise) await (await runtimePromise).close("authentication-policy");
+    closeSessions() {
+      if (policyClose) return policyClose;
+      // Fence before the first await. Keep this owner installed until its real
+      // work settles; no replacement may let capacity escape the drain.
+      const owner = operations;
+      owner?.stop();
+      const drained = (owner?.drain() ?? Promise.resolve()).then(() => {
+        if (!stopped && operationsRuntime) operations = createOperationsMcp({ runtime: operationsRuntime });
+      });
+      // Legacy failure must not strand the request owner. Join both sides before
+      // permitting another policy attempt, even when legacy cleanup fails first.
+      policyClose = Promise.allSettled([
+        drained,
+        runtimePromise?.then(runtime => runtime.close("authentication-policy")),
+      ]).then(results => {
+        for (const result of results) if (result.status === "rejected") throw result.reason;
+      });
+      const current = policyClose;
+      const clear = () => { if (policyClose === current) policyClose = undefined; };
+      void current.then(clear, clear);
+      return current;
     },
-    async close() {
-      if (runtimePromise) await (await runtimePromise).close();
-      await closeServer();
+    close() {
+      stopOperations();
+      // One shutdown attempt/result for all callers. Preserve legacy ordering:
+      // a failed runtime close propagates without starting listener close.
+      return completion ??= Promise.allSettled([
+        (async () => {
+          if (runtimePromise) await (await runtimePromise).close();
+          await closeServer();
+        })(),
+        operations?.drain(), policyClose,
+      ]).then(results => {
+        for (const result of results) if (result.status === "rejected") throw result.reason;
+      });
     },
   };
 }

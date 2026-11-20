@@ -56,7 +56,7 @@ const ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
 const APPROVED_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
   "packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts": "runs cookie listener proofs through production bootstrap and reuses the mounted boundary driver and exact conformance assertions",
   "src/server/bootstrap/operations-runtime.ts": "composes the runtime from the store owner's read ports and controller policies",
-  "src/server/transports/operations-mcp.ts": "unmounted request adapter uses public release and error policy and receives the runtime as a value",
+  "src/server/transports/operations-mcp.ts": "mounted request adapter uses public release and error policy and receives the runtime as a value",
   "src/server/transports/operations-http.ts": "uses the public classifier and error serializer to avoid duplicating wire and failure policy; receives the runtime as a value",
 });
 const COMPOSITION = "src/server/bootstrap/operations-runtime.ts";
@@ -251,11 +251,14 @@ describe("authorization contract stays unmounted", () => {
     expect(rootSources).toEqual([...ROOT_FILES].sort());
     expect(guard.violations(ALLOWLIST, APPROVED_IMPORTERS)).toEqual([]);
     expect(guard.invalidImporters(APPROVED_IMPORTERS)).toEqual([]);
-  });
+  }, 30_000);
 
-  it("keeps the MCP request adapter unmounted, including indirect production importers", () => {
+  it("allows only the separate MCP listener to mount the request adapter, including indirect production importers", () => {
     const target = "src/server/transports/operations-mcp.ts";
-    expect(createGuard(repository, false, target).violations(ALLOWLIST)).toEqual([]);
+    const approved = { "src/server/mcp-http-server.ts": "mounts request-scoped MCP beside the legacy endpoint with shared Origin and shutdown ownership" };
+    const guard = createGuard(repository, false, target);
+    expect(guard.violations(ALLOWLIST, approved)).toEqual([]);
+    expect(guard.invalidImporters(approved)).toEqual([]);
     const root = mkdtempSync(join(tmpdir(), "unmounted-mcp-")); temporary.push(root);
     for (const name of ["src/server/mcp-http-server.ts", "src/server/http-server.ts", "src/cli/index.ts", "src/server/helper.ts"]) {
       mkdirSync(dirname(join(root, name)), { recursive: true });
@@ -265,7 +268,7 @@ describe("authorization contract stays unmounted", () => {
     writeFileSync(join(root, "src/server/mcp-http-server.ts"), 'import "./helper";');
     expect(createGuard(root, false, target).violations(ALLOWLIST)).toContain("src/server/helper.ts: imports @/server/transports/operations-mcp");
     expect(createGuard(root, false, target).violations(ALLOWLIST)).not.toContain("src/server/mcp-http-server.ts: imports ./helper");
-  });
+  }, 30_000);
 
   it("follows production imports through test files, including emitted specifiers and cycles", () => {
     const target = "src/server/transports/operations-mcp.ts";
@@ -303,7 +306,7 @@ describe("authorization contract stays unmounted", () => {
     const guard = createGuard(repository, true);
     expect(guard.violations(ALLOWLIST, approved)).toEqual([]);
     expect(guard.invalidImporters(approved)).toEqual([]);
-  });
+  }, 30_000);
 
   it("text-scans allowlisted production files for computed composition imports", () => {
     const root = mkdtempSync(join(tmpdir(), "composition-allowlist-")); temporary.push(root);

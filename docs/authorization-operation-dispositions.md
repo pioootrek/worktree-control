@@ -1665,16 +1665,29 @@ remains.
 
 ## 10. Proposed cut of slice 4
 
-D1a-7a builds an unmounted request-scoped MCP adapter for `/mcp/operations`.
+D1a-7b mounts the D1a-7a request-scoped MCP adapter for `/mcp/operations`.
 Each POST authenticates through `mint("mcp", ...)` and owns a fresh stateless SDK
 server/transport pair. Its only descriptor is `session_describe`. SDK JSON is
 bounded and buffered before a final admitted recomputation and synchronous Node
 write; request capacity spans response completion and work settlement. The
-[module import guard and request model](authorization-contract.md#mcp-request-adapter-built-and-unmounted-d1a-7a)
+[module import guard and request model](authorization-contract.md#mounted-mcp-boundary-d1a-7b)
 record cookie preflight order, limits, error mapping and SDK source findings.
-D1a-7b retains all mounting, listener-close wiring, API/unix reservation,
-neighbour checklist and installed-artifact checks. D1c retains session binding
-and cross-request cancellation. D1a-7a changes no schema or legacy endpoint and
+The separate loopback MCP listener claims the raw namespace before legacy
+dispatch/authentication and shares the legacy Origin function, with the adapter's
+stricter canonical-Origin rule still enforced. API, unix and worker reserve it
+as refusal-only; the MCP listener refuses the HTTP operation namespace. The
+adapter owns 32 in-flight requests independently of legacy logical sessions.
+The MCP boundary never promotes either legacy secret header name, even when it
+carries a valid installation or agent token; bearer authority comes only from
+Authorization. The shared acceptance table chooses the refusal.
+MCP close and authentication-policy close drain request owners before storage/lock
+release. Policy close replaces the drained owner unless stopping, even when legacy
+cleanup fails; that failure propagates and a later policy attempt can retry.
+Shutdown closes the legacy runtime before the Node listener, leaves the listener
+open on legacy failure, and shares one attempt and result across repeated calls.
+The linked contract contains the neighbour checklist, credential matrix and
+installed-artifact evidence for every supported mode. D1c retains session binding
+and cross-request cancellation. This mount changes no schema or legacy endpoint and
 writes no credential usage time.
 
 Approved exception, owner decision 5 (2026-11-18): `session.describe` moves

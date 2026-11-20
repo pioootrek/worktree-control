@@ -35,7 +35,7 @@ if (baseline === "historical-installed") {
 const root = await mkdtemp(join(tmpdir(), "wtc-rbac-installed-"));
 const children = new Set(), steps = [], clients = [];
 let controller, failureStep, cleanupConfirmed = false;
-let native;
+let native, operationsSdk, storedOwner;
 const secretValues = new Set();
 const password = `finite-${randomBytes(20).toString("hex")}`, replacement = `finite-${randomBytes(20).toString("hex")}`;
 secretValues.add(password); secretValues.add(replacement);
@@ -178,8 +178,31 @@ async function operationWorker(mode, secret) {
     assert.deepEqual(refused.body, { error: { category: "unauthenticated", status: 401, reason: mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", retry: "reauthenticate", effect: null } });
   }
 }
+async function operationMcp(mode, secret) {
+  const { Client, StreamableHTTPClientTransport } = operationsSdk;
+  const client = new Client({ name: "installed-operations", version: "1" }); clients.push(client);
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL + "/operations"), { requestInit: { headers: secret ? { Authorization: `Bearer ${secret}` } : {} } }));
+    assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ["session_describe"]);
+    const result = await client.callTool({ name: "session_describe", arguments: {} });
+    assert(!result.isError); const dto = result.structuredContent;
+    assert.equal(dto.mode, mode); assert.equal(dto.listener, "mcp"); assert.equal(dto.actor.kind, mode === "better-auth" ? "agent" : "installation");
+  } finally { await client.close(); }
+  for (const name of ["X-Worktree-Control-Token", "X-Worktree-Switcher-Token"]) {
+    const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", [name]: secret ?? storedWorker },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
+    assert.equal(refused.status, 401); assert.equal((await refused.json()).error.reason, "legacy_credential");
+  }
+  // A stored owner credential exists even before the worker fixture is provisioned.
+  const stored = storedWorker ?? storedOwner;
+  const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", Authorization: `Bearer ${stored}` },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "refusal", version: "1" } } }) });
+  assert.equal(refused.status, 401);
+  assert.deepEqual(await refused.json(), { error: { category: "unauthenticated", status: 401, reason: mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", retry: "reauthenticate", effect: null } });
+}
 async function operationApi(mode, secret) {
   await operationWorker(mode, secret);
+  await operationMcp(mode, secret);
   const reply = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: "{}" });
   assert.equal(reply.status, 200); const body = await reply.json(); assert.equal(body.mode, mode); assert.equal(body.listener, "api"); assert.equal(body.actor.kind, mode === "better-auth" ? "agent" : "installation");
 }
@@ -237,6 +260,7 @@ try {
   const sdk = join(currentRoot, "node_modules/@modelcontextprotocol/sdk/dist/esm");
   const { Client } = await import(pathToFileURL(join(sdk, "client/index.js")));
   const { StreamableHTTPClientTransport } = await import(pathToFileURL(join(sdk, "client/streamableHttp.js")));
+  operationsSdk = { Client, StreamableHTTPClientTransport };
   const connect = async token => { const client = new Client({ name: "installed-rbac", version: "1" }); clients.push(client); await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL), { requestInit: { headers: { Authorization: `Bearer ${token}` } } })); return client; };
   const artifact = await providerArtifact(argument("--provider-dir"));
   assert.equal(digest(await readFile(artifact.path)), artifact.sha256);
@@ -402,6 +426,7 @@ try {
     // The installation token and the mode are kept by the upgrade.
     assert.equal((await json(currentCli, ["auth", "status"])).mode, "token");
     await start();
+    storedOwner = oldOwner.token;
     await operationApi("token", installation.token); await operationSocket("token");
     assert.equal((await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" })).body.error.reason, "credential_not_accepted_here");
     const authorized = await fetch(endpoint + "/api/dashboard", { headers: { Authorization: `Bearer ${installation.token}` } }); await authorized.arrayBuffer();

@@ -32,7 +32,7 @@ export function isOperationsMcpOrigin(originHeader: string, localPort: number | 
   } catch { return false; }
 }
 
-/** Built in D1a-7a, deliberately unmounted. Each handle owns exactly one SDK pair. */
+/** Mounted on the separate MCP listener. Each handle owns exactly one SDK pair. */
 export function createOperationsMcp(options: {
   runtime: OperationsHttpRuntime;
   limits?: { bodyBytes?: number; responseBytes?: number; deadlineMs?: number; maxInFlight?: number };
@@ -82,7 +82,7 @@ export function createOperationsMcp(options: {
       }
       if (closing || (runtime.supported && !runtime.eligible())) { refuse(failure("unavailable", "release_not_eligible")); return; }
       if (!runtime.supported) {
-        const minted = await runtime.mint("mcp", presentedCredentials(request), null, { signal: abort.signal });
+        const minted = await runtime.mint("mcp", presentedCredentials(request, "refuse"), null, { signal: abort.signal });
         refuse(minted.ok ? failure("unauthenticated", "unknown_mode") : minted.error); return;
       }
       // Fail closed for browser Origins. The canonical loopback origin must match
@@ -90,13 +90,15 @@ export function createOperationsMcp(options: {
       if (request.headers.origin !== undefined && !isOperationsMcpOrigin(request.headers.origin, request.socket.localPort)) {
         refuse(failure("forbidden", "origin_forbidden")); return;
       }
+      // MCP never promotes a token carried by a legacy secret header. The
+      // shared classifier preserves raw multiplicity for the acceptance table.
       validateOperationsSingletonHeaders(request, ["accept", "mcp-protocol-version"]);
       if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers["content-type"] ?? "")) throw new BoundaryError(400, "invalid_request");
       // Same bearer order as HTTP: strict bounded body, then admitted mint.
       const deadline = runtime.supported ? runtime.runtime.now() + limits.deadlineMs : 0;
       const body = parseStrictJson(await readBoundedBody(request, { limit: limits.bodyBytes, timeoutMs: limits.deadlineMs, signal: abort.signal }), limits.json);
       if (!body || typeof body !== "object" || Array.isArray(body)) throw new BoundaryError(400, "invalid_request");
-      const minted = await runtime.mint("mcp", presentedCredentials(request), null, { signal: abort.signal });
+      const minted = await runtime.mint("mcp", presentedCredentials(request, "refuse"), null, { signal: abort.signal });
       if (!minted.ok) { refuse(minted.error); return; }
       if (!runtime.supported) { refuse(failure("unauthenticated", "unknown_mode")); return; }
       const operation = runtime.registry.get("session.describe");
@@ -201,7 +203,7 @@ export function createOperationsMcp(options: {
     claims(request: IncomingMessage) { return path(request).claimed; },
     handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
       // Match HTTP's fixed preflight: before path/method, slot, body or admission.
-      if (presentedCredentials(request).providerSession) {
+      if (presentedCredentials(request, "refuse").providerSession) {
         operationsFailure(response, failure("unauthenticated", "provider_cookie_not_supported")); return Promise.resolve();
       }
       if (closing || accepted.size >= limits.maxInFlight) {
