@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { test } from "node:test";
 import { acceptanceError, failureReport } from "./package-rbac-report.mjs";
 
@@ -12,13 +14,29 @@ test("failure attribution follows the first failed step in completion order", ()
   assert.equal(report([passed]).failureStep, undefined);
 });
 
-test("installed failure report preserves the cause and removes secrets and temporary roots before bounding", () => {
-  const secret = "fixture-secret-123", root = "/private/fixture-root";
-  const message = acceptanceError(new TypeError(`no such function: worktree_security_pending ${secret} ${root}/db ${"x".repeat(400)}`), new Set([secret]), [root, undefined]);
-  assert(message.startsWith("TypeError: no such function: worktree_security_pending"));
-  assert(!message.includes(secret)); assert(!message.includes(root)); assert.equal(message.length, 300);
-  const crossing = acceptanceError(new Error(`${"x".repeat(285)}${secret}`), new Set([secret]), []);
-  assert(!crossing.includes("fixture-secret"));
-  assert.equal(acceptanceError("non-error fixture throw", new Set(), []), "string: non-error fixture throw");
-  assert(!acceptanceError(new assert.AssertionError({ message: secret }), new Set([secret]), []).includes(secret));
+test("process diagnostics omit command arguments and output in step logs and final reports", async () => {
+  const privateValue = "unregistered-fixture-detail";
+  const script = "process.stderr.write(process.argv[1]); process.exitCode = 1";
+  await assert.rejects(promisify(execFile)(process.execPath, ["-e", script, privateValue]), error => {
+    assert.equal(error.stderr, privateValue);
+    assert.equal(acceptanceError(error), "Subprocess failed");
+    assert.equal(failureReport("fresh", [], error).error, "Subprocess failed");
+    return true;
+  });
+});
+
+test("only known npm codes can be copied from stderr", () => {
+  const report = line => failureReport("fresh", [], Object.assign(new Error("fixture"), { stderr: line }));
+  assert.equal(report("npm error code ENOSPC").npmErrorCode, "ENOSPC");
+  assert.equal(report("npm error code PRIVATE_FIXTURE").npmErrorCode, undefined);
+  assert.equal(report("npm error code ENOSPC_PRIVATE").npmErrorCode, undefined);
+});
+
+test("assertion diffs, messages and thrown values remain private", () => {
+  const privateValue = "unregistered-provider-response";
+  for (const error of [new TypeError(privateValue), new SyntaxError(privateValue), new Error(privateValue),
+    new assert.AssertionError({ message: privateValue }), privateValue, null]) {
+    assert(!acceptanceError(error).includes(privateValue));
+  }
+  assert.equal(acceptanceError(new Error("Finite fixture condition timed out.")), "Finite fixture condition timed out.");
 });
