@@ -230,7 +230,7 @@ remote verification, administrative stop, accounts, sensitive output).
 
 | Id | Kind | Resources | Requirement | Needs | Flags | Commit | Retain | Surfaces | Projection and notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `session.describe` | read | none | `authenticated` | - | - | - | no | H M C | A hint, never an authorization. Actor, mode, listener, installation permissions, every visible project with the permissions held there (decision M), fresh-login state. Works with zero roles. The only operation implemented in slice 1. |
+| `session.describe` | read | none | `authenticated` | - | - | - | no | H M C | A hint, never an authorization. Actor, mode, listener, installation permissions, a bounded sorted prefix of the visible projects with the permissions held there, flagged by `projectsTruncated` (decision M), fresh-login state. Works with zero roles. The only operation implemented in slice 1. |
 | `coordination.open` | mutation | none | `authenticated` | `coordination`, `secret_safe_retention` | - | declared: the credential identity and generation are checked before the session is stored | yes, secret-safe | H C; M: the transport opens one at MCP session start, no tool | OPEN-2. Returns a session id and a secret, bound to the credential identity and generation, with an idle expiry. The receipt holds ids only: a replay never returns the secret, and a lost response is repaired by opening again. A new session never adopts a claim. |
 | `coordination.renew` | mutation | none (the presented session secret) | `authenticated` | `coordination` | - | declared: an expired or invalidated session is refused before the extension | no | H C; M: transport | Extends the idle expiry. Idempotent by nature. |
 | `coordination.close` | mutation | none (the presented session secret) | `authenticated` | `coordination` | - | entry: closing has no typed refusal | no | H C; M: the transport closes it at MCP session end, no tool | Closes the session. |
@@ -1708,8 +1708,11 @@ authority; token mode accepts the installation token with that authority;
 account mode accepts an agent token and returns its account permissions and
 projects where it has a role. The description contains actor kind, mode,
 listener, fullAuthority, installation permissions, up to 500 project IDs and
-permission sets, projectsTruncated and freshLogin, with no names, paths, secrets
-or history. Stored owner/worker machine tokens answer `invalid_credential` in
+permission sets (fewer when the whole DTO reaches its 248 KiB UTF-8 JSON budget),
+projectsTruncated and freshLogin, with no names, paths, secrets or history.
+Projects remain in deterministic ID order; projectsTruncated is true when either
+bound omits a visible project. The byte budget leaves 8 KiB below the transports'
+256 KiB ceiling. Stored owner/worker machine tokens answer `invalid_credential` in
 account mode, `credential_not_accepted_here` in token mode and
 `credential_in_open_mode` in open mode. Cookies always answer
 `provider_cookie_not_supported`; mixed/duplicate bearers answer

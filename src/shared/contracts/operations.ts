@@ -170,11 +170,12 @@ export interface SessionDescription {
   fullAuthority: boolean;
   installationPermissions: InstallationPermission[];
   /**
-   * Every project visible to the caller, sorted by ID: a project on which the
+   * A prefix of projects visible to the caller, sorted by ID: a project on which the
    * account holds at least one active role (any of the five project roles), every
    * project for `admin`, every project for full authority. Visibility grants no
    * permission: `permissions` lists what is actually held there, which may be
-   * only `worker:execute` or `secrets:*`.
+   * only `worker:execute` or `secrets:*`. At most 500 entries, fewer when the
+   * operation's serialized-DTO byte budget is reached; see `projectsTruncated`.
    */
   projects: { projectId: ProjectId; permissions: ProjectPermission[] }[];
   /** True when more visible projects exist than this bounded description lists. */

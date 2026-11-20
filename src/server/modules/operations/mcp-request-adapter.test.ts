@@ -20,7 +20,7 @@ import { createOperationsHttp, OPERATIONS_HTTP_LIMITS, operationsFailure, type O
 import { SESSION_COOKIE } from "@/server/transports/authentication-http-boundary";
 import { createBoundaryDriver, conform, ConformanceFailure } from "./http-boundary-driver";
 import { installationPermissions, projectId, projectPermissions } from "@/shared/contracts/operations";
-import { MAX_DESCRIBED_PROJECTS, sessionDescribe } from "./session-describe";
+import { MAX_DESCRIBED_BYTES, MAX_DESCRIBED_PROJECTS, sessionDescribe } from "./session-describe";
 import { acceptanceTable, resolveAcceptance } from "./acceptance";
 import { hash, iso, NOW, token } from "./adapters/credential-verifier-fixture";
 
@@ -188,6 +188,11 @@ describe("unmounted request-scoped MCP adapter", () => {
     expect(originalSend).not.toHaveBeenCalled(); expect(connect).not.toHaveBeenCalled();
   });
 
+  it("keeps the operation DTO budget below the transport ceiling with 8 KiB headroom", () => {
+    expect(MAX_DESCRIBED_BYTES).toBeLessThanOrEqual(OPERATIONS_HTTP_LIMITS.responseBytes);
+    expect(OPERATIONS_HTTP_LIMITS.responseBytes - MAX_DESCRIBED_BYTES).toBe(8 * 1024);
+  });
+
   it.each([36, 160])("measures 500 full-authority projects with %i-byte IDs against both default DTO bounds", async idBytes => {
     // Contract grammar: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$ (160 ASCII bytes).
     const ids = Array.from({ length: MAX_DESCRIBED_PROJECTS }, (_, index) => projectId(idBytes === 36
@@ -200,41 +205,33 @@ describe("unmounted request-scoped MCP adapter", () => {
     const described = await f.built.runner.run(sessionDescribe, minted.context, {});
     if (!described.ok) throw new Error("description required");
     const dto = described.value, text = JSON.stringify(dto), dtoBytes = Buffer.byteLength(text);
-    expect(dto).toMatchObject({ fullAuthority: true, installationPermissions: [...installationPermissions], projectsTruncated: false });
-    expect(dto.projects).toEqual(ids.sort().map(projectId => ({ projectId, permissions: [...projectPermissions] })));
-    const http = await f.send({}, undefined, {}, { path: "/api/operations/session.describe" }).reply;
-    if (idBytes === 36) {
-      const client = await f.client();
-      const sent = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
-      const result = await client.callTool({ name: "session_describe", arguments: {} });
-      expect(result.structuredContent).toEqual(dto);
-      expect(result.content).toEqual([{ type: "text", text }]);
-      expect(result.structuredContent).toEqual(JSON.parse((result.content as { text: string }[])[0].text));
-      const messageBytes = Buffer.byteLength(JSON.stringify(sent.mock.calls[0][0]));
-      console.info({ idBytes, projects: ids.length, dtoBytes, messageBytes });
-      expect(dtoBytes).toBeLessThanOrEqual(OPERATIONS_HTTP_LIMITS.responseBytes);
-      expect(messageBytes).toBeGreaterThan(OPERATIONS_HTTP_LIMITS.responseBytes);
-      expect(messageBytes).toBeLessThanOrEqual(3 * OPERATIONS_HTTP_LIMITS.responseBytes + OPERATIONS_MCP_ENVELOPE_OVERHEAD);
-      expect(http.status).toBe(200); expect(http.body).toEqual({ ...dto, listener: "api" });
-    } else {
-      // Separate operation/HTTP finding: the grammar's worst case exceeds the
-      // shared public bound. Do not weaken it to turn this into a success case.
-      // Measure the real SDK envelope with an explicitly enlarged fixture DTO
-      // bound; the production/default HTTP and MCP refusals remain below.
-      const roomy = await fixture("open", { responseBytes: dtoBytes }, undefined, ids);
-      const client = await roomy.client();
-      const sent = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
-      const result = await client.callTool({ name: "session_describe", arguments: {} });
-      expect(result.structuredContent).toEqual(dto);
-      expect(result.content).toEqual([{ type: "text", text }]);
-      expect(result.structuredContent).toEqual(JSON.parse((result.content as { text: string }[])[0].text));
-      const messageBytes = Buffer.byteLength(JSON.stringify(sent.mock.calls[0][0]));
-      console.info({ idBytes, projects: ids.length, dtoBytes, messageBytes, httpStatus: http.status });
-      expect(dtoBytes).toBeGreaterThan(OPERATIONS_HTTP_LIMITS.responseBytes);
-      const mcp = await f.send(call).reply;
-      expect(http.status).toBe(413); expect(mcp.status).toBe(http.status); expect(mcp.body).toEqual(http.body);
-      expect(operationError(mcp)).toMatchObject({ category: "payload_too_large", reason: "response_too_large", status: 413 });
+    // Pin the observed prefix length as well as both independent bounds.
+    const listed = idBytes === 36 ? 500 : 429;
+    expect(dto).toMatchObject({ fullAuthority: true, installationPermissions: [...installationPermissions], projectsTruncated: idBytes === 160 });
+    expect(dto.projects).toHaveLength(listed);
+    expect(dto.projects).toEqual([...ids].sort().slice(0, listed).map(projectId => ({ projectId, permissions: [...projectPermissions] })));
+    expect(dtoBytes).toBe(idBytes === 36 ? 233_874 : 253_912);
+    expect(dtoBytes).toBeLessThanOrEqual(MAX_DESCRIBED_BYTES);
+    if (idBytes === 160) {
+      const next = { projectId: ids[listed], permissions: [...projectPermissions] };
+      expect(Buffer.byteLength(JSON.stringify({ ...dto, projects: [...dto.projects, next] }))).toBeGreaterThan(MAX_DESCRIBED_BYTES);
     }
+    const http = await f.send({}, undefined, {}, { path: "/api/operations/session.describe" }).reply;
+    expect(http.status).toBe(200); expect(http.body).toEqual({ ...dto, listener: "api" });
+    expect(Buffer.byteLength(JSON.stringify(http.body))).toBeLessThanOrEqual(MAX_DESCRIBED_BYTES);
+    // initialize and notification use the same release witness as tools/call.
+    const client = await f.client();
+    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["session_describe"]);
+    const sent = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
+    const result = await client.callTool({ name: "session_describe", arguments: {} });
+    expect(result.structuredContent).toEqual(dto);
+    expect(result.content).toEqual([{ type: "text", text }]);
+    expect(result.structuredContent).toEqual(JSON.parse((result.content as { text: string }[])[0].text));
+    const messageBytes = Buffer.byteLength(JSON.stringify(sent.mock.calls[0][0]));
+    console.info({ idBytes, projects: dto.projects.length, dtoBytes, messageBytes, httpStatus: http.status });
+    expect(dtoBytes).toBeLessThanOrEqual(OPERATIONS_HTTP_LIMITS.responseBytes);
+    expect(messageBytes).toBeGreaterThan(OPERATIONS_HTTP_LIMITS.responseBytes);
+    expect(messageBytes).toBeLessThanOrEqual(3 * OPERATIONS_HTTP_LIMITS.responseBytes + OPERATIONS_MCP_ENVELOPE_OVERHEAD);
   }, 30_000);
 
   it("refuses a DTO one byte above the shared bound with the identical pre-dispatch HTTP envelope", async () => {
