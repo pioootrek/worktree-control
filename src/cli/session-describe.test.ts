@@ -73,7 +73,9 @@ describe("session describe CLI mount", () => {
     const dto = JSON.parse(f.lines[0]);
     expect(dto).toMatchObject({ actor: { kind: "operator", accountId: null }, listener: "offline", mode, fullAuthority: true,
       freshLogin: { state: "exempt", validUntil: null } });
-    expect(f.lines).toHaveLength(1); expect(seen.opened).toHaveLength(1); expect(seen.acquire).toHaveBeenCalledTimes(1);
+    expect(f.lines).toHaveLength(1); expect(seen.opened).toHaveLength(1);
+    expect(seen.acquire.mock.calls.filter(([path]) => path === f.paths.controllerLockPath)).toHaveLength(1);
+    expect(seen.acquire.mock.calls.filter(([path]) => path === `${f.paths.databasePath}.owner.lock`)).toHaveLength(1);
     expect(legacy).not.toHaveBeenCalled(); expect(usage).not.toHaveBeenCalled();
   }, 20_000);
 

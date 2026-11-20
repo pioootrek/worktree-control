@@ -60,6 +60,7 @@ export async function runSessionDescribe(args: string[], paths: AppPaths, write:
       const code = (cause as NodeJS.ErrnoException).code;
       throw localFailure(code === "ENOENT" ? "admin_socket_missing" : code === "ECONNREFUSED" ? "admin_socket_refused"
         : code === "admin_timeout" ? "admin_timeout" : code === "admin_response_limit" ? "admin_response_limit"
+        : code === "admin_invalid_response" ? "admin_invalid_response"
         : cause instanceof SyntaxError || cause instanceof TypeError || cause instanceof ProviderAdminError ? "admin_invalid_response" : "admin_socket_failed");
     }
     write(JSON.stringify(result, null, 2)); return;

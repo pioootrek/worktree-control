@@ -168,7 +168,7 @@ export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_0
       });
       response.on("end", () => {
         try {
-          const value = (reply ? parseStrictProviderJson(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)), { maxDepth: 32, maxFields: 100000 }) : JSON.parse(Buffer.concat(chunks).toString("utf8"))) as { result?: unknown; code?: string; error?: string; committed?: unknown; cleanupConfirmed?: unknown };
+          const value = (reply ? parseOperationsReply(Buffer.concat(chunks)) : JSON.parse(Buffer.concat(chunks).toString("utf8"))) as { result?: unknown; code?: string; error?: string; committed?: unknown; cleanupConfirmed?: unknown };
           if (reply) resolve(reply.decode(response.statusCode, value));
           else if (response.statusCode === 200) resolve(value.result);
           else reject(new AdminRequestError(value.code, value.error ?? `Admin request failed with HTTP ${response.statusCode}.`,
@@ -189,4 +189,13 @@ export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_0
     request.on("error", reject);
     request.end(payload);
   });
+}
+
+/** Parsing failures must not carry response bytes into CLI diagnostics. */
+function parseOperationsReply(bytes: Buffer): unknown {
+  try {
+    return parseStrictProviderJson(new TextDecoder("utf-8", { fatal: true }).decode(bytes), { maxDepth: 32, maxFields: 100000 });
+  } catch {
+    throw Object.assign(new Error("Invalid admin response."), { code: "admin_invalid_response" });
+  }
 }
