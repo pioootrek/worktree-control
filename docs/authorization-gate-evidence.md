@@ -280,11 +280,13 @@ listener, refusal and timed step. The provider proof also runs separately.
 The Community smoke preset additionally runs `operations-installed-token-and-local`,
 `operations-installed-mcp-token` and `operations-installed-offline-token` in
 `scripts/package-smoke.mjs`. D1a-10 strengthens its API mode/listener assertions.
-A separate `legacy-startup-all-mounted-operations-and-cli` step starts the real
-packaged controller against stopped synthetic legacy state and asserts the full
-`unknown_mode` envelope on all four listeners and both CLI paths. The public
-mode setter deliberately cannot select legacy; only this disposable fixture
-changes the stored policy directly before startup, then restores token mode. Added raw MCP requests
+The public mode setter cannot select `legacy`. The `node:test:operations-mcp`
+fixture saves that policy through the store's fenced API, closes the store and
+starts the controller from its source entry point. It checks the full
+`unknown_mode` response on all four listeners and both CLI paths, then reopens
+the fixture database to verify that its witness still matches.
+
+Added raw MCP requests
 and refusal probes are timed in existing script reports; exact runtime growth
 requires before/after measurements on the same host and is not inferred from
 source. The focused listener expiry tests use a 25 ms real Node scan interval. Worker
