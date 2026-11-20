@@ -191,6 +191,19 @@ Strict UTF-8 and duplicate-key JSON parsing plus operator/unix DTO validation re
 them. The unix listener still owns authentication, admission and release.
 The client does not use a legacy authenticator or update credential usage.
 
+This command alone writes stdout synchronously through `fs.writeSync(1, ...)`,
+handling partial writes and retrying EAGAIN/EINTR with 5ms pauses, up to one
+second or 4096 attempts. Thus a failed offline write throws inside the admitted
+commit; the runner records `commit_failed`, mapped to `output_unavailable`.
+Command-scoped stdout/stderr error listeners remain until process termination;
+a late error sets exit status 1 without interrupting drain, close or lock release.
+Stderr uses the same guarded descriptor writer; if stderr is also closed, exit 1
+is silent. [Node's POSIX I/O distinction](https://nodejs.org/docs/latest-v22.x/api/process.html#a-note-on-process-io)
+and [writeSync byte counts](https://nodejs.org/docs/latest-v22.x/api/fs.html#fswritesyncfd-buffer-offset-length-position)
+explain the synchronous descriptor choice for Linux and macOS pipes.
+If a pipe closes mid-write, a consumer may receive truncated JSON on stdout;
+the command exits 1 with the sanitized error on usable stderr.
+
 Observed source distinction: the existing client has no socket-path ownership,
 permission or peer verification. The server publishes a 0600 socket in a 0700
 directory. This step reuses that implementation without claiming a new peer
@@ -228,6 +241,7 @@ families. Local connection failures below use category `unavailable`, status
 | Invalid JSON/UTF-8, wrong shape/status, extra fields | admin_invalid_response | 1 |
 | Valid operations error, including maintenance/release refusal | Exact public category, reason and retry retained | 1 |
 | Other acquisition refusal | offline_lock_unavailable | 1 |
+| Stdout write failure, closed pipe or exhausted backpressure bound | output_unavailable; silent if stderr is also closed | 1 |
 | Unexpected offline initialization/read failure | offline_unavailable; details suppressed | 1 |
 | Pending restore handoff | Existing `Start the controller to complete restore authentication recovery before offline administration.` | 1 |
 | Unreadable/malformed restore handoff | restore_handoff_unreadable; record contents suppressed | 1 |
@@ -254,7 +268,7 @@ explicit deferral; these are source references, not claims of completed runs.
 | `src/cli/index.ts:172` handoff before ordinary opening | Check after lock, before constructor | pending/unreadable restore handoff stops before store construction |
 | `src/cli/auth-management.ts:47` atomic acquire, typed live-owner refusal | Same primitive, no socket probe | lock taken: missing/stale/reset/timeout fails exactly; another offline owner |
 | `src/cli/auth-management.ts:65` ordinary store fence/upgrade admission | Same constructor, one store | ordinary store opening keeps its fence refusal; named deferral D1a-10-upgrade-CLI: ordinary upgrade admission suite remains the upgrade oracle |
-| `src/cli/auth-management.ts:59` JSON style | Same two-space JSON; stdout explicitly selected | offline writes released DTO; installed CLI equality |
+| `src/cli/auth-management.ts:59` JSON style / output | Same two-space JSON plus newline; synchronous descriptor write; scoped late-error handling | synchronous output failure is a failed admitted commit; session describe output suite; package-rbac.mjs closedSessionOutput on both paths |
 | `src/cli/auth-management.ts:74` producer disposal then store close/release | No provider producer; closeOfflineStore unchanged | offline writes then closes before release; offline-ownership.test.ts: drains real accepted work |
 | `src/cli/auth-management.ts:75` retain on close failure | Same retain helper and disposal error | close failure retains owner and reports disposal_unconfirmed |
 | `src/cli/auth-management.ts:98` opening failure releases lock | finally calls closeOfflineStore(null, lock) | pending/unreadable restore handoff stops before construction |

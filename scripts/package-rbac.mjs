@@ -1,5 +1,6 @@
 // Finite installed-artifact acceptance. All writable state and listeners belong to this fixture.
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -152,6 +153,48 @@ async function start(cli = currentCli, assets = currentRoot) {
   await wait(async () => { assert.equal(child.exitCode, null, "Packaged controller exited before readiness."); try { const access = JSON.parse(await readFile(join(directoryArgs[3], "service-access.json"), "utf8")); return access.pid === child.pid; } catch { return false; } });
   for (const value of secretValues) assert(!output.includes(value), "No fixture credentials in controller output.");
 }
+/** Gate module evaluation on stdin EOF so the parent closes the pipe before the CLI can write.
+ * The real packaged entry point and native descriptors are used, with a 15s process deadline.
+ */
+async function closedSessionOutput(path, closedStderr) {
+  const gate = "data:text/javascript," + encodeURIComponent("await new Promise(resolve => { process.stdin.once('end', resolve); process.stdin.resume(); });");
+  const child = spawn(process.execPath, ["--import", gate, currentCli, "session", "describe", ...directoryArgs], {
+    cwd: root, env, stdio: ["pipe", "pipe", "pipe"],
+  });
+  children.add(child);
+  let stderr = "", forced = false;
+  const timer = setTimeout(() => { forced = true; child.kill("SIGKILL"); }, 15_000);
+  const result = new Promise((accept, reject) => {
+    child.once("error", reject); child.once("close", (code, signal) => accept({ code, signal }));
+  });
+  try {
+    if (!closedStderr) child.stderr.on("data", chunk => {
+      stderr += chunk;
+      if (stderr.length > 65536) { forced = true; child.kill("SIGKILL"); }
+    });
+    const close = stream => new Promise(accept => { stream.once("close", accept); stream.destroy(); });
+    await close(child.stdout);
+    if (closedStderr) await close(child.stderr);
+    child.stdin.on("error", () => {}); child.stdin.end();
+    const { code, signal } = await result;
+    assert(!forced, `${path}: closed output must finish within 15s`); assert.equal(signal, null);
+    assert.equal(code, 1, `${path}: closed output must exit 1`);
+    assert(!/(?:^|\n)\s+at |node:internal|Unhandled ['"]error['"] event/.test(stderr), `${path}: no unhandled-error stack`);
+    if (closedStderr) assert.equal(stderr, "");
+    else assert.deepEqual(JSON.parse(stderr.trim().split("\n").at(-1)), {
+      error: { category: "unavailable", status: 503, reason: "output_unavailable", retry: "none", effect: null },
+    });
+    if (path === "offline") {
+      assert(!existsSync(join(directoryArgs[3], "controller.lock")), "Offline cleanup removes the controller lock before process close");
+      assert(!existsSync(join(directoryArgs[1], "state.sqlite3.owner.lock")), "Offline cleanup removes the database owner lock");
+      const database = new native.Database(join(directoryArgs[1], "state.sqlite3"));
+      try { database.prepare("BEGIN IMMEDIATE").run(); database.prepare("ROLLBACK").run(); } finally { database.close(); }
+      // A second ordinary CLI opening also verifies store/fence admission after the failed write.
+      const reopened = await json(currentCli, ["session", "describe"]); assert.equal(reopened.listener, "offline");
+    }
+  } finally { clearTimeout(timer); children.delete(child); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
+}
+
 async function operationSocket(mode) {
   const reply = await new Promise((accept, reject) => {
     const call = httpRequest({ socketPath: join(directoryArgs[3], "admin.sock"), path: "/api/operations/session.describe", method: "POST", headers: { "Content-Type": "application/json" } }, response => {
@@ -161,7 +204,10 @@ async function operationSocket(mode) {
     call.setTimeout(10_000, () => call.destroy(new Error("Operations socket deadline"))); call.on("error", reject); call.end("{}");
   });
   assert.equal(reply.status, 200); assert.equal(reply.body.actor.kind, "operator"); assert.equal(reply.body.listener, "unix"); assert.equal(reply.body.mode, mode);
-  assert.deepEqual(await json(currentCli, ["session", "describe"]), reply.body);
+  const success = await command(currentCli, ["session", "describe"]);
+  assert.equal(success.code, 0); assert.equal(success.stdout, `${JSON.stringify(reply.body, null, 2)}\n`);
+  for (const closedStderr of [false, true]) await step(`session-describe-unix-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
+    () => closedSessionOutput("socket", closedStderr));
   const socket = join(directoryArgs[3], "admin.sock"), hidden = socket + ".hidden";
   await rename(socket, hidden);
   try {
@@ -175,6 +221,8 @@ async function operationOffline(mode) {
   assert.equal(dto.listener, "offline"); assert.equal(dto.mode, mode);
   assert.equal(dto.freshLogin.state, "exempt");
   assert(!JSON.stringify(dto).match(/sessionId|credentialId|verifierHash/));
+  for (const closedStderr of [false, true]) await step(`session-describe-offline-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
+    () => closedSessionOutput("offline", closedStderr));
 }
 async function operationWorker(mode, secret) {
   const call = secret => new Promise((accept, reject) => {

@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import { Writable } from "node:stream";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
@@ -23,7 +25,7 @@ import { FRESH_LOGIN_WINDOW_MS } from "../shared/contracts/operations";
 import { createProviderWorld } from "../server/modules/operations/adapters/provider-session-fixture";
 import { sessionDescribe } from "../server/modules/operations";
 import { resolveAppPaths } from "../server/paths";
-import { runSessionDescribe } from "./session-describe";
+import { createSessionDescribeOutput, runSessionDescribe } from "./session-describe";
 
 const RealStore = stores.SqliteStateStore;
 const cleanup: (() => void | Promise<void>)[] = [];
@@ -78,6 +80,44 @@ describe("session describe CLI mount", () => {
     expect(seen.acquire.mock.calls.filter(([path]) => path === f.paths.controllerLockPath)).toHaveLength(1);
     expect(seen.acquire.mock.calls.filter(([path]) => path === `${f.paths.databasePath}.owner.lock`)).toHaveLength(1);
     expect(legacy).not.toHaveBeenCalled(); expect(usage).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("synchronous output failure is a failed admitted commit, then drains/closes before release", async () => {
+    const f = fixture(), seen = observe(), build = offline.buildOfflineOperationsRuntime, events: string[] = [];
+    let outcome: unknown;
+    vi.spyOn(offline, "buildOfflineOperationsRuntime").mockImplementation(config => {
+      const runtime = build(config);
+      if (runtime.supported) {
+        const release = runtime.runner.readRelease.bind(runtime.runner);
+        vi.spyOn(runtime.runner, "readRelease").mockImplementation(async (...args) => {
+          outcome = await release(...args); return outcome as Awaited<ReturnType<typeof release>>;
+        });
+      }
+      return runtime;
+    });
+    const drain = RealStore.prototype.closeAfterDrain, close = RealStore.prototype.close;
+    vi.spyOn(RealStore.prototype, "closeAfterDrain").mockImplementation(async function (this: stores.SqliteStateStore) {
+      expect(existsSync(f.paths.controllerLockPath)).toBe(true); events.push("drain"); await drain.call(this);
+    });
+    vi.spyOn(RealStore.prototype, "close").mockImplementation(function (this: stores.SqliteStateStore) {
+      expect(existsSync(f.paths.controllerLockPath)).toBe(true); events.push("close"); close.call(this);
+    });
+    await expect(runSessionDescribe(["describe"], f.paths, () => {
+      seen.opened[0].getAuthenticationPolicy(); events.push("write"); throw new Error("private EPIPE stack");
+    })).rejects.toMatchObject({ error: operationError("output_unavailable") });
+    expect(outcome).toMatchObject({ status: "commit_failed", error: { reason: "release_commit_failed" } });
+    expect(events).toEqual(["write", "drain", "close"]); expect(f.lines).toEqual([]);
+    expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+    const reopened = new RealStore(f.paths.databasePath); await reopened.closeAfterDrain();
+  }, 20_000);
+
+  it("a malformed lock refuses offline_lock_unavailable before socket or store construction", async () => {
+    const f = fixture(), seen = observe(), request = vi.spyOn(adminSocket, "requestAdminSocket");
+    mkdirSync(f.paths.stateDirectory, { recursive: true, mode: 0o700 });
+    writeFileSync(f.paths.controllerLockPath, "private malformed lock", { mode: 0o600 });
+    await expect(f.run()).rejects.toMatchObject({ error: operationError("offline_lock_unavailable") });
+    expect(request).not.toHaveBeenCalled(); expect(stores.SqliteStateStore).not.toHaveBeenCalled();
+    expect(seen.opened).toEqual([]); expect(f.lines).toEqual([]);
   }, 20_000);
 
   it("ordinary store opening keeps its fence refusal and releases the controller lock", async () => {
@@ -167,7 +207,7 @@ describe("session describe CLI mount", () => {
     expect(seen.opened).toEqual([]); expect(seen.acquire).toHaveBeenCalledTimes(1); expect(f.lines).toEqual([]);
   }, 20_000);
 
-  it.each(["missing", "stale", "reset", "timeout", "maintenance", "release_not_eligible", "garbage", "oversize", "extra-field", "duplicate-key", "invalid-utf8", "wrong-status", "invalid-outcome"])(
+  it.each(["missing", "stale", "reset", "timeout", "maintenance", "release_not_eligible", "garbage", "oversize", "extra-field", "duplicate-key", "invalid-utf8", "wrong-status", "invalid-outcome", "depth", "c0"])(
     "lock taken: %s fails exactly, never opens a store or acquires ownership", async kind => {
       const f = fixture(); await f.run(); const dto = JSON.parse(f.lines.pop()!);
       const lock = owner(f), before = readFileSync(f.paths.controllerLockPath, "utf8");
@@ -185,6 +225,8 @@ describe("session describe CLI mount", () => {
           if (kind === "wrong-status" || kind === "invalid-outcome") {
             response.writeHead(503); response.end(JSON.stringify({ error: operationError("fixture", kind === "invalid-outcome" ? "outcome_unknown" : "unavailable", "none", kind === "wrong-status" ? 401 : 503) })); return;
           }
+          if (kind === "depth") { response.end('['.repeat(33) + '0' + ']'.repeat(33)); return; }
+          if (kind === "c0") { response.end(JSON.stringify({ ...dto, listener: "unix", projects: [{ projectId: "allowed\u0001field", permissions: [] }] })); return; }
           if (kind === "invalid-utf8") { response.end(Buffer.from([0xff])); return; }
           if (kind === "duplicate-key") { response.end('{"actor":null,"actor":null}'); return; }
           if (kind === "maintenance" || kind === "release_not_eligible") {
@@ -196,7 +238,7 @@ describe("session describe CLI mount", () => {
       }
       const seen = observe();
       const reason = ({ missing: "admin_socket_missing", stale: "admin_socket_refused", reset: "admin_socket_failed", timeout: "admin_timeout",
-        garbage: "admin_invalid_response", oversize: "admin_response_limit", "extra-field": "admin_invalid_response", "duplicate-key": "admin_invalid_response", "invalid-utf8": "admin_invalid_response", "wrong-status": "admin_invalid_response", "invalid-outcome": "admin_invalid_response" } as Record<string, string>)[kind] ?? kind;
+        garbage: "admin_invalid_response", oversize: "admin_response_limit", "extra-field": "admin_invalid_response", "duplicate-key": "admin_invalid_response", "invalid-utf8": "admin_invalid_response", "wrong-status": "admin_invalid_response", "invalid-outcome": "admin_invalid_response", depth: "admin_invalid_response", c0: "admin_invalid_response" } as Record<string, string>)[kind] ?? kind;
       await expect(f.run()).rejects.toMatchObject({ error: operationError(reason) });
       expect(seen.opened).toEqual([]); expect(seen.acquire).toHaveBeenCalledTimes(1);
       expect(readFileSync(f.paths.controllerLockPath, "utf8")).toBe(before); expect(lock.held()).toBe(true); expect(f.lines).toEqual([]);
@@ -320,4 +362,93 @@ describe("session describe CLI mount", () => {
     }
     expect(seen.acquire).not.toHaveBeenCalled(); expect(seen.opened).toEqual([]);
   }, 20_000);
+});
+
+
+describe("session describe output", () => {
+  function output() {
+    const stdout = new Writable({ write(_chunk, _encoding, done) { done(); } });
+    const stderr = new Writable({ write(_chunk, _encoding, done) { done(); } });
+    const fail = vi.fn(), bytes: { fd: number; bytes: Buffer }[] = [];
+    const syscall = vi.spyOn(fs, "writeSync").mockImplementation((fd, buffer, offset, length) => {
+      bytes.push({ fd, bytes: Buffer.from((buffer as Buffer).subarray(offset as number, (offset as number) + (length as number))) });
+      return length as number;
+    });
+    return { stdout, stderr, fail, bytes, syscall, io: createSessionDescribeOutput(stdout, stderr, fail) };
+  }
+
+  it("preserves UTF-8 pretty JSON and exactly one newline across partial writes and EAGAIN", () => {
+    const o = output(), expected = JSON.stringify({ example: "é", projects: Array(500).fill("x".repeat(500)) }, null, 2);
+    let attempts = 0; const written: Buffer[] = [];
+    vi.spyOn(Atomics, "wait").mockReturnValue("timed-out");
+    o.syscall.mockImplementation((_fd, buffer, offset, length) => {
+      if (attempts++ === 1) throw Object.assign(new Error("private"), { code: "EAGAIN" });
+      const count = Math.min(length as number, 8192);
+      written.push(Buffer.from((buffer as Buffer).subarray(offset as number, (offset as number) + count))); return count;
+    });
+    o.io.write(expected);
+    expect(Buffer.concat(written).toString()).toBe(`${expected}\n`); expect(o.fail).not.toHaveBeenCalled();
+  });
+
+  it.each(["EPIPE", "EIO", "zero", "EAGAIN"])("%s produces only the fixed public error, including exhausted retries", code => {
+    const o = output(); vi.spyOn(Atomics, "wait").mockReturnValue("timed-out");
+    o.syscall.mockImplementation(() => {
+      if (code === "zero") return 0;
+      throw Object.assign(new Error("private bytes and stack"), { code });
+    });
+    expect(() => o.io.write("{}")).toThrow(expect.objectContaining({ error: operationError("output_unavailable") }));
+    expect(o.syscall.mock.calls.length).toBeLessThanOrEqual(4096); expect(o.fail).not.toHaveBeenCalled();
+  });
+
+  it.each(["offline", "socket"])("%s handles an error emitted after write returns, including during offline drain", async path => {
+    const f = fixture(), o = output(), events: string[] = [];
+    if (path === "socket") {
+      owner(f); const server = createServer((_request, response) => response.end(JSON.stringify({
+        actor: { kind: "operator", accountId: null }, mode: "token", listener: "unix", fullAuthority: true,
+        installationPermissions: [], projects: [], projectsTruncated: false, freshLogin: { state: "exempt", validUntil: null },
+      })));
+      await new Promise<void>(resolve => server.listen(f.paths.adminSocketPath, resolve));
+      cleanup.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    }
+    const error = new Promise<void>(resolve => o.stdout.once("error", () => { events.push("error"); resolve(); }));
+    o.stdout._write = (_chunk, _encoding, done) => { process.nextTick(() => done(new Error("late private EPIPE"))); };
+    o.syscall.mockImplementation((fd, buffer, offset, length) => {
+      if (fd === 1) { expect(o.stdout.write("fixture")).toBe(true); events.push("write-returned"); }
+      else o.bytes.push({ fd, bytes: Buffer.from((buffer as Buffer).subarray(offset as number, (offset as number) + (length as number))) });
+      return length as number;
+    });
+    const drain = RealStore.prototype.closeAfterDrain;
+    if (path === "offline") vi.spyOn(RealStore.prototype, "closeAfterDrain").mockImplementation(async function (this: stores.SqliteStateStore) {
+      events.push("drain"); expect(existsSync(f.paths.controllerLockPath)).toBe(true);
+      await error; expect(existsSync(f.paths.controllerLockPath)).toBe(true);
+      await drain.call(this); events.push("closed");
+    });
+    await runSessionDescribe(["describe"], f.paths, o.io.write); await error;
+    expect(o.fail).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(Buffer.concat(o.bytes.map(x => x.bytes)).toString())).toEqual({ error: operationError("output_unavailable") });
+    o.io.reportError("duplicate"); expect(o.bytes).toHaveLength(1);
+    if (path === "offline") {
+      expect(events).toEqual(["write-returned", "drain", "error", "closed"]);
+      expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+    }
+  }, 20_000);
+
+  it("a pipe closing mid-write leaves only the prefix and reports failure without retrying it", () => {
+    const o = output(), prefix: Buffer[] = [];
+    o.syscall.mockImplementation((fd, buffer, offset) => {
+      if (fd === 1 && prefix.length === 0) { prefix.push(Buffer.from((buffer as Buffer).subarray(offset as number, (offset as number) + 3))); return 3; }
+      if (fd === 1) throw Object.assign(new Error("private"), { code: "EPIPE" });
+      return (buffer as Buffer).length;
+    });
+    expect(() => o.io.write('{"projects":[]}')).toThrow(expect.objectContaining({ error: operationError("output_unavailable") }));
+    expect(Buffer.concat(prefix).toString()).toBe('{"p'); expect(o.syscall).toHaveBeenCalledTimes(2);
+  });
+
+  it("closed stderr stays silent for synchronous and late errors", () => {
+    const o = output(); o.syscall.mockImplementation(() => { throw Object.assign(new Error("private"), { code: "EPIPE" }); });
+    expect(() => o.io.reportError(JSON.stringify({ error: operationError("output_unavailable") }))).not.toThrow();
+    expect(() => o.stderr.emit("error", new Error("late stderr failure"))).not.toThrow();
+    expect(() => o.stdout.emit("error", new Error("late stdout failure"))).not.toThrow();
+    expect(o.fail).toHaveBeenCalled(); expect(o.bytes).toEqual([]); expect(o.syscall).toHaveBeenCalledTimes(1);
+  });
 });

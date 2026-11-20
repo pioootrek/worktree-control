@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runSessionDescribe, SessionDescribeError } from "./session-describe";
+import { createSessionDescribeOutput, runSessionDescribe, SessionDescribeError } from "./session-describe";
 import { buildOperationsRuntime } from "../server/bootstrap/operations-runtime";
 import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
 import { createProtectedIdentityAdministration } from "../server/bootstrap/identity-administration";
@@ -105,6 +105,8 @@ function optionalPositiveNumber(value: string | undefined, label: string): numbe
   return parsed;
 }
 
+let sessionOutput: ReturnType<typeof createSessionDescribeOutput> | undefined;
+
 async function main(retainedLock?: ControllerLock): Promise<void> {
   const information = retainedLock ? null : cliInformation(process.argv.slice(2), packageJson.version);
   if (information !== null) {
@@ -113,6 +115,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   }
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
+  if (command === "session") sessionOutput = createSessionDescribeOutput();
   if (command === "upgrade") {
     // Offline maintenance before the generic start parsing, which would reject --backup-dir here.
     // It does not pass the ordinary admission check: it is how a database becomes current.
@@ -189,7 +192,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     return;
   }
   if (command === "session") {
-    await runSessionDescribe(withoutPathOptions(process.argv.slice(3)), paths, line => process.stdout.write(`${line}\n`));
+    await runSessionDescribe(withoutPathOptions(process.argv.slice(3)), paths, sessionOutput!.write);
     return;
   }
   if (command === "auth") {
@@ -814,14 +817,17 @@ function findLanAddress(): string | null {
 }
 
 main().catch((error) => {
+  if (sessionOutput) {
+    const line = error instanceof UpgradeError ? JSON.stringify(upgradeErrorBody(error))
+      : error instanceof SessionDescribeError ? JSON.stringify({ error: error.error })
+      : error instanceof ProviderAdminError ? JSON.stringify(providerAdminErrorBody(error))
+      : error instanceof Error ? error.message : String(error);
+    sessionOutput.reportError(line); return;
+  }
   // Every family prints the upgrade refusals (upgrade_required at an ordinary opening, and
   // the upgrade command's own errors) as the same JSON body, unchanged by its own translation.
   if (error instanceof UpgradeError || process.argv[2] === "upgrade") {
     console.error(JSON.stringify(upgradeErrorBody(error))); process.exitCode = 1; return;
-  }
-  if (process.argv[2] === "session" && (error instanceof SessionDescribeError || error instanceof ProviderAdminError)) {
-    console.error(JSON.stringify(error instanceof SessionDescribeError ? { error: error.error } : providerAdminErrorBody(error)));
-    process.exitCode = 1; return;
   }
   if (process.argv[2] === "auth" && process.argv[3] === "fence") {
     console.error(JSON.stringify(providerAdminErrorBody(error))); process.exitCode=1; return;
