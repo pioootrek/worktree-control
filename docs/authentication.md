@@ -273,9 +273,33 @@ RBAC script verifies this in `project-reads-${mode}` with the account-mode agent
 which holds no role after the upgrade's authority reset. In the same lane the
 upgraded owner, signed in with a provider cookie, holds the installation `admin`
 role and reads every project, while the agent's read of the same project is
-refused. No release command grants a project role yet, so the installed build
-cannot show a reader scoped to one project; the source tests show it with real
-Git worktrees and a hidden neighbouring project.
+refused.
+
+The script reads real Git repositories. In the released-baseline lane, 0.1.1
+registers two repositories, and its agent links each one to a Knowledge project
+with `link_runtime`. The first repository has `main` and a linked, modified
+`feature` worktree. The second belongs to a neighbouring project. Every
+`upgrade inspect` passes both links as accepted `links` decisions: the first
+upgrade, the repeated upgrade after a raw database rollback, and the upgrade
+after each 0.1.1 backup restore. The script then checks the registrations'
+parents. Permitted callers read each project's exact worktrees (path, branch,
+head and dirty state) and nothing of the other project: installation authority
+over HTTP and MCP, the local operator through the CLI socket, and the admin
+cookie. Callers without a role get, for both existing projects, the same
+refusal as for a missing project, and no answer contains a fixture path. In the
+fresh lane nothing gives a registration a parent: only an accepted upgrade link
+does. Both registrations therefore stay parentless. Only full authority lists
+them, as `projectId: null` items, and the owner cookie without a role reads
+nothing.
+
+The installed build cannot show a reader scoped to one project. Only the
+upgrade's `grant_admin` act writes `account_grants`, and no release command,
+endpoint or tool grants a project role. A direct database write is not an
+option: it would bypass the security fence, and `auth fence resume` discards
+grants written after the upgrade. The source test
+`project-reads-transports.test.ts` covers the scoped reader with real Git
+worktrees and a hidden neighbouring project over the API, the unix socket and
+MCP. The installed admin and the zero-role agent do not replace that check.
 
 Over MCP, `tools/list` returns `project_list`, `project_status`,
 `project_worktrees` and `session_describe`. Call a project tool with the same
