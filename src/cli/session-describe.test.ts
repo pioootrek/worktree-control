@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Writable } from "node:stream";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -407,7 +408,8 @@ describe("session describe output", () => {
     if (state === "throws") write.mockImplementation(() => { throw new Error("private bytes and stack"); });
     expect(() => o.io.write("{}")).toThrow(expect.objectContaining({ error: operationError("output_unavailable") }));
     expect(o.chunks).toEqual([]); expect(o.syscall).not.toHaveBeenCalled();
-    if (state !== "throws") expect(write).not.toHaveBeenCalled();
+    if (state === "throws") expect(write).toHaveBeenCalledTimes(1);
+    else expect(write).not.toHaveBeenCalled();
   });
 
   it.each(["offline", "socket"])("%s handles a late stream error once after write returns, including during offline drain", async path => {
@@ -481,9 +483,10 @@ describe("session describe real-process output", () => {
           databaseLocked: existsSync(paths.databasePath + ".owner.lock") });
         process.disconnect();
       });`;
+    const environment = { PATH: process.env.PATH, NODE_ENV: "test", HOME: f.root,
+      WORKTREE_CONTROL_DATA_DIR: f.paths.dataDirectory, WORKTREE_CONTROL_STATE_DIR: f.paths.stateDirectory };
     const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", source], {
-      cwd: repository, env: { PATH: process.env.PATH, NODE_ENV: "test", HOME: f.root,
-        WORKTREE_CONTROL_DATA_DIR: f.paths.dataDirectory, WORKTREE_CONTROL_STATE_DIR: f.paths.stateDirectory },
+      cwd: repository, env: environment,
       stdio: ["ignore", "pipe", "pipe", "ipc"],
     });
     let stderr = "", stdout = "", forced = false;
@@ -504,8 +507,11 @@ describe("session describe real-process output", () => {
       if (path === "offline") {
         expect(completed.locked).toBe(false); expect(completed.databaseLocked).toBe(false);
         expect(existsSync(f.paths.controllerLockPath)).toBe(false);
-        // Another real invocation acquires, reads, closes, and releases while the first pipe is unread.
-        await f.run(); expect(f.lines).toHaveLength(2);
+        // A separate CLI process acquires and releases while the first pipe remains unread.
+        const second = await promisify(execFile)(process.execPath, ["--import", "tsx", join(repository, "src/cli/index.ts"),
+          "session", "describe", "--data-dir", f.paths.dataDirectory, "--state-dir", f.paths.stateDirectory],
+        { cwd: repository, env: environment, timeout: 15_000, maxBuffer: 1024 * 1024, encoding: "utf8" });
+        expect(second.stderr).toBe(""); expect(second.stdout).toBe(expected);
         expect(existsSync(f.paths.controllerLockPath)).toBe(false);
       }
       if (reader === "slow") {

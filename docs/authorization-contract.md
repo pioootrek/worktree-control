@@ -191,18 +191,13 @@ Strict UTF-8 and duplicate-key JSON parsing plus operator/unix DTO validation re
 them. The unix listener still owns authentication, admission and release.
 The client does not use a legacy authenticator or update credential usage.
 
-This command alone writes stdout synchronously through `fs.writeSync(1, ...)`,
-handling partial writes and retrying EAGAIN/EINTR with 5ms pauses, up to one
-second or 4096 attempts. Thus a failed offline write throws inside the admitted
-commit; the runner records `commit_failed`, mapped to `output_unavailable`.
-Command-scoped stdout/stderr error listeners remain until process termination;
-a late error sets exit status 1 without interrupting drain, close or lock release.
-Stderr uses the same guarded descriptor writer; if stderr is also closed, exit 1
-is silent. [Node's POSIX I/O distinction](https://nodejs.org/docs/latest-v22.x/api/process.html#a-note-on-process-io)
-and [writeSync byte counts](https://nodejs.org/docs/latest-v22.x/api/fs.html#fswritesyncfd-buffer-offset-length-position)
-explain the synchronous descriptor choice for Linux and macOS pipes.
-If a pipe closes mid-write, a consumer may receive truncated JSON on stdout;
-the command exits 1 with the sanitized error on usable stderr.
+This command installs stdout/stderr error listeners before writing and keeps
+them until process termination. Offline output is committed to the process's
+stdout stream inside the admitted phase, then drains asynchronously; socket
+output is committed after reply validation. Failed synchronous writes fail the
+admitted commit; late stream errors set exit status 1 without interrupting store
+drain, close or lock release. See the output error mapping below for delivery
+failures and slow-reader behaviour.
 
 Observed source distinction: the existing client has no socket-path ownership,
 permission or peer verification. The server publishes a 0600 socket in a 0700
