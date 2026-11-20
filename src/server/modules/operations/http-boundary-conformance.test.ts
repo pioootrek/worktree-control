@@ -2043,7 +2043,8 @@ it.each(["open", "token", "better-auth", "legacy"])("MCP %s legacy secret header
 
 describe("D1a-10 real Node listener expiry", () => {
   it.each(["worker", "mcp"] as const)("%s production timeouts remain documented; real slow headers and request expiry refuse before mint", async listener => {
-    // Change only fixture timing. Keep Node's real parser, scanner and sockets;
+    // Keep the worker's production timeouts. Only MCP's minute-scale values
+    // are shortened in the fixture. Keep Node's real parser, scanner and sockets;
     // the shorter scan interval avoids Node's default 30-second scan quantization.
     const http = nodeHttp.createServer, https = nodeHttps.createServer;
     vi.spyOn(nodeHttp, "createServer").mockImplementation((options, callback) =>
@@ -2053,26 +2054,35 @@ describe("D1a-10 real Node listener expiry", () => {
     const f = listener === "worker" ? await workerFixture() : await mcpFixture();
     const server = f.driver.server;
     expect([server.headersTimeout, server.requestTimeout]).toEqual(listener === "worker" ? [10_000, 15_000] : [60_000, 300_000]);
-    server.headersTimeout = 200; server.requestTimeout = 400;
+    if (listener === "mcp") { server.headersTimeout = 200; server.requestTimeout = 400; }
     const mint = vi.spyOn(f.runtime, "mint");
     for (const phase of ["headers", "body"] as const) {
       const socket = f.driver.connection(); cleanups.push(() => { socket.destroy(); });
       let bytes = "";
       const started = performance.now();
       await new Promise<void>((resolve, reject) => {
-        socket.setTimeout(5000, () => { socket.destroy(); reject(new Error("Node timeout fixture did not expire")); });
+        socket.setTimeout(server.requestTimeout + 5000, () => { socket.destroy(); reject(new Error("Node timeout fixture did not expire")); });
         socket.on("data", chunk => { bytes += chunk.toString(); }); socket.on("error", reject); socket.once("end", () => resolve());
         socket.once(listener === "worker" ? "secureConnect" : "connect", () => {
-          socket.write(`POST ${listener === "worker" ? operationRoute : "/mcp/operations"} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 100\r\n${phase === "body" ? "\r\n{" : "X-Slow: "}`);
+          const target = listener === "worker" ? operationRoute : "/mcp/operations";
+          const remainingHeaders = "Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 100\r\n";
+          socket.write(`POST ${target} HTTP/1.1\r\nHost: localhost\r\n`);
+          if (listener === "worker" && phase === "body") {
+            // Let eight seconds of the real 15-second request lifetime elapse
+            // in headers (below the real 10-second header timeout). The Node
+            // total then wins before the adapter's 10-second body deadline.
+            const finishHeaders = setTimeout(() => socket.write(`${remainingHeaders}\r\n{`), server.headersTimeout - 2000);
+            socket.once("close", () => clearTimeout(finishHeaders));
+          } else socket.write(`${remainingHeaders}${phase === "body" ? "\r\n{" : "X-Slow: "}`);
         });
       });
       socket.destroy();
       expect(bytes).toMatch(/^HTTP\/1\.1 408 Request Timeout\r\n/);
       expect(bytes).not.toContain('"actor"'); expect(mint).not.toHaveBeenCalled();
-      expect(performance.now() - started).toBeGreaterThanOrEqual(phase === "headers" ? 200 : 400);
+      expect(performance.now() - started).toBeGreaterThanOrEqual(phase === "headers" ? server.headersTimeout : server.requestTimeout);
     }
     expect((await f.driver.send().reply).status).toBe(200);
-  }, 20_000);
+  }, 40_000);
 });
 
 

@@ -241,9 +241,12 @@ The Community smoke preset additionally runs `operations-installed-token-and-loc
 No additional controller restart is needed for the matrix. Added raw MCP requests
 and refusal probes are timed in existing script reports; exact runtime growth
 requires before/after measurements on the same host and is not inferred from
-source. The focused listener expiry tests use a 25 ms real Node scan interval,
-200 ms headers and 400 ms request timeouts in fixtures; production values are
-asserted before overrides. No fake clock or production timeout change is used.
+source. The focused listener expiry tests use a 25 ms real Node scan interval. Worker
+expiry runs at the actual 10000 ms header and 15000 ms request values. Its body
+case spends eight seconds in headers so Node expires the complete request before
+the adapter's body deadline. MCP alone uses 200 ms headers and 400 ms request
+fixture overrides for its minute-scale defaults; production values are asserted
+before those overrides. No fake clock or production timeout change is used.
 
 ## Earlier deferrals and scope
 
