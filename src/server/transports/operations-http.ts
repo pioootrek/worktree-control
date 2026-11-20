@@ -11,10 +11,10 @@ import type { ProviderSessionEligibility } from "../bootstrap/authentication-pro
 import type { AuthenticationRequestBudget, AuthenticationRequestSlot } from "../bootstrap/authentication-request-budget";
 import { authenticationRequestBoundary, authenticationProviderHeaders, authenticationRequestOrigin, authenticationJsonContentType } from "./authentication-http";
 import type { PublicOperationError } from "@/shared/contracts/operations";
-import { BoundaryError, parseStrictJson, readBoundedBody, requestCookies, SESSION_COOKIE } from "./authentication-http-boundary";
+import { BodyReadAbortedError, BoundaryError, parseStrictJson, readBoundedBody, requestCookies, SESSION_COOKIE } from "./authentication-http-boundary";
 import { parseOperationsPath } from "./operations-path";
 
-type Mint = (listener: "api" | "unix" | "worker", presented: PresentedCredentials, session: VerifiedProviderSession | null, options: DatabaseAdmissionOptions) => Promise<
+type Mint = (listener: "api" | "mcp" | "unix" | "worker", presented: PresentedCredentials, session: VerifiedProviderSession | null, options: DatabaseAdmissionOptions) => Promise<
   { readonly ok: true; readonly context: AuthenticationContext } | { readonly ok: false; readonly error: PublicOperationError }>;
 /** Value supplied by the one bootstrap composition. No boundary is constructed here. */
 export type OperationsHttpRuntime = { supported: false; mint: Mint } | {
@@ -55,14 +55,25 @@ export function operationsFailure(response: ServerResponse, error: PublicOperati
   if (error.retry === "retry") response.setHeader("Retry-After", "1");
   // Refused bodies are not drained. Close this connection after the finite response.
   response.setHeader("Connection", "close");
-  write(response, error.status, JSON.stringify({ error }));
+  writeOperationsResponse(response, error.status, JSON.stringify({ error }));
 }
-function write(response: ServerResponse, status: number, body: string): void {
+export function writeOperationsResponse(response: ServerResponse, status: number, body: string): void {
   response.writeHead(status, { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8",
     "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'" });
   response.end(body);
 }
 const failure = (category: ConstructorParameters<typeof OperationError>[0], reason: string) => publicError(new OperationError(category, reason));
+
+/** A total deadline wins; cancellation only replaces the reader's explicit abort. */
+export function operationsRequestFailure(error: unknown, signal: AbortSignal, timedOut: boolean): PublicOperationError {
+  if (timedOut) return publicError(new OperationError("unavailable", "request_timed_out", { retry: "retry" }));
+  if (signal.aborted && error instanceof BodyReadAbortedError) {
+    return publicError(new OperationError("unavailable", "request_cancelled", { retry: "retry" }));
+  }
+  return error instanceof BoundaryError
+    ? failure(error.status === 413 ? "payload_too_large" : error.status === 403 ? "forbidden" : error.status === 503 ? "unavailable" : "invalid_request", error.code)
+    : publicError(error);
+}
 
 /** Keep Node's protocol ownership: neither listener registers connect or upgrade.
  * Node closes CONNECT without dispatch or a response. Without an upgrade listener,
@@ -160,13 +171,7 @@ export function createOperationsHttp(options: {
       }
       if (!cookie && options.originAllowed && !options.originAllowed(request)) { operationsFailure(response, failure("forbidden", "origin_forbidden")); return; }
       // Do not let Node collapse singleton transport fields into an accepted value.
-      const single = new Set(["host", "origin", "content-type", "content-length", "content-encoding", "transfer-encoding"]);
-      const seen = new Set<string>();
-      for (let i = 0; i < request.rawHeaders.length; i += 2) {
-        const name = request.rawHeaders[i].toLowerCase();
-        if (single.has(name) && seen.has(name)) throw new BoundaryError(400, "invalid_request");
-        seen.add(name);
-      }
+      validateOperationsSingletonHeaders(request);
       if (cookie) authenticationJsonContentType(request);
       if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers["content-type"] ?? "")) throw new BoundaryError(400, "invalid_request");
       const deadline = runtime.runtime.now() + limits.deadlineMs;
@@ -194,14 +199,12 @@ export function createOperationsHttp(options: {
             // reports `committed` to the runner, preventing a second, outside-phase write.
             operationsFailure(response, failure("payload_too_large", "response_too_large")); return;
           }
-          write(response, 200, serialized);
+          writeOperationsResponse(response, 200, serialized);
         },
       });
       if (result.status !== "committed") operationsFailure(response, result.error);
     } catch (error) {
-      operationsFailure(response, timedOut ? publicError(new OperationError("unavailable", "request_timed_out", { retry: "retry" })) : error instanceof BoundaryError
-        ? failure(error.status === 413 ? "payload_too_large" : error.status === 403 ? "forbidden" : error.status === 503 ? "unavailable" : "invalid_request", error.code)
-        : publicError(error));
+      operationsFailure(response, operationsRequestFailure(error, abort.signal, timedOut));
     } finally {
       // Never relinquish ownership merely because the handler returned or the client disconnected.
       // settle is called once; failed cleanup retains capacity. No race against
@@ -234,4 +237,15 @@ export function createOperationsHttp(options: {
     stop() { closing = true; for (const cancel of cancellations) cancel(); },
     async drain() { await Promise.allSettled([...accepted]); },
   };
+}
+
+/** Shared raw singleton validation; credentials retain multiplicity for mint. */
+export function validateOperationsSingletonHeaders(request: IncomingMessage, additional: readonly string[] = []): void {
+  const single = new Set(["host", "origin", "content-type", "content-length", "content-encoding", "transfer-encoding", ...additional]);
+  const seen = new Set<string>();
+  for (let i = 0; i < request.rawHeaders.length; i += 2) {
+    const name = request.rawHeaders[i].toLowerCase();
+    if (single.has(name) && seen.has(name)) throw new BoundaryError(400, "invalid_request");
+    seen.add(name);
+  }
 }

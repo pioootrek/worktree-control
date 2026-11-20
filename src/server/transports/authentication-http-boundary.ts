@@ -4,6 +4,10 @@ import { parseStrictProviderJson, BROWSER_COOKIE, type BrowserOperation } from "
 export class BoundaryError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); }
 }
+/** Keeps the browser boundary's public refusal while identifying an interrupted read. */
+export class BodyReadAbortedError extends BoundaryError {
+  constructor() { super(400, "invalid_request"); }
+}
 export function fail(status: number, code: string): never { throw new BoundaryError(status, code); }
 
 /** Explicit transport inputs. There are no defaults, so a fixture value cannot become policy. */
@@ -46,11 +50,12 @@ export async function readBoundedBody(request: IncomingMessage, options: { limit
       settled = true;
       clearTimeout(timer);
       request.off("data", data); request.off("end", end); request.off("error", broken);
-      options.signal.removeEventListener("abort", broken);
+      options.signal.removeEventListener("abort", aborted);
       settle();
     };
     const refuse = (status: number, code: string, stop: boolean) => finish(() => { if (stop) request.pause(); reject(new BoundaryError(status, code)); });
     const broken = () => refuse(400, "invalid_request", false);
+    const aborted = () => finish(() => reject(new BodyReadAbortedError()));
     const data = (chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > options.limit) refuse(413, "request_too_large", true);
@@ -62,8 +67,8 @@ export async function readBoundedBody(request: IncomingMessage, options: { limit
     });
     const timer = setTimeout(() => refuse(408, "request_timeout", true), options.timeoutMs);
     timer.unref();
-    if (options.signal.aborted) { broken(); return; }
-    options.signal.addEventListener("abort", broken, { once: true });
+    if (options.signal.aborted) { aborted(); return; }
+    options.signal.addEventListener("abort", aborted, { once: true });
     request.on("data", data); request.once("end", end); request.once("error", broken);
   });
 }

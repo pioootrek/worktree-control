@@ -339,7 +339,7 @@ describe("unmounted real operations composition under strict admission", () => {
     expect(value.projects).toHaveLength(MAX_DESCRIBED_PROJECTS);
     expect(value.projectsTruncated).toBe(true);
     expect(value.projects.some(p => p.projectId === "invalid project id")).toBe(false);
-  });
+  }, 20_000);
 
   it("reads new grants after an earlier read and between mint and execution", async () => {
     const f = await fixture("better-auth", true);

@@ -56,6 +56,7 @@ const ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
 const APPROVED_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
   "packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts": "runs cookie listener proofs through production bootstrap and reuses the mounted boundary driver and exact conformance assertions",
   "src/server/bootstrap/operations-runtime.ts": "composes the runtime from the store owner's read ports and controller policies",
+  "src/server/transports/operations-mcp.ts": "unmounted request adapter uses public release and error policy and receives the runtime as a value",
   "src/server/transports/operations-http.ts": "uses the public classifier and error serializer to avoid duplicating wire and failure policy; receives the runtime as a value",
 });
 const COMPOSITION = "src/server/bootstrap/operations-runtime.ts";
@@ -120,21 +121,24 @@ function realOrSelf(path: string): string {
 }
 
 /** Guard over one repository root. Separate so that the self-test can run it on a temporary tree. */
-function createGuard(root: string, composition = false) {
-  const moduleDirectory = realOrSelf(join(root, composition ? COMPOSITION : "src/server/modules/operations"));
-  const contractsFile = realOrSelf(join(root, composition ? COMPOSITION : "src/shared/contracts/operations.ts"));
-  const contractsBase = join(root, composition ? COMPOSITION.slice(0, -3) : "src/shared/contracts/operations");
-  const moduleBase = join(root, composition ? COMPOSITION.slice(0, -3) : "src/server/modules/operations");
+function createGuard(root: string, composition = false, target?: string) {
+  const moduleDirectory = realOrSelf(join(root, target ?? (composition ? COMPOSITION : "src/server/modules/operations")));
+  const contractsFile = realOrSelf(join(root, target ?? (composition ? COMPOSITION : "src/shared/contracts/operations.ts")));
+  const contractsBase = join(root, target ? target.slice(0, -3) : composition ? COMPOSITION.slice(0, -3) : "src/shared/contracts/operations");
+  const moduleBase = join(root, target ? target.slice(0, -3) : composition ? COMPOSITION.slice(0, -3) : "src/server/modules/operations");
 
   const insideTarget = (path: string) => path === moduleDirectory || path.startsWith(moduleDirectory + sep) || path === contractsFile;
 
+  function specifierBase(fromFile: string, specifier: string): string | null {
+    if (specifier.startsWith("file:")) { try { return fileURLToPath(specifier); } catch { return null; } }
+    if (specifier === "@" || specifier.startsWith("@/")) return join(root, "src", specifier.slice(2));
+    if (specifier.startsWith(".")) return resolve(dirname(fromFile), specifier);
+    return isAbsolute(specifier) ? resolve(specifier) : null;
+  }
+
   /** Whether a literal specifier written in `fromFile` reaches the module or its contracts file. */
   function reaches(fromFile: string, specifier: string): boolean {
-    let base: string | null = null;
-    if (specifier.startsWith("file:")) { try { base = fileURLToPath(specifier); } catch { return false; } }
-    else if (specifier === "@" || specifier.startsWith("@/")) base = join(root, "src", specifier.slice(2));
-    else if (specifier.startsWith(".")) base = resolve(dirname(fromFile), specifier);
-    else if (isAbsolute(specifier)) base = resolve(specifier);
+    const base = specifierBase(fromFile, specifier);
     if (!base) return false;
     // Lexical match first: a missing target with the module's name is still an import of it.
     const lexical = base.replace(/\.(?:[cm]?[jt]sx?|d\.ts)$/, "").replace(/[\\/]index$/, "");
@@ -151,7 +155,7 @@ function createGuard(root: string, composition = false) {
     return false;
   }
 
-  const exempt = (file: string) => composition ? /\.(test|spec)\.[cm]?[jt]sx?$/.test(file)
+  const exempt = (file: string) => (composition || target) ? /\.(test|spec)\.[cm]?[jt]sx?$/.test(file)
     : file === join(root, "src/shared/contracts/operations.ts") || file.startsWith(moduleBase + sep);
 
   /** The inventory: files to scan and symbolic links found inside it. */
@@ -173,7 +177,24 @@ function createGuard(root: string, composition = false) {
       const path = join(root, file);
       if (existsSync(path)) files.push(path); else missing.push(file);
     }
-    return { files: files.filter(file => !exempt(file)), symlinks, missing };
+    const scanned = new Set(files.filter(file => !exempt(file)));
+    if (target) {
+      // Test files are exempt only while unreachable from production. Follow
+      // literal edges transitively, including cycles and emitted .js specifiers.
+      const byRealPath = new Map(files.map(file => [realOrSelf(file), file]));
+      for (const file of scanned) {
+        for (const specifier of analyse(file, readFileSync(file, "utf8")).literals) {
+          const base = specifierBase(file, specifier);
+          if (!base) continue;
+          const bases = [base, base.replace(/\.(?:[cm]?js|jsx)$/, "")];
+          for (const candidate of bases.flatMap(base => RESOLVE_EXTENSIONS.map(suffix => base + suffix))) {
+            const imported = byRealPath.get(realOrSelf(candidate));
+            if (imported) { scanned.add(imported); break; }
+          }
+        }
+      }
+    }
+    return { files: [...scanned], symlinks, missing };
   }
 
   /** Every violation, as stable text lines. */
@@ -190,6 +211,9 @@ function createGuard(root: string, composition = false) {
       // feeding computed imports. The module guard keeps its own allowlist semantics.
       if (composition && Object.prototype.hasOwnProperty.call(allowlist, name) && text.includes("operations-runtime")) {
         found.push(`${name}: composition name in allowlisted text scan`);
+      }
+      if (target && Object.prototype.hasOwnProperty.call(allowlist, name) && text.includes(target.split("/").at(-1)!.replace(/\.ts$/, ""))) {
+        found.push(`${name}: target name in allowlisted text scan`);
       }
       if (dynamic.length > 0 && !Object.prototype.hasOwnProperty.call(allowlist, name)) {
         for (const each of dynamic) found.push(`${name}: non-literal ${each}`);
@@ -227,6 +251,51 @@ describe("authorization contract stays unmounted", () => {
     expect(rootSources).toEqual([...ROOT_FILES].sort());
     expect(guard.violations(ALLOWLIST, APPROVED_IMPORTERS)).toEqual([]);
     expect(guard.invalidImporters(APPROVED_IMPORTERS)).toEqual([]);
+  });
+
+  it("keeps the MCP request adapter unmounted, including indirect production importers", () => {
+    const target = "src/server/transports/operations-mcp.ts";
+    expect(createGuard(repository, false, target).violations(ALLOWLIST)).toEqual([]);
+    const root = mkdtempSync(join(tmpdir(), "unmounted-mcp-")); temporary.push(root);
+    for (const name of ["src/server/mcp-http-server.ts", "src/server/http-server.ts", "src/cli/index.ts", "src/server/helper.ts"]) {
+      mkdirSync(dirname(join(root, name)), { recursive: true });
+      writeFileSync(join(root, name), 'import "@/server/transports/operations-mcp";');
+      expect(createGuard(root, false, target).violations(ALLOWLIST)).toContain(`${name}: imports @/server/transports/operations-mcp`);
+    }
+    writeFileSync(join(root, "src/server/mcp-http-server.ts"), 'import "./helper";');
+    expect(createGuard(root, false, target).violations(ALLOWLIST)).toContain("src/server/helper.ts: imports @/server/transports/operations-mcp");
+    expect(createGuard(root, false, target).violations(ALLOWLIST)).not.toContain("src/server/mcp-http-server.ts: imports ./helper");
+  });
+
+  it("follows production imports through test files, including emitted specifiers and cycles", () => {
+    const target = "src/server/transports/operations-mcp.ts";
+    const root = mkdtempSync(join(tmpdir(), "unmounted-mcp-test-hop-")); temporary.push(root);
+    const write = (path: string, text: string) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), text); };
+    write("src/support.test.ts", 'import "./nested.spec.js";');
+    write("src/nested.spec.ts", 'import "./support.test"; import "@/server/transports/operations-mcp";');
+    const guard = createGuard(root, false, target);
+    expect(guard.violations(ALLOWLIST)).toEqual([]); // isolated tests remain exempt
+    write("src/production.ts", 'import "./support.test";');
+    expect(guard.violations(ALLOWLIST)).toEqual(["src/nested.spec.ts: imports @/server/transports/operations-mcp"]);
+  });
+
+  it("text-scans allowlisted production files for computed adapter imports without changing existing guards", () => {
+    const target = "src/server/transports/operations-mcp.ts";
+    const root = mkdtempSync(join(tmpdir(), "unmounted-mcp-computed-")); temporary.push(root);
+    const name = "src/server/modules/authentication/provider-runtime.ts", file = join(root, name);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, 'const path = "./external-provider"; await import(path);');
+    expect(createGuard(root, false, target).violations(ALLOWLIST)).toEqual([]);
+    for (const text of [
+      'const path = "../../transports/operations-mcp"; await import(path);',
+      'const path = `../../transports/operations-mcp.${extension}`; await import(path);',
+      'const name = "operations-mcp"; await import(`../../transports/${name}`);',
+    ]) {
+      writeFileSync(file, text);
+      expect(createGuard(root, false, target).violations(ALLOWLIST)).toEqual([`${name}: target name in allowlisted text scan`]);
+      expect(createGuard(root).violations(ALLOWLIST)).toEqual([]);
+      expect(createGuard(root, true).violations(ALLOWLIST)).toEqual([]);
+    }
   });
 
   it("allows only controller start to import the composition", () => {

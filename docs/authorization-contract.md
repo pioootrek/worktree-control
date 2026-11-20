@@ -409,8 +409,10 @@ resolution returns null after eligibility is lost in flight. Controller
 maintenance and stopping retain their earlier refusal. A mixed request is
 `unauthenticated` / `mixed_credentials`.
 Contention remains `busy` / `admission_refused`; cancellation remains
-`unavailable` / `request_cancelled`, both retryable. A session resolution that
-the provider itself rejects (a failed plugin, an unavailable or disposed
+`unavailable` / `request_cancelled`, both retryable. Stopping during an unfinished
+body read also returns retryable `unavailable` / `request_cancelled` (503,
+`Retry-After: 1`); examined input refusals keep their reasons. A session resolution
+that the provider itself rejects (a failed plugin, an unavailable or disposed
 provider) is retryable `unavailable` / `provider_session_unavailable`, never
 `internal`. Storage faults retain `unavailable` / `database_unavailable`. The total ten-second deadline
 aborts provider resolution and admission and answers retryable
@@ -521,6 +523,118 @@ explicit operator acknowledgement. Recommend: refuse a non-loopback worker
 binding in `open` mode unless the operator explicitly acknowledges the disclosed
 authority and data exposure; settle this before the release. D1a-6 does not
 implement that restriction.
+
+### MCP request adapter (built and unmounted, D1a-7a)
+
+`createOperationsMcp` handles the exact raw `/mcp/operations` target through
+`operations-path.ts`. No production listener imports it in this step. D1a-7b
+will mount it before the separate MCP listener's legacy checks, reserve the
+namespace on API and unix, and extend listener and installed-artifact evidence.
+The legacy `/mcp` endpoint and its sessions are unchanged.
+
+Each POST owns a fresh SDK `Server` and
+`WebStandardStreamableHTTPServerTransport`, with `sessionIdGenerator: undefined`
+and `enableJsonResponse: true`. Its context is an immutable request closure.
+Initialize, notifications, `tools/list` and `tools/call` each call the composition's
+admitted `mint("mcp", ...)`. Open accepts no credential, token accepts the
+installation token, and better-auth accepts an agent token. Classification only
+selects the verifier. Supplied session and resumption headers are not forwarded
+to the SDK, confer no authority and bind no session. Cross-request cancellation
+and session binding belong to D1c. There is no usage writer.
+
+The fixed provider-cookie refusal precedes path, method, capacity, body and
+admission checks, matching the HTTP adapter's preflight. Other requests check
+the exact path and POST method, current eligibility, Origin, raw singleton
+headers and JSON content type, then read
+strict bounded JSON before mint. Only an absent Origin or the canonical HTTP
+loopback origin at the socket's local port is allowed. An omitted HTTP port
+means 80. Host is not used to approve an Origin. Duplicate credentials remain visible to acceptance; duplicate
+transport singleton fields, including Accept and MCP protocol version, fail.
+Batches fail before SDK dispatch. GET and DELETE return 405 with `Allow: POST`.
+
+There is exactly one explicit descriptor, `session_describe`, mapped to
+`session.describe`. A test compares descriptors one to one with the registry's
+MCP operation IDs. The operation parses call arguments. SDK handlers do no
+asynchronous application work: an initial `readRelease` captures the current
+public DTO before SDK dispatch. The same DTO is an authorization witness for
+initialize, listing and notifications. Only an oversized-DTO refusal writes
+client bytes there.
+After SDK JSON construction, the adapter buffers the response, then invokes
+`readRelease` again with that witness's canonical value. It recomputes authority,
+grants, directory and clock and refuses a changed projection. Successful SDK
+output is written only by the final synchronous commit to the real Node response. This can
+conservatively refuse metadata responses when grants change too. Admission spans
+neither SDK work nor response drain.
+
+Limits share HTTP's 256 KiB serialized-DTO bound, checked at the initial
+witness commit; an oversized DTO receives the same pre-dispatch HTTP 413
+`payload_too_large` / `response_too_large` refusal. The SDK envelope ceiling is
+`3 * responseBytes + 65,664`: at most 1x for the structured DTO, 2x for its
+escaped text copy, plus 64 KiB for the echoed request ID and 128 bytes for fixed
+JSON-RPC/tool-result framing. Both copies are retained. Other limits remain
+64 KiB request, 32 concurrent requests and a total ten-second deadline, with
+strict JSON depth 8 and 128 fields.
+Messages routed through SDK `transport.send` are byte-checked before Response
+allocation. SDK-generated negotiation and protocol errors construct Responses
+directly and are bounded only while buffering. Every actual Response body is
+checked while buffering. Fixed refusal envelopes remain finite and independent
+of a fixture's smaller response ceiling. Disconnect, deadline
+and `stop()` abort the request, including an unfinished SDK connection. Capacity
+remains owned through awaited admitted work, SDK disposal and Node finish/close;
+`drain()` joins those owners. Disposal rejections are deliberately discarded:
+they cannot replace the committed response or reject the handler promise. Node
+completion and timer, listener and cancellation cleanup still run before the
+slot is released. Disposal that never settles retains its slot and keeps
+`drain()` pending. Repeated stop and drain are harmless. All reads are awaited;
+no detached provider work exists because cookies are refused.
+
+Public refusals preserve the operations category, reason, retry and effect:
+
+| Stage or cause | Wire representation | Reason for mapping |
+| --- | --- | --- |
+| Before SDK dispatch, or notification refusal | HTTP operations `{error}` envelope at its public status; method refusal uses 405 with `invalid_request` / `method_not_allowed` | No JSON-RPC exchange exists, or a notification has no response ID. |
+| Tool lookup or argument refusal | HTTP 200 tool result with `isError: true`; `{error}` in structuredContent and JSON text | A tool call completed with an application refusal, preserving the public error. |
+| Adapter refusal after SDK dispatch, including final release and response size | HTTP 200 JSON-RPC error `-32000`, message = reason, data = public operations error | Replaces a buffered success without sending stale content; the original ID is retained. |
+| SDK protocol or negotiation refusal | SDK finite JSON-RPC error and HTTP status, subject to the same buffer and admitted witness check | The SDK owns protocol validation, not authentication. |
+
+Retryable public failures also set `Retry-After: 1`. Maintenance at final
+revalidation keeps `listener_closed` (the runner checks authority first);
+maintenance before work uses `release_not_eligible`. Adapter stop aborts admission
+with `request_cancelled`. Stopping during an unfinished body read returns the
+pre-dispatch HTTP envelope `unavailable` / `request_cancelled` (503, retry `retry`,
+`Retry-After: 1`); examined input refusals keep their reasons. Credential revocation
+keeps `credential_no_longer_valid`;
+a changed projection keeps `release_payload_changed`; admitted deadline checks
+keep `release_timed_out`; an aborted admission keeps `request_cancelled` and
+contention keeps `admission_refused`. A total timer observed by the outer error
+handler uses `request_timed_out`, as HTTP does. Provider-only configuration
+changes leave agent authority eligible, matching the shared policy.
+
+SDK choice was checked against installed `@modelcontextprotocol/sdk` 1.30.0:
+`dist/esm/server/streamableHttp.js` is a Hono wrapper that writes directly to
+Node, so it cannot provide this final release boundary. In
+`dist/esm/server/webStandardStreamableHttp.js`, lines 172-175 reject transport
+reuse in stateless mode, 578-595 construct the finite JSON response promise,
+726-729 disable session validation, and 919-933 serialize a full response without
+a byte ceiling. Lines 771-788 make close idempotent and clear stream/response
+maps, but do not resolve an abandoned JSON promise. Lines 902-917 reject sending
+a JSON response after its stream was removed. This transport has no real Node
+connection to observe; disconnect is therefore enforced by the adapter's signal
+and final `connected` predicate. SDK `dist/esm/shared/protocol.js`, lines 258-262,
+aborts incoming handler controllers on close. These facts require independent
+abort races and adapter-owned limits; SDK send is never treated as release.
+
+The in-process suite uses real HTTP, SDK clients, composition and synthetic
+SQLite fixtures. It covers the mode/method matrix, concurrent identical IDs,
+forged headers, aliases, strict bodies, limits, post-buffer release changes,
+admission refusal, disconnect/deadline ownership and exact negative controls.
+The import guard rejects literal imports of the new adapter anywhere in its
+source inventory, including test files reached by production imports. It also
+rejects non-literal loaders outside the allowlist and text-scans allowlisted
+production files for the adapter name in computed imports. It does not resolve
+arbitrarily computed names in allowlisted files. Its one new module-consumer
+exemption permits the adapter to use the public error,
+release and contract APIs; it grants no production mount.
 
 ## Permissions and roles
 
@@ -1416,7 +1530,9 @@ imports under `tests/`, and a `src/` importer of such a helper.
 The approved importers of the module and shared contract are
 `src/server/bootstrap/operations-runtime.ts` (store-owner composition) and
 `src/server/transports/operations-http.ts` (the public wire classifier, error
-serializer and runtime types). The exact provider proof importer
+serializer and runtime types), plus the unmounted
+`src/server/transports/operations-mcp.ts` request adapter. A separate import guard
+prohibits production imports of that adapter. The exact provider proof importer
 `packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts`
 reuses the listener driver and conformance assertions under real production
 bootstrap. It is test-only and mounts no additional operation. The adapter receives the built runtime as a
