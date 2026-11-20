@@ -1870,7 +1870,9 @@ describe("MCP listener boundary conformance", () => {
     } finally { release.done(); }
     await shutdown; expect(f.mcp.server.listening).toBe(false); expect(listenerClose).toHaveBeenCalledOnce();
     await f.mcp.close(); expect(legacyClose).toHaveBeenCalledOnce();
+    const adapterModule = await import("@/server/transports/operations-mcp"), replacement = vi.spyOn(adapterModule, "createOperationsMcp");
     await expect(f.mcp.closeSessions()).resolves.toBeUndefined();
+    expect(replacement).not.toHaveBeenCalled();
   });
 
   it.each(["stopOperations", "close"])("%s during policy close prevents owner replacement", async action => {
