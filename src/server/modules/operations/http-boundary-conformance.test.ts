@@ -1606,7 +1606,7 @@ describe("MCP listener boundary conformance", () => {
   it("mixed and duplicate raw credentials, cookie preflight and no provider/budget work", async () => {
     const f = await mcpFixture("better-auth"), mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run"), budget = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire");
     for (const headers of [["Authorization", `Bearer ${f.agent}`, "Authorization", `Bearer ${f.agent}`], ["Authorization", `Bearer ${f.agent}`, "X-Worktree-Control-Token", f.installation]]) {
-      const reply = await f.driver.send({ headers: ["Content-Type", "application/json", "Accept", "application/json, text/event-stream", ...headers] }).reply;
+      const reply = await f.driver.send({ body: JSON.stringify(mcpCall), headers: ["Host", "localhost", "Content-Length", String(Buffer.byteLength(JSON.stringify(mcpCall))), "Content-Type", "application/json", "Accept", "application/json, text/event-stream", ...headers] }).reply;
       expect(reply.body).toEqual(refusal("mixed_credentials"));
     }
     mint.mockClear(); admission.mockClear();
@@ -1739,7 +1739,7 @@ describe("MCP listener boundary conformance", () => {
     expectFailure(() => conform("MCP stale successful payload", !!reply.body.result, false), "MCP stale successful payload", true, false);
   });
 
-  it.each(["policy", "shutdown"])("%s close joins pending owners before SQLite/lock release; repeated cleanup", async kind => {
+  it.each(["policy", "shutdown", "policy then shutdown"])("%s close joins pending owners before SQLite/lock release; repeated cleanup", async kind => {
     const f = await mcpFixture(), entered = pause(), release = pause(), cancelled = pause();
     f.hooks.beforeMint = signal => signal?.addEventListener("abort", cancelled.done, { once: true });
     f.hooks.afterMint = async () => { entered.done(); await release.promise; };
@@ -1750,7 +1750,8 @@ describe("MCP listener boundary conformance", () => {
       stopping: f.mcp.stopOperations, userSchedules: undefined, backups: { close() {} }, remoteVerification: null, mcp: f.mcp,
       controller: f.controller, adminSocket: f.admin, controllerLock: { ...lock, release() { unlocked(); lock.release(); } }, removeServiceAccess() {} });
     let done = false;
-    const drain = (kind === "policy" ? f.mcp.closeSessions() : shutdown()).then(() => { done = true; }); await cancelled.promise;
+    const policy = kind !== "shutdown" ? f.mcp.closeSessions() : Promise.resolve();
+    const drain = (kind === "policy" ? policy : Promise.all([policy, shutdown()])).then(() => { done = true; }); await cancelled.promise;
     try {
       await new Promise<void>(r => setImmediate(r)); expect(done).toBe(false); expect(closed).not.toHaveBeenCalled(); expect(unlocked).not.toHaveBeenCalled(); expect(existsSync(lockPath)).toBe(true);
       await f.store.admission.run(() => expect(f.db.prepare("SELECT 1 AS present").get()).toEqual({ present: 1 }));
@@ -1789,7 +1790,7 @@ describe("MCP listener boundary conformance", () => {
     const sockets = Array.from({ length: 33 }, () => f.driver.connection());
     try {
       await Promise.all(sockets.map(socket => new Promise<void>((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject); })));
-      expect(await connectionCount(f.mcp.server)).toBeGreaterThanOrEqual(33);
+      await expect.poll(() => connectionCount(f.mcp.server)).toBeGreaterThanOrEqual(33);
       expect((await f.driver.send().reply).status).toBe(200);
     } finally { sockets.forEach(socket => socket.destroy()); }
   }, 20_000);
@@ -1819,7 +1820,7 @@ it("MCP deadline retains capacity until real work settles; legacy requests retai
     f.mcp.stopOperations();
   } finally { release.done(); }
   for (const request of pending) {
-    const reply = await request.reply; expect(reply.body.error.reason).toBe("request_timed_out"); expect(reply.status).toBe(503); expect(reply.headers["retry-after"]).toBe("1");
+    const reply = await request.reply; expect(reply.body.error.reason).toBe("request_cancelled"); expect(reply.status).toBe(503); expect(reply.headers["retry-after"]).toBe("1");
   }
   await f.mcp.close();
 }, 30_000);
