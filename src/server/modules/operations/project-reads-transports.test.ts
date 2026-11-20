@@ -362,7 +362,8 @@ describe("project reads over every transport (D2a)", () => {
     if (!f.built.supported) throw new Error("unsupported");
     const readRelease = vi.spyOn(f.built.runner, "readRelease"), queryRelease = vi.spyOn(f.built.runner, "queryRelease");
     const projectWork = () => [...readRelease.mock.calls, ...queryRelease.mock.calls].map(([operation]) => operation.id).filter(id => id !== "session.describe");
-    const call = (name: string, args: unknown, id: number | undefined = 3) => ({ jsonrpc: "2.0", ...(id === undefined ? {} : { id }), method: "tools/call", params: { name, arguments: args } });
+    // `id: null` builds a notification: no ID member at all.
+    const call = (name: string, args: unknown, id: number | null = 3) => ({ jsonrpc: "2.0", ...(id === null ? {} : { id }), method: "tools/call", params: { name, arguments: args } });
     for (const name of ["project_status", "project_worktrees"]) {
       const valid = { projectId: "project-a" };
       // Negotiation: the SDK's own status and JSON-RPC error.
@@ -375,7 +376,7 @@ describe("project reads over every transport (D2a)", () => {
       expect(params.status, name).toBe(200); expect(JSON.parse(params.text)).toMatchObject({ jsonrpc: "2.0", id: 3, error: { code: expect.any(Number) } });
       expect(JSON.parse(params.text)).not.toHaveProperty("result");
       // A notification is not a call: accepted, never dispatched to a tool.
-      expect(await f.rpc(call(name, valid, undefined))).toEqual({ status: 202, text: "" });
+      expect(await f.rpc(call(name, valid, null))).toEqual({ status: 202, text: "" });
     }
     expect(projectWork()).toEqual([]);
     expect(f.git.listTrees).not.toHaveBeenCalled(); expect(f.placement.statusSummary).not.toHaveBeenCalled();
