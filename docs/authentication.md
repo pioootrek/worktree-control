@@ -298,8 +298,10 @@ endpoint or tool grants a project role. A direct database write is not an
 option: it would bypass the security fence, and `auth fence resume` discards
 grants written after the upgrade. The source test
 `project-reads-transports.test.ts` covers the scoped reader with real Git
-worktrees and a hidden neighbouring project over the API, the unix socket and
-MCP. The installed admin and the zero-role agent do not replace that check.
+worktrees and a hidden neighbouring project over the API and MCP. The private
+unix socket is the local operator, with full authority, so it reads the same
+worktrees there but is no scoped reader. The installed admin and the zero-role
+agent do not replace that check.
 
 Over MCP, `tools/list` returns `project_list`, `project_status`,
 `project_worktrees` and `session_describe`. Call a project tool with the same
@@ -316,7 +318,11 @@ JSON
 A tool refusal is a tool result with `isError: true` and the public error as
 `structuredContent`, decided by the tool itself as on HTTP. If authority
 changes between the buffered answer and its write, the request answers a
-JSON-RPC error carrying the fresh public error instead. The local operator uses the CLI. Like `session describe`,
+JSON-RPC error carrying the fresh public error instead. A project tool call
+reads neither `session describe` nor the full project list. A call the MCP SDK
+refuses, for example without `text/event-stream` in `Accept` or with an
+unsupported `Mcp-Protocol-Version`, gets the SDK's error and runs no project
+read or Git discovery. The local operator uses the CLI. Like `session describe`,
 it goes through the private socket while a controller owns the lock and reads
 offline otherwise. Offline, every registration reports `phase: "stopped"`:
 

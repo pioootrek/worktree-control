@@ -44,17 +44,20 @@ export const OPERATIONS_MCP_TOOLS = Object.freeze([
 type ToolDescriptor = typeof OPERATIONS_MCP_TOOLS[number];
 type ToolResult = { readonly ok: true; readonly serialized: string; readonly canonical: string } | { readonly ok: false; readonly error: PublicOperationError };
 
-/** The tool a JSON-RPC body calls, when it is a call of a project tool. Session describe keeps its own path. */
-function projectToolCall(body: Record<string, unknown>): { tool: ToolDescriptor; arguments: unknown } | null {
+/**
+ * Routes a body that names a project tool away from the describe witness. Only a
+ * routing hint: the SDK stays the protocol authority, and project work starts
+ * only when the SDK dispatches that tool's call. Session describe keeps its own path.
+ */
+function projectToolHint(body: Record<string, unknown>): ToolDescriptor | null {
   const own = (value: unknown, key: string): unknown => {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     return descriptor && "value" in descriptor ? descriptor.value : undefined;
   };
   if (own(body, "method") !== "tools/call") return null;
-  const params = own(body, "params"), name = own(params, "name");
-  const tool = OPERATIONS_MCP_TOOLS.find(each => each.name === name && each.operation !== "session.describe");
-  return tool ? { tool, arguments: own(params, "arguments") } : null;
+  const name = own(own(body, "params"), "name");
+  return OPERATIONS_MCP_TOOLS.find(each => each.name === name && each.operation !== "session.describe") ?? null;
 }
 
 /**
@@ -90,6 +93,8 @@ export function createOperationsMcp(options: {
   const execute = async (request: IncomingMessage, response: ServerResponse) => {
     const abort = new AbortController();
     let timedOut = false, server: Server | undefined;
+    // Settles a project tool's handler left unanswered by its release, so the SDK's work stays finite.
+    let abandon: (() => void) | undefined;
     let engaged = false, rpcId: string | number | undefined;
     const cancelled = new Promise<never>((_, reject) => {
       abort.signal.addEventListener("abort", () => reject(new OperationError("unavailable", timedOut ? "request_timed_out" : "request_cancelled", { retry: "retry" })), { once: true });
@@ -146,28 +151,15 @@ export function createOperationsMcp(options: {
       const operation = runtime.registry.get("session.describe");
       if (!operation) { refuse(failure("not_found", "operation_not_found")); return; }
       const releaseOptions = { eligible: () => !closing && runtime.eligible(), connected, deadline, signal: abort.signal };
-      // This witness also gates initialize, listing and notifications. It is never
-      // sent for those methods, but must still match at the real Node commit.
-      let snapshot: { readonly serialized: string; readonly canonical: string } | undefined;
-      const initial = await runtime.runner.readRelease(operation, minted.context, {}, { ...releaseOptions,
-        commit(dto) {
-          const serialized = JSON.stringify(dto);
-          if (Buffer.byteLength(serialized) > limits.responseBytes) {
-            // Match HTTP: commit one refusal inside admission, before SDK dispatch.
-            // Throwing here would be remapped to release_commit_failed by the runner.
-            operationsFailure(response, failure("payload_too_large", "response_too_large")); return;
-          }
-          snapshot = Object.freeze({ serialized, canonical: canonicalJson(dto) });
-        } });
-      if (initial.status !== "committed") { refuse(initial.error); return; }
-      if (!snapshot) return;
-      const context = Object.freeze({ authentication: minted.context, ...snapshot });
-      // A project tool's own result: released DTO text, or its public refusal as a tool error.
-      const target = projectToolCall(body as Record<string, unknown>);
-      // A holder, not a local: closures set it, and control-flow narrowing must not assume null.
-      const tool$: { result: ToolResult | null } = { result: null };
+      const message = body as Record<string, unknown>;
+      // From here a refusal is a JSON-RPC error carrying the request's ID.
+      const engage = () => { rpcId = typeof message.id === "string" || typeof message.id === "number" ? message.id : undefined; engaged = true; };
+      // The one CallTool handler asks this for the called tool's released result. It
+      // never runs application work: the request's own release supplies the answer.
+      let answer: (name: string, args: unknown) => Promise<ToolResult> = async () => { throw new OperationError("not_found", "operation_not_found"); };
       let dispatched = false;
-      const dispatch = async (): Promise<{ status: number; buffer: Buffer }> => {
+      /** Opens this request's one SDK pair and hands it the body. Resolves with the SDK's Response, bounded at send. */
+      const dispatch = async (engageOnConnect: boolean): Promise<Response> => {
         if (dispatched) throw new OperationError("internal", "invalid_operation");
         dispatched = true;
         const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -175,14 +167,7 @@ export function createOperationsMcp(options: {
         server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: OPERATIONS_MCP_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) }));
         server.setRequestHandler(CallToolRequestSchema, async call => {
           try {
-            if (call.params.name === "session_describe") {
-              // Delegate input validation to the registered operation, not a transport schema.
-              operation.parse(call.params.arguments);
-              return { content: [{ type: "text", text: context.serialized }], structuredContent: JSON.parse(context.serialized) };
-            }
-            // Only the tool this body names was run, and only its own released result is returned.
-            const result = tool$.result;
-            if (!target || call.params.name !== target.tool.name || result === null) throw new OperationError("not_found", "operation_not_found");
+            const result = await answer(call.params.name, call.params.arguments);
             if (!result.ok) {
               const payload = { error: result.error };
               return { isError: true, content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
@@ -206,14 +191,15 @@ export function createOperationsMcp(options: {
           return send(...args);
         };
         await Promise.race([server.connect(transport), cancelled]);
-        const message = body as Record<string, unknown>;
-        rpcId = typeof message.id === "string" || typeof message.id === "number" ? message.id : undefined;
-        engaged = true;
+        if (engageOnConnect) engage();
         // Do not forward identity/session/resumption headers to the SDK. Version and
         // media negotiation are the only request headers it needs in stateless mode.
         const headers = new Headers({ "content-type": "application/json", accept: request.headers.accept ?? "" });
         if (request.headers["mcp-protocol-version"]) headers.set("mcp-protocol-version", String(request.headers["mcp-protocol-version"]));
-        const sdk = await Promise.race([transport.handleRequest(new Request("http://operations.invalid/mcp/operations", { method: "POST", headers, signal: abort.signal }), { parsedBody: body }), outputFailure, cancelled]);
+        return Promise.race([transport.handleRequest(new Request("http://operations.invalid/mcp/operations", { method: "POST", headers, signal: abort.signal }), { parsedBody: body }), outputFailure, cancelled]);
+      };
+      /** Buffers the SDK's Response within the envelope bound. */
+      const collect = async (sdk: Response): Promise<{ status: number; buffer: Buffer }> => {
         const chunks: Uint8Array[] = [];
         let bytes = 0;
         const reader = sdk.body?.getReader();
@@ -233,21 +219,85 @@ export function createOperationsMcp(options: {
       // No await, SDK send, or network drain inside admission. SDK security or
       // session headers cannot replace this boundary's response headers.
       const write = (output: { status: number; buffer: Buffer }) => () => { writeOperationsResponse(response, output.status, output.buffer.toString("utf8")); };
-      const tool = target ? runtime.registry.get(target.tool.operation) : undefined;
-      if (!target || !tool) {
-        // Initialize, listing, notifications and session_describe: the final write is gated by the describe witness.
-        const output = await dispatch();
-        const released = await runtime.runner.readRelease(operation, context.authentication, {}, {
-          ...releaseOptions, expectedCanonical: context.canonical, commit: write(output) });
+      /**
+       * The describe witness: the current public DTO, captured in an admitted phase.
+       * Initialize, listing, notifications, session_describe and every body the SDK
+       * answers without dispatching a project tool are written only after a final
+       * readRelease reproduces it. An oversized DTO commits one refusal here, as on HTTP.
+       */
+      const witness = async (): Promise<{ readonly serialized: string; readonly canonical: string } | undefined> => {
+        let snapshot: { readonly serialized: string; readonly canonical: string } | undefined;
+        const initial = await runtime.runner.readRelease(operation, minted.context, {}, { ...releaseOptions,
+          commit(dto) {
+            const serialized = JSON.stringify(dto);
+            if (Buffer.byteLength(serialized) > limits.responseBytes) {
+              // Throwing here would be remapped to release_commit_failed by the runner.
+              operationsFailure(response, failure("payload_too_large", "response_too_large")); return;
+            }
+            snapshot = Object.freeze({ serialized, canonical: canonicalJson(dto) });
+          } });
+        if (initial.status !== "committed") { refuse(initial.error); return undefined; }
+        return snapshot;
+      };
+      const releaseWitnessed = async (snapshot: { readonly canonical: string }, output: { status: number; buffer: Buffer }) => {
+        const released = await runtime.runner.readRelease(operation, minted.context, {}, {
+          ...releaseOptions, expectedCanonical: snapshot.canonical, commit: write(output) });
         if (released.status !== "committed") refuse(released.error);
+      };
+      const hint = projectToolHint(message);
+      const tool = hint ? runtime.registry.get(hint.operation) : undefined;
+      if (!hint || !tool) {
+        // Initialize, listing, notifications and session_describe: the witness precedes SDK dispatch.
+        const snapshot = await witness();
+        if (!snapshot) return;
+        answer = async (name, args) => {
+          if (name !== "session_describe") throw new OperationError("not_found", "operation_not_found");
+          // Delegate input validation to the registered operation, not a transport schema.
+          operation.parse(args);
+          return Object.freeze({ ok: true as const, ...snapshot });
+        };
+        await releaseWitnessed(snapshot, await collect(await dispatch(true)));
+        return;
+      }
+      // A project tool. The SDK decides first: only its dispatch of this tool's call,
+      // with the arguments it parsed, starts the tool's release. Neither the describe
+      // witness nor any project work precedes that, so a describe failure cannot
+      // refuse a targeted read and a protocol rejection never reaches Git.
+      let settle: { resolve(result: ToolResult): void; reject(error: unknown): void } | undefined;
+      let enter!: (args: unknown) => void;
+      const entered = new Promise<{ arguments: unknown }>(resolve => { enter = args => resolve({ arguments: args }); });
+      answer = (name, args) => {
+        if (name !== hint.name || settle) return Promise.reject(new OperationError("not_found", "operation_not_found"));
+        return new Promise<ToolResult>((resolve, reject) => {
+          settle = { resolve, reject };
+          abandon = () => { reject(new OperationError("unavailable", "request_cancelled", { retry: "retry" })); };
+          engage(); enter(args);
+        });
+      };
+      const sdk = dispatch(false);
+      void sdk.catch(() => undefined);
+      const first = await Promise.race([entered, sdk.then(answered => ({ answered }))]);
+      if ("answered" in first) {
+        // The SDK answered without dispatching the tool (negotiation, protocol or
+        // parameter refusal, or a notification): no project work, describe witness.
+        const snapshot = await witness();
+        if (!snapshot) return;
+        engage();
+        await releaseWitnessed(snapshot, await collect(first.answered));
         return;
       }
       // A project tool's answer, success or refusal, is released by that tool alone: its envelope is
       // built outside admission and written only inside a fresh admitted phase of the same tool and
       // arguments that reproduces it. The describe witness plays no part, so a change of unrelated
       // authority never replaces the tool's own answer.
-      let output: { status: number; buffer: Buffer } | undefined;
-      const stageTool = async (result: ToolResult) => { tool$.result = result; output = await dispatch(); };
+      let output: { status: number; buffer: Buffer } | undefined, staged = false;
+      const stageTool = async (result: ToolResult) => {
+        // One envelope per request: the handler is answered once, by this request's own release.
+        if (!settle || staged) throw new OperationError("internal", "invalid_operation");
+        staged = true;
+        settle.resolve(result);
+        output = await collect(await sdk);
+      };
       const commitTool = () => { if (!output) throw new OperationError("internal", "invalid_operation"); write(output)(); };
       // The DTO alone may not exceed the response ceiling; the envelope bound applies after the SDK.
       const toolValue = (dto: object): { result: ToolResult; canonical: string } => {
@@ -260,30 +310,32 @@ export function createOperationsMcp(options: {
       if (tool.kind === "query") {
         // Discovery runs once. The envelope is built from the value of a fresh decision and
         // written only after another fresh decision re-projects it unchanged.
-        const released = await runtime.runner.queryRelease(tool, context.authentication, target.arguments, {
+        const released = await runtime.runner.queryRelease(tool, minted.context, first.arguments, {
           ...releaseOptions, refusal, async stage(value: object) { await stageTool(toolValue(value).result); }, commit: commitTool });
         if (released.status !== "committed") refuse(released.error);
         return;
       }
       // A holder, not a local: the commit closure sets it, and narrowing must not assume undefined.
       const first$: { value?: { result: ToolResult; canonical: string } } = {};
-      const read = await runtime.runner.readRelease(tool, context.authentication, target.arguments, {
+      const read = await runtime.runner.readRelease(tool, minted.context, first.arguments, {
         ...releaseOptions, refusal, commit(dto) { first$.value = toolValue(dto); } });
       if (read.status !== "committed") { refuse(read.error); return; }
       // Committed without a value: the tool's refusal was written.
-      const first = first$.value;
-      if (!first) return;
-      await stageTool(first.result);
+      const value = first$.value;
+      if (!value) return;
+      await stageTool(value.result);
       // A fresh read of the same tool must project exactly the value the envelope carries.
-      const released = await runtime.runner.readRelease(tool, context.authentication, target.arguments, {
-        ...releaseOptions, expectedCanonical: first.canonical, commit: commitTool });
+      const released = await runtime.runner.readRelease(tool, minted.context, first.arguments, {
+        ...releaseOptions, expectedCanonical: value.canonical, commit: commitTool });
       if (released.status !== "committed") refuse(released.error);
     } catch (error) {
       refuse(operationsRequestFailure(error, abort.signal, timedOut));
     } finally {
-      // All application reads are awaited before SDK dispatch. SDK handlers are
-      // finite and perform no async work. close aborts its protocol bookkeeping;
-      // notably SDK close does not settle an abandoned JSON response promise.
+      // All application reads are awaited by this function, never by the SDK. A
+      // project tool's handler waits only for this request's own answer, settled
+      // here at the latest. close aborts its protocol bookkeeping; notably SDK
+      // close does not settle an abandoned JSON response promise.
+      abandon?.();
       try { await server?.close(); }
       catch { /* Disposal errors are contained; the committed response cannot be replaced. */ }
       finally {

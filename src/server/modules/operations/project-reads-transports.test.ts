@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createServer, request as httpRequest, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildOperationsRuntime } from "@/server/bootstrap/operations-runtime";
@@ -32,8 +33,11 @@ const deferred = <T>() => { let resolve!: (value: T) => void; const promise = ne
 let ports = 0;
 const tree = (path: string) => ({ path, branch: "main", head: "b".repeat(40), shortHead: "bbbbbbbb", detached: false, locked: false, prunable: false, dirty: false, statusError: "private" });
 
-/** `repository` maps a registration name to its repository path; `git` replaces the fixture listing with a real reader. */
-async function fixture(mode: "open" | "token" | "better-auth" | "legacy", setup: { repository?: (name: string) => string; git?: WorktreeGit } = {}) {
+/**
+ * `repository` maps a registration name to its repository path; `git` replaces the fixture listing with a real reader;
+ * `extraProjects` adds that many Knowledge projects without registrations.
+ */
+async function fixture(mode: "open" | "token" | "better-auth" | "legacy", setup: { repository?: (name: string) => string; git?: WorktreeGit; extraProjects?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), "project-reads-transports-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict" });
@@ -47,6 +51,10 @@ async function fixture(mode: "open" | "token" | "better-auth" | "legacy", setup:
     store.savePrincipal({ id: "agent", kind: "agent", status: "active" }, "fixture");
     store.saveCredential({ id: agent.slice(4, 40), principalId: "agent", kind: "agent_token", label: "fixture", tokenPrefix: agent.slice(0, 40), verifierHash: hash(agent), status: "active", expiresAt: null, createdAt: iso(NOW), revokedAt: null, lastUsedAt: null }, "fixture");
     for (const id of ["project-a", "project-b"]) store.saveKnowledgeProject({ id, name: id, status: "active", revision: 1, createdAt: iso(NOW), updatedAt: iso(NOW) }, "fixture");
+    for (let index = 0; index < (setup.extraProjects ?? 0); index++) {
+      const id = `extra-${String(index).padStart(4, "0")}`;
+      store.saveKnowledgeProject({ id, name: id, status: "active", revision: 1, createdAt: iso(NOW), updatedAt: iso(NOW) }, "fixture");
+    }
     const register = (name: string, parent: string | null) => {
       const id = store.addProject({ name, repositoryPath: setup.repository?.(name) ?? `/repo/${name}`, port: 7300 + ports++, executable: "node", args: ["server.js"] }).id;
       db.prepare("UPDATE project_mapping_clock SET value=value+1 WHERE singleton=1").run();
@@ -92,6 +100,15 @@ async function fixture(mode: "open" | "token" | "better-auth" | "legacy", setup:
       });
       call.on("error", reject); call.end(JSON.stringify(body));
     });
+  /** One raw JSON-RPC POST to the MCP adapter, with a valid envelope unless `headers` replaces part of it. */
+  const rpc = (body: unknown, headers: Record<string, string> = {}, signal?: AbortSignal) => new Promise<{ status: number; text: string }>((resolve, reject) => {
+    const call = httpRequest({ host: "127.0.0.1", port: (servers.mcp.address() as AddressInfo).port, path: "/mcp/operations", method: "POST", signal,
+      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(secret ? { Authorization: `Bearer ${secret}` } : {}), ...headers } }, response => {
+      const chunks: Buffer[] = []; response.on("data", chunk => chunks.push(chunk));
+      response.on("end", () => resolve({ status: response.statusCode!, text: Buffer.concat(chunks).toString("utf8") }));
+    });
+    call.on("error", reject); call.end(JSON.stringify(body));
+  });
   const client = async () => {
     const c = new Client({ name: "project-reads", version: "1" }); cleanups.push(() => c.close());
     await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(servers.mcp.address() as AddressInfo).port}/mcp/operations`),
@@ -106,7 +123,7 @@ async function fixture(mode: "open" | "token" | "better-auth" | "legacy", setup:
     db.prepare("UPDATE project_mapping_clock SET value=value+1 WHERE singleton=1").run();
     db.prepare("UPDATE projects SET parent_project_id=?,mapping_version=(SELECT value FROM project_mapping_clock WHERE singleton=1) WHERE id=?").run(parent, id);
   });
-  return { built, ids, git, gates, placement, admission, post, client, grant, revoke, grantNow, revokeNow, reparent };
+  return { built, ids, git, gates, placement, admission, post, rpc, mcp, client, grant, revoke, grantNow, revokeNow, reparent };
 }
 const refusal = (category: string, status: number, reason: string, retry = "none") => ({ error: { category, status, reason, retry, effect: null } });
 const inputs = { "project.list": {}, "project.status": { projectId: "project-a" }, "project.worktrees": { projectId: "project-b" } } as const;
@@ -252,7 +269,7 @@ describe("project reads over every transport (D2a)", () => {
     expect(f.git.listTrees).not.toHaveBeenCalled(); expect(f.placement.statusSummary).not.toHaveBeenCalled();
   });
 
-  it("better-auth: a reader sees its project's real Git worktrees, and a hidden neighbour is indistinguishable from a missing project, on API, unix and MCP", async () => {
+  it("better-auth: a reader sees its project's real Git worktrees over API and MCP, a hidden neighbour is indistinguishable from a missing project, and full-authority unix reads the same", async () => {
     const base = mkdtempSync(join(tmpdir(), "project-reads-git-"));
     cleanups.push(() => rmSync(base, { recursive: true, force: true }));
     const repository = (name: string) => {
@@ -301,5 +318,105 @@ describe("project reads over every transport (D2a)", () => {
       }
     }
     expect(f.git.listTrees.mock.calls.map(([path]) => path)).toEqual([alpha, alpha, alpha]);
+  });
+
+  it.each(["open", "better-auth"] as const)("%s: targeted MCP reads and refusals need neither the global project list nor session.describe", async mode => {
+    // One project above the resolver's bound: session.describe and project.list fail on every transport.
+    const f = await fixture(mode, { extraProjects: 999 });
+    // Stateless raw calls: initialize itself answers under the describe witness, which fails here.
+    const tool = async (name: string, args: unknown) => {
+      const reply = await f.rpc({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
+      expect(reply.status, name).toBe(200);
+      return (JSON.parse(reply.text) as { result: { isError?: boolean; structuredContent: unknown } }).result;
+    };
+    const describedApi = await f.post("api", "session.describe", {});
+    expect(describedApi.status).not.toBe(200);
+    expect((await f.post("api", "project.list", {})).status).not.toBe(200);
+    const describedMcp = await f.rpc({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "session_describe", arguments: {} } });
+    expect({ status: describedMcp.status, body: JSON.parse(describedMcp.text) }).toEqual(describedApi);
+    if (mode === "better-auth") {
+      // Hidden and missing stay the tool's own indistinguishable refusal, decided without the list.
+      for (const projectId of ["project-a", "nope"]) {
+        const api = await f.post("api", "project.status", { projectId });
+        expect(api).toEqual({ status: 404, body: refusal("not_found", 404, "resource_not_found") });
+        for (const name of ["project_status", "project_worktrees"]) {
+          expect(await tool(name, { projectId }), `${name} ${projectId}`).toEqual({ isError: true, structuredContent: api.body, content: expect.any(Array) });
+        }
+      }
+      expect(f.git.listTrees).not.toHaveBeenCalled();
+      await f.grant("reader", "project-a");
+    }
+    for (const [operation, name] of [["project.status", "project_status"], ["project.worktrees", "project_worktrees"]] as const) {
+      const api = await f.post("api", operation, { projectId: "project-a" });
+      expect(api.status, operation).toBe(200);
+      const viaMcp = await tool(name, { projectId: "project-a" });
+      expect(viaMcp.isError, operation).toBeFalsy(); expect(viaMcp.structuredContent).toEqual(api.body);
+    }
+    // A project-tool body the SDK refuses never reaches the tool: it answers under the describe witness, which fails here.
+    const rejected = await f.rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "project_status", arguments: { projectId: "project-a" } } }, { Accept: "application/json" });
+    expect({ status: rejected.status, body: JSON.parse(rejected.text) }).toEqual(describedApi);
+  }, 30_000);
+
+  it("open: a project-tool body the SDK refuses or does not dispatch schedules no project work", async () => {
+    const f = await fixture("open");
+    if (!f.built.supported) throw new Error("unsupported");
+    const readRelease = vi.spyOn(f.built.runner, "readRelease"), queryRelease = vi.spyOn(f.built.runner, "queryRelease");
+    const projectWork = () => [...readRelease.mock.calls, ...queryRelease.mock.calls].map(([operation]) => operation.id).filter(id => id !== "session.describe");
+    const call = (name: string, args: unknown, id: number | undefined = 3) => ({ jsonrpc: "2.0", ...(id === undefined ? {} : { id }), method: "tools/call", params: { name, arguments: args } });
+    for (const name of ["project_status", "project_worktrees"]) {
+      const valid = { projectId: "project-a" };
+      // Negotiation: the SDK's own status and JSON-RPC error.
+      const accept = await f.rpc(call(name, valid), { Accept: "application/json" });
+      expect(accept.status, name).toBe(406); expect(JSON.parse(accept.text)).toMatchObject({ jsonrpc: "2.0", error: { code: -32000 } });
+      const version = await f.rpc(call(name, valid), { "Mcp-Protocol-Version": "1900-01-01" });
+      expect(version.status, name).toBe(400); expect(JSON.parse(version.text)).toMatchObject({ jsonrpc: "2.0", error: { code: -32000 } });
+      // Parameters the SDK's CallTool schema refuses before any handler runs.
+      const params = await f.rpc(call(name, "not-an-object"));
+      expect(params.status, name).toBe(200); expect(JSON.parse(params.text)).toMatchObject({ jsonrpc: "2.0", id: 3, error: { code: expect.any(Number) } });
+      expect(JSON.parse(params.text)).not.toHaveProperty("result");
+      // A notification is not a call: accepted, never dispatched to a tool.
+      expect(await f.rpc(call(name, valid, undefined))).toEqual({ status: 202, text: "" });
+    }
+    expect(projectWork()).toEqual([]);
+    expect(f.git.listTrees).not.toHaveBeenCalled(); expect(f.placement.statusSummary).not.toHaveBeenCalled();
+    // Each refusal above still passed the describe witness: an initial capture and a final reproduction.
+    expect(readRelease.mock.calls.filter(([operation]) => operation.id === "session.describe")).toHaveLength(2 * 4 * 2);
+    // Positive control: the same bodies with a valid envelope run the tool, without the describe witness.
+    readRelease.mockClear();
+    for (const name of ["project_status", "project_worktrees"]) {
+      const reply = await f.rpc(call(name, { projectId: "project-a" }));
+      expect(reply.status, name).toBe(200); expect(JSON.parse(reply.text).result.isError, name).toBeFalsy();
+    }
+    expect(projectWork()).toEqual(["project.status", "project.status", "project.worktrees"]);
+    expect(readRelease.mock.calls.filter(([operation]) => operation.id === "session.describe")).toEqual([]);
+    // Only the query discovers; status reads the catalog and placement.
+    expect(f.git.listTrees).toHaveBeenCalledTimes(1);
+  });
+
+  it("open: an MCP caller that leaves during discovery opens one SDK pair, settles its waiting tool handler and drains", async () => {
+    const f = await fixture("open");
+    const unhandled = vi.fn(); process.on("unhandledRejection", unhandled);
+    cleanups.push(() => { process.off("unhandledRejection", unhandled); });
+    const connect = vi.spyOn(Server.prototype, "connect"), close = vi.spyOn(Server.prototype, "close");
+    const gate = deferred<unknown[]>(); f.gates.set("/repo/alpha", gate);
+    const call = { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "project_worktrees", arguments: { projectId: "project-a" } } };
+    const abort = new AbortController();
+    const left = f.rpc(call, {}, abort.signal).catch((error: Error) => error);
+    await vi.waitFor(() => expect(f.git.listTrees).toHaveBeenCalledTimes(1));
+    // The SDK dispatched the call before discovery started, through this request's one pair.
+    expect(connect).toHaveBeenCalledTimes(1);
+    abort.abort();
+    expect(await left).toBeInstanceOf(Error);
+    // Discovery is still pending, yet the request's work, SDK disposal included, has settled.
+    await f.mcp.drain();
+    expect(close).toHaveBeenCalledTimes(1);
+    gate.resolve([tree("/repo/alpha")]);
+    f.gates.delete("/repo/alpha");
+    const again = await f.rpc(call);
+    expect(again.status).toBe(200); expect(JSON.parse(again.text).result.structuredContent).toMatchObject({ projectId: "project-a" });
+    await f.mcp.drain();
+    expect(connect).toHaveBeenCalledTimes(2); expect(close).toHaveBeenCalledTimes(2);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(unhandled).not.toHaveBeenCalled();
   });
 });

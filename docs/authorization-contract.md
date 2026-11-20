@@ -1492,14 +1492,30 @@ operation, and its `parse` is the only validation. A project tool's release
 refusal is a tool result with `isError: true` and the public error. A project
 tool's answer is released by that tool alone, never under the
 `session.describe` witness, so a change of unrelated authority cannot replace
-it. Its refusal uses the `refusal` delivery: the SDK envelope is built outside
-admission and written inside a fresh phase of the same tool that reproduces the
-same error. A successful read is written only after a fresh `readRelease` of the
-same tool matches the buffered value (`expectedCanonical`); a query re-projects
-it as described above. When that final decision differs, the request answers a
-JSON-RPC error whose `data` is the fresh public error, for example
-`resource_not_found` after a revocation. Initialize, listing, notifications and
-`session_describe` remain written under the `session.describe` witness.
+it, and neither `session.describe` nor the global project list is read for it.
+A targeted `project_status` or `project_worktrees` call, and its hidden or
+missing refusal, therefore still answers when the installation holds more
+projects than the resolver lists.
+
+The SDK decides the protocol first. The request's one SDK pair receives the
+body before any project work. Only the SDK's dispatch of that tool's call, with
+the arguments it parsed, starts the tool's release, and from then on a refusal
+is a JSON-RPC error carrying the request ID. The handler waits for this
+request's own answer and runs no application work; the adapter settles an
+unanswered handler before SDK disposal. A body the SDK answers without
+dispatching the tool, such as a negotiation, protocol-version or parameter
+refusal or a notification, runs no project work and is written under the
+`session.describe` witness like initialize.
+
+A project tool's refusal uses the `refusal` delivery: the SDK envelope is built
+outside admission and written inside a fresh phase of the same tool that
+reproduces the same error. A successful read is written only after a fresh
+`readRelease` of the same tool matches the buffered value
+(`expectedCanonical`); a query re-projects it as described above. When that
+final decision differs, the request answers a JSON-RPC error whose `data` is the
+fresh public error, for example `resource_not_found` after a revocation.
+Initialize, listing, notifications and `session_describe` remain written under
+the `session.describe` witness, captured before SDK dispatch.
 
 **CLI.** `projects list|status|worktrees` share `session describe`'s lock-first
 selection: the private socket while a controller owns the lock, otherwise one
