@@ -674,7 +674,10 @@ refuses these noncanonical representations. Both require HTTP and a loopback
 hostname and reject foreign origins or ports. At port 80 the adapter accepts an
 omitted port as effective 80, whereas the legacy parser requires an explicit
 nonempty parsed port (URL normalizes explicit :80 away); the conjunction refuses.
-Duplicate singleton Host/Origin headers are additionally rejected by operations.
+Duplicate singleton headers are additionally rejected by operations. A duplicate
+Origin is joined by Node and refused first by the shared guard as
+`origin_forbidden` (403); other duplicate transport fields use `invalid_request`
+(400).
 Legacy authentication precedes its Origin check; the new shared Origin check
 precedes credential handling and returns a structured public refusal.
 
@@ -720,7 +723,7 @@ policy or shared owner. Test names identify executable assertions in
 | --- | --- | --- |
 | Exact route, terminal methods (`mcp-http-server.ts:146`, `:164`) | Raw shared parser claims first; API namespace refused; POST only; batches refused | `raw aliases, reserved HTTP namespace, methods and batches are terminal` |
 | Legacy mode/secret, token and identity resolver (`mcp-http-server.ts:38`, `:148`) | Acceptance table only; no old authenticator or usage writer | `stored matrix in %s on every method; unchanged legacy authentication` |
-| Provider cookie (`mcp-http-server.ts:152`) | Fixed refusal before work; no provider/budget/reserve needed | `mixed and duplicate raw credentials, cookie preflight and no provider/budget work`; API reserve proof remains `cookie capacity until settlement` scenarios |
+| Provider cookie (`mcp-http-server.ts:152`) | Fixed refusal before work; no provider/budget/reserve needed | `%s mixed and duplicate raw credentials, cookie preflight and no provider/budget work`; API reserve proof remains `cookie capacity until settlement` scenarios |
 | Origin (`mcp-http-server.ts:58`, `:163`) | Shared function before adapter; additional canonical rule; differences above | `shared Origin guard and independent canonical rule; Host grants no authority`; `negative control: omitted shared Origin guard fails exactly 404 versus 403` |
 | Host/DNS/peer (no legacy guard; bootstrap `../cli/index.ts:465`) | Same listener bound to loopback; no added Host authority | `shared Origin guard and independent canonical rule; Host grants no authority` |
 | Admission, retry-safe failures (`mcp-http-server.ts:154`, `:171`, `:178`) | Same store gate, mint and final release; no duplicate gate | `real admission contention and aborted admission preserve exact reasons` |

@@ -1603,11 +1603,11 @@ describe("MCP listener boundary conformance", () => {
     expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
   });
 
-  it("mixed and duplicate raw credentials, cookie preflight and no provider/budget work", async () => {
-    const f = await mcpFixture("better-auth"), mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run"), budget = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire");
+  it.each(["open", "token", "better-auth", "legacy"])("%s mixed and duplicate raw credentials, cookie preflight and no provider/budget work", async mode => {
+    const f = await mcpFixture(mode), mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run"), budget = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire");
     for (const headers of [["Authorization", `Bearer ${f.agent}`, "Authorization", `Bearer ${f.agent}`], ["Authorization", `Bearer ${f.agent}`, "X-Worktree-Control-Token", f.installation]]) {
       const reply = await f.driver.send({ body: JSON.stringify(mcpCall), headers: ["Host", "localhost", "Content-Length", String(Buffer.byteLength(JSON.stringify(mcpCall))), "Content-Type", "application/json", "Accept", "application/json, text/event-stream", ...headers] }).reply;
-      expect(reply.body).toEqual(refusal("mixed_credentials"));
+      expect(reply.body).toEqual(refusal(mode === "legacy" ? "unknown_mode" : "mixed_credentials"));
     }
     mint.mockClear(); admission.mockClear();
     let reads = 0; f.mcp.server.prependListener("request", req => req.on("newListener", name => { if (name === "data") reads++; }));
@@ -1870,7 +1870,9 @@ it("MCP security headers, raw singleton refusals and Node protocol ownership", a
     const headers = ["Content-Length", String(Buffer.byteLength(JSON.stringify(mcpCall))),
       ...(name === "Host" ? [] : ["Host", "localhost"]), ...(name === "Content-Type" ? [] : ["Content-Type", "application/json"]), name, value, name, value];
     const reply = await f.driver.send({ headers }).reply;
-    expect(reply.status).toBe(400); expect(reply.body.error.reason).toBe("invalid_request");
+    // The shared neighbour guard observes Node's joined Origin first.
+    expect(reply.status).toBe(name === "Origin" ? 403 : 400);
+    expect(reply.body.error.reason).toBe(name === "Origin" ? "origin_forbidden" : "invalid_request");
   }
   expect(mint).not.toHaveBeenCalled();
   const reply = await f.driver.send().reply;
