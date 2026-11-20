@@ -104,9 +104,9 @@ function inventory(markdown: string, read: Read) {
   const expected = /const EXPECTED_OPERATIONS_MATRIX_KEYS = (\[[\s\S]*?\]);/.exec(script);
   if (!expected || JSON.stringify(cells) !== JSON.stringify(JSON.parse(expected[1]).sort()) || new Set(cells).size !== cells.length) errors.push("gate_audit_matrix");
   for (const row of rows) {
-    if (/^(?:defect:|partially proven:|deferral:|not applicable:)/.test(row.status)) continue;
+    if (/^defect: .+/.test(row.status)) continue;
     errors.push(...missing(row, read, cache));
-    if (!["proven before this step", "added in this step"].includes(row.status)) errors.push(`gate_audit_status: ${row.item}`);
+    if (!["proven before this step", "added in this step"].includes(row.status) && !/^(?:partially proven:|deferral:|not applicable:) .+/.test(row.status)) errors.push(`gate_audit_status: ${row.item}`);
   }
   if (new Set(rows.map(row => row.item)).size !== rows.length) errors.push("gate_audit_duplicates");
   return errors;
