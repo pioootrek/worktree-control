@@ -86,8 +86,10 @@ Recorded release blockers, with owners:
 
 Deliberately unchanged limits collected for this slice:
 
-- MCP refuses both legacy secret header names. HTTP accepts a recognized token
-  in them; see [MCP](#mounted-mcp-boundary-d1a-7b).
+- MCP refuses both legacy secret header names. The API bearer path and worker
+  operations listener accept recognized tokens in those names; the unix listener
+  refuses all credentials (`credential_on_local_listener`). Worker coverage is
+  `worker %s recognized tokens in legacy header names retain bearer semantics`; see [MCP](#mounted-mcp-boundary-d1a-7b).
 - The admin-socket client performs no socket ownership, permission or peer check;
   server-side 0700/0600 protection is unchanged. Client verification remains a
   separate hardening/interface decision.

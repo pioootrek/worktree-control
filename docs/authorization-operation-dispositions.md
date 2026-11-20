@@ -33,8 +33,8 @@ confirmed or extended by the owner (`46672ea8`, `fb1567d5`;
 [section 9.4](#94-decided-after-the-revision)). Everything else the first draft
 left open is decided and recorded in [section 9.1](#91-decided).
 
-**Implemented versus planned.** The contract code (merged in #128 and #129,
-still unmounted) can express only what
+**Implemented versus planned.** The contract code (merged in #128 and #129 and now used by mounted
+`session.describe`) can express only what
 [section 1](#1-implemented-vocabulary-and-planned-contract-extensions) lists as
 implemented. Every catalogue row that needs something else carries a
 marker in its `Needs` column, so a reader can tell what that code can already
@@ -144,10 +144,11 @@ These are design decisions of `29cf8fa5` (deltas 1 to 9) plus the two
 additions of the same reply (`intent_origin`, `coordination.*`). PR #128 did
 not implement them. PR #129, the first pull request of slice 4
 ([section 10](#10-proposed-cut-of-slice-4)), implemented extensions 1 to 7, 9
-and 10 in the unmounted module, as recorded in the `Status` column and
+and 10 in the then-unmounted module, as recorded in the `Status` column and
 described in [the authorization contract](authorization-contract.md#contract-extensions-of-slice-4).
-No product operation, transport or store adapter uses them yet. A row that
-needs one of them says so in its `Needs` column.
+Mounted `session.describe` now uses the read runner, listener boundaries and
+SQLite adapters. The query, mutation, stream and coordination extensions remain
+unmounted; each catalogue row records what its own future workflow needs.
 
 | # | Extension | Marker in `Needs` | What it adds | Status |
 | --- | --- | --- | --- | --- |
@@ -574,7 +575,7 @@ Rules.
 Decision of `29cf8fa5` (delta 7) for `ce8aa214` F10. The runner's fingerprint
 today is canonical input text and a completed receipt retains the internal
 result, so ordinary retention would copy secrets into a second store. This is a
-hazard for the integration, not a demonstrated leak from the unmounted module.
+hazard for the integration, not a demonstrated leak from the contract module.
 
 - Fingerprints are keyed digests, not canonical input text.
 - An operation flagged secret-bearing retains a receipt of ids and revisions

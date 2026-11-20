@@ -4,16 +4,17 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createMcpControllerServer } from "@/server/mcp-http-server";
 import { createOperationsMcp, OPERATIONS_MCP_TOOLS } from "@/server/transports/operations-mcp";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { IdentityService } from "@/server/modules/identity";
 import type { RemoteVerificationController } from "@/server/modules/remote-verification";
 import { createRemoteVerificationServer } from "@/server/transports/remote-verification-http";
 import { createRemoteVerificationRuntime } from "@/cli/remote-verification-runtime";
 import { createProviderWorld } from "./adapters/provider-session-fixture";
 import { AuthenticationRequestBudget } from "@/server/bootstrap/authentication-request-budget";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, symlinkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { AddressInfo, Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -72,7 +73,7 @@ afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await 
 const route = operationRoute;
 const pause = () => { let done!: () => void; const promise = new Promise<void>(r => { done = r; }); return { promise, done }; };
 
-async function fixture(mode = "open", limits?: Parameters<typeof createOperationsHttp>[0]["limits"], fault?: "omit_guard" | "early_release" | "unmounted", cookieMount = false) {
+async function fixture(mode = "open", limits?: Parameters<typeof createOperationsHttp>[0]["limits"], fault?: "omit_guard" | "early_release" | "unmounted", cookieMount = false, storedSession = false) {
   const root = mkdtempSync(join(tmpdir(), "operations-http-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict", admissionTimeoutMs: 100 });
@@ -112,7 +113,24 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   await store.admission.run(() => store.humanAccounts().createHumanPrincipal({ id: "human", kind: "human", status: "active" }, "fixture"));
   const provider = { isSessionAuthorityEligible: vi.fn(() => true), providerId: "better-auth" as const,
     reader: cookieMount ? world.store : store.authenticationProviderStorage(), resolveRequest: vi.fn(() => ({ result: Promise.resolve(cookieMount ? { session, principalId: "human" } : null), settled: Promise.resolve() })) };
-  const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs: { controller() {} },
+  if (storedSession) {
+    // Copy fixture-issued native rows into the real owned SQLite adapter. The
+    // resolver is controlled, but verification and revalidation read SQL rows.
+    await store.admission.run(() => {
+      const row = world.store.session(session.sessionId)!, evidence = world.store.evidence(session.sessionId)!;
+      db.prepare('INSERT INTO authentication_ba_user(id,name,email,"emailVerified","createdAt","updatedAt") VALUES(?,?,?,?,?,?)')
+        .run(session.subject, "Human", "human@fixture.invalid", 1, row.createdAt, row.createdAt);
+      db.prepare('INSERT INTO authentication_provider_subjects VALUES(?,?,?,?,?,NULL)').run("better-auth", session.subject, "human", "active", row.createdAt);
+      db.prepare('INSERT INTO authentication_ba_session(id,"expiresAt",token,"createdAt","updatedAt","userId") VALUES(?,?,?,?,?,?)')
+        .run(session.sessionId, row.expiresAt, "fixture-cookie", row.createdAt, row.createdAt, session.subject);
+      db.prepare('INSERT INTO authentication_account_policies VALUES(?,?,?,?,?,?,?)').run("better-auth", session.subject, 1, 1, 0, 0, row.createdAt);
+      db.prepare('INSERT INTO authentication_session_evidence VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(session.sessionId, "better-auth", session.subject,
+        evidence.method, evidence.authenticatedAt, evidence.originalDeadline, evidence.generation, evidence.policyRevision, evidence.credential, evidence.credentialBinding, evidence.attemptId);
+    });
+    provider.reader = store.authenticationProviderStorage() as typeof provider.reader;
+  }
+  const logs = { controller: vi.fn() };
+  const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs,
     eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), provider: mode === "better-auth" ? provider : null, listeners: { mcp: () => state.mcpOpen, worker: () => state.workerOpen, api: () => apiOpen, unix: () => unixOpen } });
   const hooks: { beforeMint?: (signal: AbortSignal | undefined) => void; afterMint?: () => void | Promise<void>; legacy?: (body: unknown) => unknown } = {};
   const runtime = { ...built, mint: async (...args: Parameters<Extract<typeof built, { supported: true }>["mint"]>) => {
@@ -162,7 +180,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   };
   const send = (listener: keyof typeof drivers, options?: Parameters<BoundaryDriver["send"]>[0]) => drivers[listener].send(options);
   const grant = () => store.admission.run(() => db.prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('agent','reader','project','project-a',?)").run(iso(NOW)));
-  return { root, storedLegacy, unknownMachine, drivers, store, state, db, built, runtime, send, hooks, oldAuthentication, legacy, controller, admin, installation, agent, credentialId, grant, clock, socketPath, provider, addProject, session, world };
+  return { root, storedLegacy, unknownMachine, drivers, store, state, db, built, runtime, send, hooks, oldAuthentication, legacy, controller, admin, installation, agent, credentialId, grant, clock, socketPath, provider, addProject, session, world, logs };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const wire = (f: Fixture, listener: keyof Fixture["drivers"], ...args: Parameters<BoundaryDriver["wire"]>) => f.drivers[listener].wire(...args);
@@ -361,7 +379,7 @@ describe("real API and unix acceptance", () => {
       expect(f.store.getCredentialForAuthentication(f.credentialId)?.lastUsedAt).toBeNull();
       for (const row of f.storedLegacy) expect(f.store.getCredentialForAuthentication(row.secret.slice(4, 40))?.lastUsedAt).toBe(iso(NOW - 1000));
     });
-  }, 20_000);
+  });
 
   it.each(["owner", "worker"] as const)("stored %s credential is refused by committed kind, without a context or usage update", async principal => {
     const f = await fixture("better-auth"), row = f.storedLegacy.find(row => row.principal === principal)!;
@@ -380,14 +398,14 @@ describe("real API and unix acceptance", () => {
       expect(result).toEqual({ ok: false, error: reply.body.error }); expect(result).not.toHaveProperty("context");
     }
     await f.store.admission.run(() => expect(f.store.getCredentialForAuthentication(row.secret.slice(4, 40))).toEqual(before));
-  }, 20_000);
+  });
 
   it("keeps real admin directory/socket permissions private", async () => {
     const f = await fixture();
     expect(lstatSync(f.root).mode & 0o777).toBe(0o700);
     expect(lstatSync(f.socketPath).isSocket()).toBe(true);
     expect(lstatSync(f.socketPath).mode & 0o777).toBe(0o600);
-  }, 20_000);
+  });
 
   it("uses security headers and terminal finite JSON replies", async () => {
     const f = await fixture();
@@ -401,7 +419,7 @@ describe("real API and unix acceptance", () => {
       expect(reply.headers["retry-after"]).toBeUndefined();
       expect(reply.body).toHaveProperty(method === "POST" ? "actor" : "error");
     }
-  }, 20_000);
+  });
 
   it("rejects malformed UTF-8 and duplicate singleton headers before mint", async () => {
     const f = await fixture(), mint = vi.spyOn(f.runtime, "mint");
@@ -415,7 +433,7 @@ describe("real API and unix acceptance", () => {
       }
     }
     expect(mint).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("refuses project-command exception on operations (legacy unix executor stubbed)", async () => {
     const f = await fixture(), driver = f.drivers.unix;
@@ -424,7 +442,7 @@ describe("real API and unix acceptance", () => {
     expect(reply.status).toBe(413); expect(reply.body).toEqual(refusal("request_too_large", "payload_too_large", 413, "none"));
     expect(f.legacy).not.toHaveBeenCalled();
     expect((await driver.send({ path: driver.legacyPath, body }).reply).status).toBe(200);
-  }, 20_000);
+  });
 
   it("preserves legacy h2c status and bodies against listeners without the operations mount", async () => {
     const old = await fixture("open", undefined, "unmounted"), mounted = await fixture();
@@ -445,7 +463,7 @@ describe("real API and unix acceptance", () => {
       expect(response).toContain("400 Bad Request");
       expect(response).toContain(JSON.stringify(refusal("method_not_allowed", "invalid_request", 400, "none")));
     }
-  }, 20_000);
+  });
 
   it.each(["api", "unix"] as const)("negative control: the old %s Upgrade listener fails legacy parity exactly at ECONNRESET", async listener => {
     const f = await fixture(), driver = f.drivers[listener];
@@ -455,8 +473,9 @@ describe("real API and unix acceptance", () => {
     driver.server.on("upgrade", (_request, socket) => socket.destroy());
     const broken = await upgradeOutcome(driver, path, method);
     expectFailure(() => assertLegacyParity(broken, baseline), "legacy Upgrade parity", { reset: "ECONNRESET" }, baseline);
-  }, 20_000);
+  });
 
+  // Hundreds of real HTTP exchanges exercise raw aliases on both listeners.
   it("refuses normalized aliases before all legacy work, with cookie refusal first", async () => {
     const f = await fixture("better-auth");
     const admission = vi.spyOn(f.store.admission, "run"), mint = vi.spyOn(f.runtime, "mint");
@@ -507,7 +526,7 @@ describe("real API and unix acceptance", () => {
         expect(await wire(mounted, listener, path, method)).toEqual(await wire(old, listener, path, method));
       }
     }
-  }, 20_000);
+  });
 
   it("always answers unsupported mode even if mint unexpectedly succeeds", async () => {
     const f = await fixture("legacy");
@@ -518,7 +537,7 @@ describe("real API and unix acceptance", () => {
     expect(mint).toHaveBeenCalledTimes(2); expect(f.legacy).not.toHaveBeenCalled();
     expect(f.oldAuthentication.authenticateInstallation).not.toHaveBeenCalled();
     expect(f.oldAuthentication.anonymousInstallation).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("preserves duplicate and mixed raw credentials", async () => {
     const f = await fixture("token");
@@ -528,7 +547,7 @@ describe("real API and unix acceptance", () => {
       { ...auth(f.installation), "X-Worktree-Switcher-Token": f.installation },
     ]) expect((await f.send("api", { headers }).reply).body).toEqual(refusal("mixed_credentials"));
     expect((await f.send("api", { headers: { ...auth(f.installation), Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("mixed_credentials"));
-  }, 20_000);
+  });
 
   it("cookie refusal precedes body, admission and even saturated unix capacity", async () => {
     const f = await fixture("better-auth"), release = pause(), entered = pause();
@@ -546,7 +565,7 @@ describe("real API and unix acceptance", () => {
       }
       expect(dataListeners).toBe(0); expect(mint.mock.calls.length).toBe(0); expect(f.provider.isSessionAuthorityEligible.mock.calls.length).toBe(0);
     } finally { release.done(); await Promise.all(held.map(h => h.reply)); }
-  }, 20_000);
+  });
 
   it.each(["token", "better-auth"])("accepts bearer-like token headers in %s without invoking the old resolver", async mode => {
     const f = await fixture(mode);
@@ -554,14 +573,14 @@ describe("real API and unix acceptance", () => {
       expect((await f.send("api", { headers: { "Content-Type": "application/json", [name]: mode === "token" ? f.installation : f.agent } }).reply).status).toBe(200);
     }
     expect(f.oldAuthentication.authenticateInstallation.mock.calls.length).toBe(0);
-  }, 20_000);
+  });
 
   it("refuses browser headers and every credential on unix", async () => {
     const f = await fixture();
     for (const headers of [{ Origin: "https://fixture.example" }, { "Sec-Fetch-Site": "none" }, { Cookie: "unrelated=x" }] as Record<string, string>[]) {
       expect((await f.send("unix", { headers: { "Content-Type": "application/json", ...headers } }).reply).body).toEqual(refusal("browser_headers_on_unix"));
     }
-  }, 20_000);
+  });
 
   it("agent sees zero roles, then only its one project; body and headers grant no authority", async () => {
     const f = await fixture("better-auth");
@@ -570,7 +589,7 @@ describe("real API and unix acceptance", () => {
     const r = await f.send("api", { headers: { ...auth(f.agent), "X-Actor": "operator", "X-Session": "forged", "X-Listener": "unix" } }).reply;
     expect(r.body.actor.kind).toBe("agent"); expect(r.body.projects.map((p: { projectId: string }) => p.projectId)).toEqual(["project-a"]);
     for (const body of ['{"actor":"operator"}', '{"session":"forged"}', '{"listener":"unix"}']) expect((await f.send("api", { headers: auth(f.agent), body }).reply).body).toEqual(refusal("unexpected_input", "invalid_request", 400, "none"));
-  }, 20_000);
+  });
 
   it("strict JSON, content type, path and all method refusals remain terminal on both listeners", async () => {
     const f = await fixture();
@@ -583,7 +602,7 @@ describe("real API and unix acceptance", () => {
       for (const method of ["GET", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"]) expect((await f.send(listener, { method }).reply).body).toEqual(refusal("method_not_allowed", "invalid_request", 400, "none"));
     }
     expect(f.legacy).not.toHaveBeenCalled(); expect(f.oldAuthentication.anonymousInstallation.mock.calls.length).toBe(0);
-  }, 20_000);
+  });
 
   it("answers HEAD and Upgrade inside the namespace through normal HTTP dispatch", async () => {
     const f = await fixture();
@@ -593,7 +612,7 @@ describe("real API and unix acceptance", () => {
       expect(raw).toContain("400 Bad Request"); expect(raw).toContain('"reason":"method_not_allowed"');
     }
     expect(f.oldAuthentication.authenticateInstallation).not.toHaveBeenCalled(); expect(f.legacy).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("starts both listeners without CONNECT or Upgrade listeners and closes every CONNECT target", async () => {
     const f = await fixture();
@@ -610,7 +629,7 @@ describe("real API and unix acceptance", () => {
         mint.mockClear();
       }
     }
-  }, 20_000);
+  });
 
   it.each(["api", "unix"] as const)("%s cleans up half-open and reset protocol clients and completes server.close", async listener => {
     const f = await fixture();
@@ -633,7 +652,7 @@ describe("real API and unix acceptance", () => {
       await closeListener(server);
       expect(unhandled).not.toHaveBeenCalled();
     } finally { process.off("uncaughtExceptionMonitor", unhandled); }
-  }, 20_000);
+  });
 
   it("keeps legacy paths working in legacy mode, five per listener (unix executor stubbed)", async () => {
     const f = await fixture("legacy");
@@ -646,7 +665,7 @@ describe("real API and unix acceptance", () => {
       });
       expect(reply).toBe(path === "/" || path === "/index.html" || path === "/api/auth/status" ? 200 : 401);
     }
-  }, 20_000);
+  });
 });
 
 describe("boundary conformance through real listeners", () => {
@@ -664,7 +683,7 @@ describe("boundary conformance through real listeners", () => {
     // Configuration belongs to provider sessions. No provider call is permitted in 5a.
     f.state.configChanged = true;
     expect((await f.send(listener).reply).status).toBe(200);
-  }, 20_000);
+  });
 
   it.each(["api", "unix"] as const)("%s enforces production byte ceilings before mint (unix legacy executor stubbed)", async listener => {
     const f = await fixture(), mint = vi.spyOn(f.runtime, "mint");
@@ -675,13 +694,13 @@ describe("boundary conformance through real listeners", () => {
     const effect = vi.fn(); f.hooks.legacy = effect;
     assertRefused(await f.send(listener, { path: listener === "api" ? "/api/projects" : "/auth", body }).reply,
       listener === "api" ? f.addProject.mock.calls.length : effect.mock.calls.length);
-  }, 20_000);
+  });
 
   it("controlled adapter: bounds a slow body and response on real HTTP (stubbed limits/dispatch)", async () => {
     const f = await fixture("open", { deadlineMs: 50, responseBytes: 32 });
     expect((await f.send("api", { slow: true }).reply).status).toBeGreaterThanOrEqual(400);
     expect((await f.send("api").reply).body).toEqual(refusal("response_too_large", "payload_too_large", 413, "none"));
-  }, 20_000);
+  });
 
   it("controlled adapter: commits exactly one 413 envelope for an oversized response (stubbed limits/dispatch)", async () => {
     const f = await fixture("open", { responseBytes: 32 });
@@ -697,7 +716,7 @@ describe("boundary conformance through real listeners", () => {
     expect(writes).toHaveLength(1); expect(writes[0]).toHaveBeenCalledOnce();
     expect(ends).toHaveLength(1); expect(ends[0]).toHaveBeenCalledOnce();
     expect(runner).toHaveBeenCalledOnce(); expect(await runner.mock.results[0].value).toMatchObject({ status: "committed" });
-  }, 20_000);
+  });
 
   it.each(["grant", "revoke", "rotate", "maintenance", "shutdown", "disconnect", "deadline"])("revalidates %s between mint and actual write", async change => {
     const f = await fixture(change === "rotate" ? "token" : "better-auth");
@@ -722,7 +741,7 @@ describe("boundary conformance through real listeners", () => {
         expect(reply.status).toBe(503); expect(reply.body).toEqual(refusal("release_timed_out", "unavailable", 503, "retry"));
       } else expect(reply.status).toBeGreaterThanOrEqual(400);
     }
-  }, 20_000);
+  });
 
   it("keeps the API's 32-request bound before body reads, with cookies excluded", async () => {
     const f = await fixture(); let reading = 0; const ready = pause();
@@ -734,7 +753,7 @@ describe("boundary conformance through real listeners", () => {
       expect((await f.send("api", { slow: true, headers: { Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
       expect(reading).toBe(32);
     } finally { for (const pending of held) pending.call.destroy(); }
-  }, 20_000);
+  });
 
   it("matches legacy Retry-After during real provider-storage contention on both operations listeners", async () => {
     const f = await fixture(), entered = pause(), release = pause();
@@ -751,7 +770,7 @@ describe("boundary conformance through real listeners", () => {
       }
       expect(f.addProject).not.toHaveBeenCalled(); expect(f.legacy).not.toHaveBeenCalled();
     } finally { release.done(); await borrow; }
-  }, 20_000);
+  });
 
   it.each(["unix"] as const)("%s configuration change still refuses cookies before provider/admission/body work", async listener => {
     const f = await fixture("better-auth"), driver = f.drivers[listener];
@@ -762,7 +781,7 @@ describe("boundary conformance through real listeners", () => {
     expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal("provider_cookie_not_supported"));
     expect(admission).not.toHaveBeenCalled(); expect(mint).not.toHaveBeenCalled(); expect(data).toBe(0);
     expect(f.provider.isSessionAuthorityEligible).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("refuses admission contention while real provider storage is pending, and cancels a queued disconnected request", async () => {
     const f = await fixture(), entered = pause(), release = pause();
@@ -781,7 +800,7 @@ describe("boundary conformance through real listeners", () => {
     } finally { release.done(); await borrow; }
     expect(effect.mock.calls.length).toBe(0);
     expect((await f.send("api").reply).status).toBe(200);
-  }, 20_000);
+  });
 
   it("shares the real unix ceiling and drain with a stubbed /auth executor after disconnect", async () => {
     const f = await fixture(), entered = pause(), release = pause();
@@ -798,7 +817,7 @@ describe("boundary conformance through real listeners", () => {
     const closing = f.admin.close().then(() => { drained = true; });
     await new Promise<void>(r => setImmediate(r)); assertOwned(!drained);
     release.done(); await closing; expect(drained).toBe(true);
-  }, 20_000);
+  });
 
   it("shutdown retains the real open SQLite handle and lock record until an admitted request settles", async () => {
     const f = await fixture(), entered = pause(), release = pause();
@@ -824,7 +843,7 @@ describe("boundary conformance through real listeners", () => {
     } finally { release.done(); }
     expect((await pending.reply).status).toBeGreaterThanOrEqual(400);
     await stopping; expect(f.db.open).toBe(false); expect(existsSync(lockPath)).toBe(false);
-  }, 20_000);
+  });
 
   it("negative control: omitted maintenance guard starts exactly one measured mint", async () => {
     const f = await fixture("open", undefined, "omit_guard");
@@ -832,24 +851,24 @@ describe("boundary conformance through real listeners", () => {
     expect(observation.reply.status).toBe(200); expect(observation.reply.body).toHaveProperty("actor.kind", "installation");
     expect(observation.calls.admission).toBeGreaterThan(0); expect(observation.calls.data).toBe(1);
     expectFailure(() => assertMaintenance(observation), "maintenance prohibited mint calls", 1, 0);
-  }, 20_000);
+  });
 
   it("retains all 32 API slots until disconnected work settles through production dispatch", async () => {
     const f = await fixture(); await disconnectedCapacity(f, f.drivers.api, false);
-  }, 20_000);
+  });
   it("negative control: early slot release admits request 33 while all 32 works remain unsettled", async () => {
     const f = await fixture("open", undefined, "early_release"); await disconnectedCapacity(f, f.drivers.api, true);
-  }, 20_000);
+  });
 
   it("revalidates maintenance before releasing a buffered response through production dispatch", async () => {
     const f = await fixture(), reply = await bufferedRelease(f, f.drivers.api, false);
     assertMaintenanceRelease(reply);
-  }, 20_000);
+  });
   it("negative control: buffered success without revalidation writes exactly 200 with a DTO after maintenance", async () => {
     const f = await fixture(), reply = await bufferedRelease(f, f.drivers.api, true);
     expect(reply.body).toHaveProperty("actor.kind", "installation");
     expectFailure(() => assertMaintenanceRelease(reply), "maintenance release status", 200, 401);
-  }, 20_000);
+  });
 
   it.each(["api", "unix"] as const)("%s writes success only inside real core admission and hides credential IDs", async listener => {
     const f = await fixture("token"); let admittedWrite = false;
@@ -865,7 +884,7 @@ describe("boundary conformance through real listeners", () => {
     expect(reply.status).toBe(200); expect(admittedWrite).toBe(true);
     expect(JSON.stringify(reply.body).includes(f.credentialId)).toBe(false);
     expect(JSON.stringify(reply.body).includes(f.installation.slice(4, 40))).toBe(false);
-  }, 20_000);
+  });
 
   it("controlled adapter/end hook: holds capacity through response completion after admitted work returns", async () => {
     const f = await fixture("open", { maxInFlight: 1 }), intercepted = pause();
@@ -883,8 +902,9 @@ describe("boundary conformance through real listeners", () => {
     finally { finish?.(); }
     expect((await pending.reply).status).toBe(200);
     expect((await f.send("api").reply).status).toBe(200);
-  }, 20_000);
+  });
 
+  // Inserts 300 durable rows to cross the real socket high-water mark.
   it.each(["api", "unix"] as const)("%s completes a large real DTO under real socket backpressure", async listener => {
     const f = await fixture(), driver = f.drivers[listener];
     // session.describe can list 500 projects, so it is NOT always a tiny DTO.
@@ -914,6 +934,7 @@ describe("boundary conformance through real listeners", () => {
     expect((await driver.capacityProbe()).status).toBe(200);
   }, 20_000);
 
+  // Waits for the production ten-second unix body deadline.
   it("uses the socket's real ten second deadline for a slow operations body", async () => {
     const f = await fixture(), mint = vi.spyOn(f.runtime, "mint");
     const reply = await f.send("unix", { slow: true }).reply;
@@ -940,7 +961,7 @@ describe("operations cookie listener conformance", () => {
     const reply = await f.send("api", { slow: true, headers: { ...cookieHeaders, [name]: value } }).reply;
     expect(reply.body).toEqual(refusal(reason, status === 403 ? "forbidden" : "invalid_request", status, "none"));
     expect(data).toBe(0); expect(resolve).not.toHaveBeenCalled(); expect(acquire).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("requires Origin on cookie requests before body, budget and provider", async () => {
     const f = await fixture("better-auth", undefined, undefined, true);
@@ -953,7 +974,7 @@ describe("operations cookie listener conformance", () => {
     expect(reply.body).toEqual(refusal("origin_forbidden", "forbidden", 403, "none"));
     expect(bodyReads).toBe(0); expect(acquire).not.toHaveBeenCalled(); expect(resolve).not.toHaveBeenCalled();
     expect(f.provider.resolveRequest).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it.each(["Host", "Origin", "Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest", "Content-Type"])("cookie boundary rejects duplicate %s", async name => {
     const f = await fixture("better-auth", undefined, undefined, true);
@@ -961,7 +982,7 @@ describe("operations cookie listener conformance", () => {
     const reply = await f.send("api", { headers: [...Object.entries(cookieHeaders).filter(([key]) => key !== name).flat(), name, value, name, value] }).reply;
     expect(reply.body.error.reason).toBe(name === "Host" ? "invalid_authority" : name === "Content-Type" ? "invalid_request" : "origin_forbidden");
     expect(f.provider.resolveRequest).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("resolves only allowlisted provider headers, stages in-request, and preserves mixed-cookie refusal even for null resolution", async () => {
     const f = await fixture("better-auth", undefined, undefined, true);
@@ -975,7 +996,7 @@ describe("operations cookie listener conformance", () => {
     expect((await f.send("api", { headers: { ...cookieHeaders, Authorization: `Bearer ${f.agent}` } }).reply).body).toEqual(refusal("mixed_credentials"));
     const unknown = await f.send("api", { headers: cookieHeaders }).reply;
     expect(unknown.status).toBe(401); expect(unknown.body).toEqual(refusal("invalid_credential"));
-  }, 20_000);
+  });
 
   it.each(["maintenance", "configChanged"] as const)("cookie %s refusal preserves provider and body fences", async change => {
     const f = await fixture("better-auth", undefined, undefined, true); f.state[change] = true;
@@ -987,7 +1008,7 @@ describe("operations cookie listener conformance", () => {
     expect(reply.status).toBe(503);
     expect(reply.headers["retry-after"]).toBe(change === "maintenance" ? undefined : "1");
     expect(f.provider.resolveRequest).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it.each(["not_loaded", "failed", "configuration"] as const)("cookie provider %s is unavailable before body or resolution, with late readiness on the same boundary", async change => {
     const f = await fixture("better-auth", undefined, undefined, true);
@@ -1007,7 +1028,7 @@ describe("operations cookie listener conformance", () => {
       expect(ready.status).toBe(200); expect(ready.body.actor).toMatchObject({ kind: "human", accountId: "human" });
       expect(f.provider.resolveRequest).toHaveBeenCalledTimes(1);
     }
-  }, 20_000);
+  });
 
   it("cookie eligibility lost during pending resolution is unavailable at mint", async () => {
     const f = await fixture("better-auth", undefined, undefined, true), entered = pause(), release = pause();
@@ -1021,7 +1042,7 @@ describe("operations cookie listener conformance", () => {
     expect(reply.status).toBe(503);
     expect(reply.body).toEqual(refusal("provider_session_unavailable", "unavailable", 503, "retry"));
     expect(reply.headers["retry-after"]).toBe("1"); expect(f.provider.resolveRequest).toHaveBeenCalledTimes(1);
-  }, 20_000);
+  });
 
   it.each(["provider_failed", "provider_unavailable", "provider_disposed"] as const)("cookie resolution rejected by the provider with %s is unavailable, never an internal failure", async code => {
     const f = await fixture("better-auth", undefined, undefined, true);
@@ -1030,7 +1051,7 @@ describe("operations cookie listener conformance", () => {
     expect(reply.status).toBe(503);
     expect(reply.body).toEqual(refusal("provider_session_unavailable", "unavailable", 503, "retry"));
     expect(reply.headers["retry-after"]).toBe("1"); expect(f.provider.resolveRequest).toHaveBeenCalledTimes(1);
-  }, 20_000);
+  });
 
   it.each(["invalid_credential", "success"] as const)("pre-body ineligibility never becomes a credential verdict when mint returns %s", async outcome => {
     const f = await fixture("better-auth", undefined, undefined, true);
@@ -1051,7 +1072,7 @@ describe("operations cookie listener conformance", () => {
     expect(mint).toHaveBeenCalledTimes(1);
     const minted = await mint.mock.results[0].value;
     expect(minted).toMatchObject(outcome === "success" ? { ok: true } : { ok: false, error: { reason: "invalid_credential" } });
-  }, 20_000);
+  });
 
   it.each(["open", "token", "mixed"] as const)("ineligible cookie provider preserves the %s acceptance refusal", async mode => {
     const f = await fixture(mode === "mixed" ? "better-auth" : mode, undefined, undefined, true);
@@ -1061,7 +1082,7 @@ describe("operations cookie listener conformance", () => {
     expect(reply.status).toBe(401);
     expect(reply.body).toEqual(refusal(mode === "open" ? "credential_in_open_mode" : mode === "token" ? "credential_not_accepted_here" : "mixed_credentials"));
     expect(f.provider.resolveRequest).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("retains initiating slots after disconnected public results until provider settled; drain joins that work", async () => {
     const f = await fixture("better-auth", undefined, undefined, true), release = pause(), entered = pause();
@@ -1076,7 +1097,7 @@ describe("operations cookie listener conformance", () => {
       await new Promise<void>(r => setImmediate(r)); expect(drained).toBe(false);
       release.done(); await close; expect(f.runtime.requestBudget.active).toBe(0);
     } finally { release.done(); }
-  }, 20_000);
+  });
 
   it("cookie admission contention is retryable busy, never invalid credential", async () => {
     const f = await fixture("better-auth", undefined, undefined, true), entered = pause(), release = pause();
@@ -1086,7 +1107,7 @@ describe("operations cookie listener conformance", () => {
       expect(reply.body).toEqual(refusal("admission_refused", "busy", 503, "retry")); expect(reply.headers["retry-after"]).toBe("1");
       expect(f.provider.resolveRequest).not.toHaveBeenCalled();
     } finally { release.done(); await borrow; }
-  }, 20_000);
+  });
 
   it.each(["maintenance", "configuration", "session", "grant", "deadline", "disconnect"])("cookie release recomputes after runner completion: %s", async change => {
     const f = await fixture("better-auth", undefined, undefined, true); if (!f.built.supported) throw new Error("supported fixture required");
@@ -1107,7 +1128,7 @@ describe("operations cookie listener conformance", () => {
     release.done();
     if (change === "disconnect") await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
     else { const reply = await pending.reply; if (change === "grant") { expect(reply.status).toBe(200); expect(reply.body.projects).toEqual([]); } else { expect(reply.status).toBeGreaterThanOrEqual(400); expect(reply.body).not.toHaveProperty("actor"); } }
-  }, 20_000);
+  });
 });
 
 
@@ -1119,7 +1140,7 @@ describe("cookie conformance negative controls", () => {
     const reply = await f.send("api", { headers: { ...cookieHeaders, Origin: "https://other.test" } }).reply;
     expect(reply.body.actor.kind).toBe("human");
     expectFailure(() => assertCookieOrigin(reply), "cookie origin boundary", 200, 403);
-  }, 20_000);
+  });
   it("negative control: removing only required-Origin fails cookie required Origin boundary with 200 versus 403", async () => {
     const f = await fixture("better-auth", undefined, undefined, true);
     vi.spyOn(authenticationHttp, "authenticationRequestOrigin").mockImplementation(() => {});
@@ -1127,7 +1148,7 @@ describe("cookie conformance negative controls", () => {
     const reply = await f.send("api", { headers }).reply;
     expect(reply.body.actor.kind).toBe("human");
     expectFailure(() => assertCookieRequiredOrigin(reply), "cookie required Origin boundary", 200, 403);
-  }, 20_000);
+  });
   it("negative control: early work settlement fails cookie capacity until settlement with 401 versus 503", async () => {
     const f = await fixture("better-auth", undefined, undefined, true), release = pause();
     const acquire = AuthenticationRequestBudget.prototype.acquire;
@@ -1142,7 +1163,7 @@ describe("cookie conformance negative controls", () => {
       expectFailure(() => assertCookieCapacity(reply), "cookie capacity until settlement", 401, 503);
       expect(f.provider.resolveRequest).toHaveBeenCalledTimes(13);
     } finally { release.done(); }
-  }, 20_000);
+  });
   it("negative control: premature buffered success fails cookie maintenance release with 200 versus 401", async () => {
     const f = await fixture("better-auth", undefined, undefined, true); if (!f.built.supported) throw new Error("supported fixture required");
     const runner = f.built.runner, entered = pause(), release = pause();
@@ -1154,10 +1175,11 @@ describe("cookie conformance negative controls", () => {
     const pending = f.send("api", { headers: cookieHeaders }); await entered.promise; f.state.maintenance = true; release.done();
     const reply = await pending.reply; expect(reply.body.actor.kind).toBe("human");
     expectFailure(() => assertCookieRelease(reply), "cookie maintenance release", 200, 401);
-  }, 20_000);
+  });
 });
 
 describe("cookie cancellation ownership", () => {
+  // Waits for the production request deadline while provider settlement is held.
   it("deadline aborts resolution and admission but retains real unsettled work and response drain", async () => {
     const f = await fixture("better-auth", undefined, undefined, true), release = pause();
     const cancelled = vi.fn();
@@ -1189,7 +1211,7 @@ it("cookie disconnects abort twelve resolutions and retain all initiating slots 
     expect(f.runtime.requestBudget.active).toBe(12);
     const overflow = await f.send("api", { headers: cookieHeaders }).reply; assertCookieCapacity(overflow); expect(calls).toBe(12);
   } finally { release.done(); }
-}, 20_000);
+});
 
 it.each([
   ['{"actor":{"kind":"installation"}}', "unexpected_input"],
@@ -1202,14 +1224,14 @@ it.each([
   const reply = await f.send("api", { headers: cookieHeaders, body }).reply;
   expect(reply.body).toEqual(refusal(reason, "invalid_request", 400, "none")); expect(reply.body).not.toHaveProperty("actor");
   if (reason === "invalid_request") expect(f.provider.resolveRequest).not.toHaveBeenCalled();
-}, 20_000);
+});
 
 it("cookie content type and byte ceiling refuse before provider work", async () => {
   const f = await fixture("better-auth", undefined, undefined, true);
   for (const type of ["text/plain", "application/json; charset=utf-8"]) expect((await f.send("api", { headers: { ...cookieHeaders, "Content-Type": type } }).reply).body.error.reason).toBe("invalid_request");
   const reply = await f.send("api", { headers: cookieHeaders, body: " ".repeat(65537) }).reply;
   expect(reply.body).toEqual(refusal("request_too_large", "payload_too_large", 413, "none")); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
-}, 20_000);
+});
 
 
 it("cookie response completion retains the initiating slot after all provider work settled", async () => {
@@ -1228,12 +1250,12 @@ it("cookie response completion retains the initiating slot after all provider wo
   } finally { finish(); }
   expect((await pending.reply).status).toBe(200);
   await vi.waitFor(() => expect(f.runtime.requestBudget.active).toBe(0));
-}, 20_000);
+});
 
 // The older worker transport suite uses plaintext loopback fixtures. This mount
 // additionally exercises real TLS with a short-lived, locally generated certificate.
-async function workerFixture(mode = "open", plain = false, fault?: "early_release") {
-  const f = await fixture(mode);
+async function workerFixture(mode = "open", plain = false, fault?: "early_release", base?: Fixture) {
+  const f = base ?? await fixture(mode);
   const key = join(f.root, "worker.key"), cert = join(f.root, "worker.crt");
   execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", key, "-out", cert,
     "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore", timeout: 15_000 });
@@ -1293,7 +1315,7 @@ describe("body cancellation through mounted HTTP listeners", () => {
     expect(reply.status).toBe(503); expect(reply.headers["retry-after"]).toBe("1");
     expect(reply.body).toEqual(refusal("request_cancelled", "unavailable", 503, "retry"));
     expect(end).toHaveBeenCalledOnce(); await closing;
-  }, 20_000);
+  });
 
   it.each([
     ["api", "oversized"], ["api", "strict JSON"],
@@ -1312,7 +1334,7 @@ describe("body cancellation through mounted HTTP listeners", () => {
     expect(reply.headers["retry-after"]).toBeUndefined();
     expect(reply.body).toEqual(oversized ? refusal("request_too_large", "payload_too_large", 413, "none") : refusal("invalid_request", "invalid_request", 400, "none"));
     await closing;
-  }, 20_000);
+  });
 });
 
 describe("worker HTTPS boundary conformance", () => {
@@ -1332,9 +1354,10 @@ describe("worker HTTPS boundary conformance", () => {
         expect(reply.status).toBe(200); expect(reply.body).toMatchObject({ mode, listener: "worker", actor: mode === "better-auth" ? { kind: "agent", accountId: "agent" } : { kind: "installation" } });
         expect(Object.keys(reply.body).sort()).toEqual(["actor", "freshLogin", "fullAuthority", "installationPermissions", "listener", "mode", "projects", "projectsTruncated"].sort());
         expect(reply.headers["cache-control"]).toBe("no-store");
-      } else expect(reply.body).toEqual(refusal(mode === "legacy" ? "unknown_mode" : reason!));
+      } else { expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal(mode === "legacy" ? "unknown_mode" : reason!)); }
     }
-    expect((await f.driver.send({ slow: true, headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("provider_cookie_not_supported"));
+    const cookie = await f.driver.send({ slow: true, headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply;
+    expect(cookie.status).toBe(401); expect(cookie.body).toEqual(refusal("provider_cookie_not_supported"));
     expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
     expect(f.poll).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled(); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
     await f.store.admission.run(() => {
@@ -1345,7 +1368,7 @@ describe("worker HTTPS boundary conformance", () => {
     expect((await f.driver.send({ path: f.driver.legacyPath, headers, body: '{"version":1,"workerId":"worker"}' }).reply).body).toEqual({ version: 1, assignments: [], cancellations: [] });
     expect((await f.driver.send({ path: "/remote-verification/v1/report", headers, body: JSON.stringify({ version: 1, workerId: "worker", report: { attemptId: "attempt", sequence: 1, phase: "running", localRunId: "run" } }) }).reply).body).toEqual({ version: 1, acceptedSequence: 1 });
     expect(f.authenticate).toHaveBeenCalledTimes(4); expect(f.poll).toHaveBeenCalledOnce(); expect(f.report).toHaveBeenCalledOnce(); expect(f.usage).toHaveBeenCalledTimes(4);
-  }, 20_000);
+  });
 
   it.each(["open", "token", "better-auth"])("preserves mixed and duplicate credentials and refuses cookies before any work in %s", async mode => {
     const f = await workerFixture(mode), mint = vi.spyOn(f.runtime, "mint");
@@ -1358,7 +1381,7 @@ describe("worker HTTPS boundary conformance", () => {
     f.worker.server.prependListener("request", req => req.on("newListener", name => { if (name === "data") reads++; }));
     for (const mode of ["POST", "GET"]) expect((await f.driver.send({ method: mode, slow: true, headers: { ...auth(f.installation), Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("provider_cookie_not_supported"));
     expect(reads).toBe(0); expect(mint).not.toHaveBeenCalled(); expect(admission).not.toHaveBeenCalled(); expect(f.runtime.requestBudget.active).toBe(0); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("shares peer and Origin refusals with poll/report and keeps Fetch Metadata policy", async () => {
     const f = await workerFixture(), mint = vi.spyOn(f.runtime, "mint");
@@ -1372,7 +1395,7 @@ describe("worker HTTPS boundary conformance", () => {
     plain.worker.server.prependListener("request", req => { Object.defineProperty(req.socket, "remoteAddress", { configurable: true, value: "192.0.2.1" }); });
     workerGuard(await plain.driver.send().reply, "loopback_fixture_only");
     expect((await plain.driver.send({ path: plain.driver.legacyPath }).reply).body).toEqual({ error: "loopback_fixture_only" }); expect(plain.authenticate).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("negative control: omitted Origin guard has the exact conformance failure", async () => {
     const f = await workerFixture();
@@ -1380,13 +1403,13 @@ describe("worker HTTPS boundary conformance", () => {
     f.worker.server.prependOnceListener("request", req => { delete req.headers.origin; });
     const reply = await f.driver.send({ headers: { "Content-Type": "application/json", Origin: "https://hostile.test" } }).reply;
     expectFailure(() => workerGuard(reply, "origin_forbidden"), "worker origin_forbidden boundary", 200, 403);
-  }, 20_000);
+  });
 
   it("maintenance refusal shares the existing conformance assertion; provider configuration does not disable bearers", async () => {
     const f = await workerFixture(); assertMaintenance(await maintenanceObservation(f, f.driver));
     f.state.maintenance = false; f.state.configChanged = true;
     expect((await f.driver.send().reply).status).toBe(200); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("raw aliases, methods, JSON and byte limits terminate before poll/report", async () => {
     const f = await workerFixture();
@@ -1396,7 +1419,11 @@ describe("worker HTTPS boundary conformance", () => {
         if (method !== "HEAD") expect(reply.body).toEqual(refusal("operation_not_found", "not_found", 404, "none"));
       }
     }
-    for (const method of ["GET", "OPTIONS", "DELETE", "PATCH", "PUT", "HEAD", "TRACE"]) expect((await f.driver.send({ method }).reply).status).toBe(400);
+    for (const method of ["GET", "OPTIONS", "DELETE", "PATCH", "PUT", "HEAD", "TRACE"]) {
+      const reply = await f.driver.send({ method }).reply; expect(reply.status).toBe(400);
+      if (method !== "HEAD") expect(reply.body).toEqual(refusal("method_not_allowed", "invalid_request", 400, "none"));
+      else expect(reply.body).toEqual({}); // HTTP HEAD has no body.
+    }
     for (const body of ['{"x":1,"x":2}', '{} {}', '[]', 'null', '{"actor":"operator"}', '{"session":"spoof"}', '{"listener":"unix"}']) {
       expect((await f.driver.send({ body }).reply).body).toEqual(refusal(body.includes('"actor"') || body.includes('"session"') || body.includes('"listener"') ? "unexpected_input" : "invalid_request", "invalid_request", 400, "none"));
     }
@@ -1406,9 +1433,9 @@ describe("worker HTTPS boundary conformance", () => {
       const reply = await f.driver.send({ headers: ["Content-Length", "2", "Content-Type", "application/json", header, "localhost", header, "localhost"] }).reply;
       expect(reply.status).toBe(400);
     }
-    expect((await f.driver.send({ headers: { "Content-Type": "application/json", "X-Actor": "operator", "X-Session": "spoof" } }).reply).body.actor.kind).toBe("installation");
+    expect((await f.driver.send({ headers: { "Content-Type": "application/json", "X-Actor": "operator", "X-Session": "spoof", "X-Listener": "unix" } }).reply).body.actor.kind).toBe("installation");
     expect(f.authenticate).not.toHaveBeenCalled(); expect(f.poll).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("Node CONNECT closes without dispatch; Upgrade uses the shared raw parser and legacy routing", async () => {
     const f = await workerFixture();
@@ -1427,14 +1454,14 @@ describe("worker HTTPS boundary conformance", () => {
       });
       expect(bytes).toBe(""); expect(f.authenticate).not.toHaveBeenCalled(); expect(f.poll).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled();
     } finally { socket.destroy(); }
-  }, 20_000);
+  });
 
   it("real admission contention keeps its retryable public reason", async () => {
     const f = await workerFixture(), entered = pause(), release = pause();
     const borrowed = f.store.authenticationProviderStorage().borrow(async () => { entered.done(); await release.promise; }); await entered.promise;
     try { const reply = await f.driver.send().reply; expect(reply.body).toEqual(refusal("admission_refused", "busy", 503, "retry")); expect(reply.headers["retry-after"]).toBe("1"); expect(f.authenticate).not.toHaveBeenCalled(); }
     finally { release.done(); await borrowed; }
-  }, 20_000);
+  });
 
   it("keeps production connection and request limits for both surfaces", async () => {
     const f = await workerFixture();
@@ -1445,16 +1472,16 @@ describe("worker HTTPS boundary conformance", () => {
       await expect(f.driver.send().reply).rejects.toMatchObject({ code: "ECONNRESET" });
       await expect(f.driver.send({ path: f.driver.legacyPath }).reply).rejects.toMatchObject({ code: "ECONNRESET" });
     } finally { for (const socket of sockets) socket.destroy(); }
-  }, 20_000);
+  });
 
-  it("disconnect retains capacity until started work settles", async () => { const f = await workerFixture(); await disconnectedCapacity(f, f.driver, false); }, 20_000);
-  it("negative control: early capacity release fails with 200 versus 503", async () => { const f = await workerFixture("open", false, "early_release"); await disconnectedCapacity(f, f.driver, true); }, 20_000);
+  it("disconnect retains capacity until started work settles", async () => { const f = await workerFixture(); await disconnectedCapacity(f, f.driver, false); });
+  it("negative control: early capacity release fails with 200 versus 503", async () => { const f = await workerFixture("open", false, "early_release"); await disconnectedCapacity(f, f.driver, true); });
   it("negative control: premature success fails the shared maintenance release assertion", async () => {
     const f = await workerFixture(); const reply = await bufferedRelease(f, f.driver, true);
     expectFailure(() => assertMaintenanceRelease(reply), "maintenance release status", 200, 401);
-  }, 20_000);
+  });
 
-  it.each(["maintenance", "credential", "grant", "deadline", "disconnect", "listener"])("fresh release after runner completion rechecks %s", async change => {
+  it.each(["maintenance", "credential", "grant", "deadline", "disconnect", "listener", "configuration"])("fresh release after runner completion rechecks %s", async change => {
     const f = await workerFixture("better-auth"); if (!f.built.supported) throw new Error("supported fixture"); await f.grant();
     const runner = f.built.runner, real = runner.readRelease.bind(runner), entered = pause(), release = pause();
     const commits: unknown[] = [], disconnected = pause();
@@ -1470,13 +1497,20 @@ describe("worker HTTPS boundary conformance", () => {
       if (change === "grant") await f.store.admission.run(() => f.db.prepare("DELETE FROM account_grants WHERE account_id='agent'").run());
       if (change === "deadline") f.clock.offset = OPERATIONS_HTTP_LIMITS.deadlineMs + 1;
       if (change === "listener") f.state.workerOpen = false;
+      if (change === "configuration") f.state.configChanged = true;
       if (change === "disconnect") { pending.call.destroy(); await disconnected.promise; }
     } finally { release.done(); }
     if (change === "disconnect") await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
-    else { const reply = await pending.reply; if (change === "grant") { expect(reply.status).toBe(200); expect(reply.body.projects).toEqual([]); } else { expect(reply.status).toBeGreaterThanOrEqual(400); expect(reply.body).not.toHaveProperty("actor"); } }
-    expect(commits).toHaveLength(change === "grant" ? 1 : 0);
-  }, 20_000);
+    else {
+      const reply = await pending.reply;
+      if (change === "grant" || change === "configuration") { expect(reply.status).toBe(200); expect(reply.body.projects).toHaveLength(change === "grant" ? 0 : 1); }
+      else { const reason = change === "credential" ? "credential_no_longer_valid" : change === "deadline" ? "release_timed_out" : "listener_closed";
+        expect(reply.status).toBe(change === "deadline" ? 503 : 401); expect(reply.body).toEqual(refusal(reason, change === "deadline" ? "unavailable" : "unauthenticated", reply.status, change === "deadline" ? "retry" : "reauthenticate")); }
+    }
+    expect(commits).toHaveLength(change === "grant" || change === "configuration" ? 1 : 0);
+  });
 
+  // Waits for the production worker deadline with started work held.
   it("deadline cancels work held after mint, retains ownership, and shutdown joins work before SQLite and lock release", async () => {
     const f = await workerFixture(), entered = pause(), release = pause(), cancelled = pause();
     const lockPath = join(f.root, "controller.lock"), lock = acquireControllerLock(lockPath);
@@ -1509,7 +1543,7 @@ describe("worker HTTPS boundary conformance", () => {
       options.commit({ fixture: "x".repeat(OPERATIONS_HTTP_LIMITS.responseBytes) }); return { status: "committed" };
     });
     expect((await oversized.driver.send().reply).body).toEqual(refusal("response_too_large", "payload_too_large", 413, "none"));
-  }, 20_000);
+  });
 
   it("without listener configuration no server or namespace is mounted", async () => {
     const f = await fixture();
@@ -1521,7 +1555,7 @@ describe("worker HTTPS boundary conformance", () => {
     expect((await driver.send().reply).body).toEqual({ error: "protocol_not_found" });
     const minted = f.built.supported ? await f.built.mint("worker", { bearers: [], providerSession: null, browserHeaders: false, legacySecret: false }, null, {}) : undefined;
     expect(minted).toMatchObject({ ok: false, error: { reason: "listener_closed" } });
-  }, 20_000);
+  });
 });
 
 const mcpInitialize = { jsonrpc: "2.0", id: 7, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "mounted-conformance", version: "1" } } };
@@ -1531,13 +1565,13 @@ const mcpCall = { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "
 const mcpHeaders = (secret?: string) => ({ "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) });
 const mcpError = (reply: Reply) => reply.body.error?.data ?? reply.body.error;
 
-async function mcpFixture(mode = "open", fault?: "early_release") {
-  const f = await fixture(mode);
+async function mcpFixture(mode = "open", fault?: "early_release", base?: Fixture) {
+  const f = base ?? await fixture(mode);
   const identity = new IdentityService(f.store), authenticate = vi.spyOn(identity, "authenticateBearer"), usage = vi.spyOn(f.store, "recordCredentialUsed");
   const diagnostics: Record<string, unknown>[] = [];
   const mcpOptions = { service: { admission: f.store.admission, remoteVerificationEnabled: () => false } as unknown as ControlService,
     port: 0, accessToken: "synthetic-mcp-secret", authentication: f.oldAuthentication, identity, operations: f.runtime,
-    onDiagnostic: (_message: string, details?: Record<string, unknown>) => { if (details?.error) diagnostics.push(details); },
+    onDiagnostic: (_message: string, details?: Record<string, unknown>) => { diagnostics.push({ message: _message, ...details }); },
     sessionLimits: { maxSessions: 2, maxSessionsPerCredential: 1 } };
   const mcp = createMcpControllerServer(mcpOptions);
   await new Promise<void>(r => mcp.server.listen(0, "127.0.0.1", r));
@@ -1564,10 +1598,11 @@ async function mcpFixture(mode = "open", fault?: "early_release") {
     catch (cause) { throw new Error(`MCP fixture diagnostics: ${JSON.stringify(diagnostics)}`, { cause }); }
     return client;
   };
-  return { ...f, mcp, driver, identity, authenticate, usage, client };
+  return { ...f, mcp, driver, identity, authenticate, usage, client, diagnostics };
 }
 
 describe("MCP listener boundary conformance", () => {
+  // Includes real legacy SDK startup and initialize/list exchanges.
   it.each(["open", "token", "better-auth", "legacy"])("stored matrix in %s on every method; unchanged legacy authentication", async mode => {
     const f = await mcpFixture(mode), mint = vi.spyOn(f.runtime, "mint");
     for (const message of [mcpInitialize, mcpNotification, mcpList, mcpCall]) {
@@ -1608,7 +1643,7 @@ describe("MCP listener boundary conformance", () => {
     expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["session_describe"]);
     expect((await client.callTool({ name: "session_describe", arguments: {} })).structuredContent).toMatchObject({ listener: "mcp", mode });
     expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it.each(["open", "token", "better-auth", "legacy"])("%s mixed and duplicate raw credentials, cookie preflight and no provider/budget work", async mode => {
     const f = await mcpFixture(mode), mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run"), budget = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire");
@@ -1630,7 +1665,7 @@ describe("MCP listener boundary conformance", () => {
     let reads = 0; f.mcp.server.prependListener("request", req => req.on("newListener", name => { if (name === "data") reads++; }));
     for (const method of ["POST", "DELETE"]) expect((await f.driver.send({ method, slow: true, path: "/mcp/operations/%2e", headers: { Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("provider_cookie_not_supported"));
     expect(reads).toBe(0); expect(mint).not.toHaveBeenCalled(); expect(admission).not.toHaveBeenCalled(); expect(budget).not.toHaveBeenCalled(); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("shared Origin guard and independent canonical rule; Host grants no authority", async () => {
     const f = await mcpFixture(), port = (f.mcp.server.address() as AddressInfo).port;
@@ -1650,7 +1685,7 @@ describe("MCP listener boundary conformance", () => {
       const legacy = await f.driver.send({ path: "/mcp", headers: { ...mcpHeaders(), Origin: origin }, body: JSON.stringify(mcpInitialize) }).reply;
       expect(legacy.status).toBe(503); // shared guard allowed it; legacy session owner refused.
     }
-  }, 20_000);
+  });
 
   it("negative control: omitted shared Origin guard fails exactly 404 versus 403", async () => {
     const f = await mcpFixture(), owner = createOperationsMcp({ runtime: f.runtime });
@@ -1661,7 +1696,7 @@ describe("MCP listener boundary conformance", () => {
     cleanups.push(async () => { owner.stop(); await owner.drain(); });
     const reply = await f.driver.send({ path: "/mcp/operations/", headers: { ...mcpHeaders(), Origin: "http://attacker.invalid" } }).reply;
     expectFailure(() => conform("MCP shared Origin boundary", reply.status, 403), "MCP shared Origin boundary", 404, 403);
-  }, 20_000);
+  });
 
   it("raw aliases, reserved HTTP namespace, methods and batches are terminal", async () => {
     const f = await mcpFixture(), legacy = f.authenticate;
@@ -1679,13 +1714,13 @@ describe("MCP listener boundary conformance", () => {
       const reply = await driver.send({ path: "/mcp/operations", method }).reply; expect(reply.status).toBe(404);
       if (method !== "HEAD") expect(reply.body.error.reason).toBe("operation_not_found");
     }
-  }, 20_000);
+  });
 
   it("maintenance and pinned configuration reuse shared refusal and bearer eligibility", async () => {
     const f = await mcpFixture(); assertMaintenance(await maintenanceObservation(f, f.driver));
     f.state.maintenance = false; f.state.configChanged = true;
     expect((await f.driver.send().reply).body.result.structuredContent.actor.kind).toBe("installation");
-  }, 20_000);
+  });
 
   it("real admission contention and aborted admission preserve exact reasons", async () => {
     const f = await mcpFixture(), entered = pause(), release = pause();
@@ -1697,15 +1732,15 @@ describe("MCP listener boundary conformance", () => {
       const pending = f.driver.send(); await reached.promise; pending.call.destroy(); await cancelled.promise;
       await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
     } finally { release.done(); await held; }
-  }, 20_000);
+  });
 
   it("disconnect retains all 32 slots and cookies bypass saturation without work", async () => {
     const f = await mcpFixture(); await disconnectedCapacity(f, f.driver, false);
     expect(f.authenticate).not.toHaveBeenCalled();
-  }, 20_000);
+  });
   it("negative control: early release admits request 33 while work remains pending", async () => {
     const f = await mcpFixture("open", "early_release"); await disconnectedCapacity(f, f.driver, true);
-  }, 20_000);
+  });
 
   it.each(["maintenance", "credential", "grant", "deadline", "disconnect", "stop", "listener", "configuration"])("post-SDK-buffer release rechecks %s", async change => {
     const f = await mcpFixture("better-auth"); if (!f.built.supported) throw new Error("supported fixture"); await f.grant();
@@ -1739,7 +1774,7 @@ describe("MCP listener boundary conformance", () => {
       }
     }
     expect(writes).toBe(change === "configuration" ? 1 : 0);
-  }, 20_000);
+  });
 
   it("negative control: premature SDK success fails exactly with stale result true versus false", async () => {
     const f = await mcpFixture(); if (!f.built.supported) throw new Error("supported fixture");
@@ -1754,7 +1789,7 @@ describe("MCP listener boundary conformance", () => {
     const pending = f.driver.send(); await entered.promise; f.state.maintenance = true; release.done();
     const reply = await pending.reply; expect(reply.status).toBe(200);
     expectFailure(() => conform("MCP stale successful payload", !!reply.body.result, false), "MCP stale successful payload", true, false);
-  }, 20_000);
+  });
 
   it.each(["policy", "shutdown", "policy then shutdown"])("%s close joins pending owners before SQLite/lock release; repeated cleanup", async kind => {
     const f = await mcpFixture(), entered = pause(), release = pause(), cancelled = pause();
@@ -1780,7 +1815,7 @@ describe("MCP listener boundary conformance", () => {
       await f.mcp.closeSessions(); await f.mcp.closeSessions();
     } else { expect(unlocked).toHaveBeenCalledOnce(); await shutdown(); }
     await f.mcp.close(); await f.mcp.close();
-  }, 20_000);
+  });
 
   it("policy close recovers after drain independently of legacy failure and retries", async () => {
     const f = await mcpFixture(), entered = pause(), release = pause(), cancelled = pause(), legacyEntered = pause(), legacyRelease = pause();
@@ -1812,7 +1847,7 @@ describe("MCP listener boundary conformance", () => {
     await expect(f.mcp.closeSessions()).resolves.toBeUndefined();
     expect(legacyClose.mock.calls).toEqual([["authentication-policy"], ["authentication-policy"]]);
     expect((await f.driver.send().reply).body.result.structuredContent.listener).toBe("mcp");
-  }, 20_000);
+  });
 
   it("policy close joins drain when legacy fails first before allowing a retry", async () => {
     const f = await mcpFixture(), entered = pause(), release = pause(), cancelled = pause();
@@ -1833,7 +1868,7 @@ describe("MCP listener boundary conformance", () => {
     await pending.reply; await rejected;
     expect((await f.driver.send().reply).body.result.structuredContent.listener).toBe("mcp");
     await f.mcp.closeSessions(); expect(legacyClose).toHaveBeenCalledTimes(2);
-  }, 20_000);
+  });
 
   it.each(["runtime construction", "runtime close"])("legacy %s failure propagates without closing the listener; policy remains retryable", async fault => {
     const f = await fixture(), legacyModule = await import("@/server/transports/mcp/mcp-runtime"), failure = new Error(`synthetic ${fault} failure`);
@@ -1861,7 +1896,7 @@ describe("MCP listener boundary conformance", () => {
     expect((await driver.send().reply).body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
     expect(legacyClose?.mock.calls).toEqual(fault === "runtime close" ? [["authentication-policy"], ["authentication-policy"], []] : undefined);
     if (legacyClose) { legacyClose.mockRestore(); await mcp.closeSessions(); }
-  }, 20_000);
+  });
 
   it("shutdown closes legacy runtime before listener and shares one completion", async () => {
     const f = await mcpFixture(), entered = pause(), release = pause(), { McpRuntime } = await import("@/server/transports/mcp/mcp-runtime");
@@ -1881,7 +1916,7 @@ describe("MCP listener boundary conformance", () => {
     const adapterModule = await import("@/server/transports/operations-mcp"), replacement = vi.spyOn(adapterModule, "createOperationsMcp");
     await expect(f.mcp.closeSessions()).resolves.toBeUndefined();
     expect(replacement).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it.each(["stopOperations", "close"])("%s during policy close prevents owner replacement", async action => {
     const f = await mcpFixture(), policyEntered = pause(), policyRelease = pause(), shutdownRelease = pause(), { McpRuntime } = await import("@/server/transports/mcp/mcp-runtime");
@@ -1902,7 +1937,7 @@ describe("MCP listener boundary conformance", () => {
     await shutdown;
     await expect(f.mcp.closeSessions()).resolves.toBeUndefined();
     if (action === "stopOperations") expect((await f.driver.send().reply).body).toEqual(refusal("listener_capacity", "busy", 503, "retry"));
-  }, 20_000);
+  });
 
   it("concurrent distinct principals with identical IDs and forged session headers stay isolated", async () => {
     const f = await mcpFixture("better-auth"), other = token("wts");
@@ -1914,7 +1949,7 @@ describe("MCP listener boundary conformance", () => {
     expect(replies.map(r => r.body.id)).toEqual([7, 7]); expect(replies.map(r => r.body.result.structuredContent.actor.accountId)).toEqual(["agent", "other"]);
     expect(replies.every(r => r.headers["mcp-session-id"] === undefined)).toBe(true);
     expect((await f.driver.send({ headers: { ...mcpHeaders(), "Mcp-Session-Id": "forged" } }).reply).body.error.reason).toBe("credential_required");
-  }, 20_000);
+  });
 
   it("legacy session capacity is independent; Node connection/request defaults cover both surfaces", async () => {
     const f = await mcpFixture();
@@ -1932,7 +1967,7 @@ describe("MCP listener boundary conformance", () => {
       await expect.poll(() => connectionCount(f.mcp.server)).toBeGreaterThanOrEqual(33);
       expect((await f.driver.send().reply).status).toBe(200);
     } finally { sockets.forEach(socket => socket.destroy()); }
-  }, 20_000);
+  });
 
   it("listener absent refuses mint and no namespace is mounted; late mounting is forbidden", async () => {
     const f = await mcpFixture(); f.state.mcpOpen = false;
@@ -1945,9 +1980,10 @@ describe("MCP listener boundary conformance", () => {
     expect(() => noMount.mountOperations(f.runtime)).toThrow("mcp_operations_already_configured");
     await noMount.close(); await expect(noMount.closeSessions()).resolves.toBeUndefined();
     expect(() => noMount.mountOperations(f.runtime)).toThrow("mcp_operations_already_configured");
-  }, 20_000);
+  });
 });
 
+// Waits for the production operations deadline on 32 pending requests.
 it("MCP deadline retains capacity until real work settles; legacy requests retain independent admission", async () => {
   const f = await mcpFixture(), entered = pause(), cancelled = pause(), release = pause(); let started = 0, aborted = 0;
   f.hooks.beforeMint = signal => signal?.addEventListener("abort", () => { if (++aborted === 32) cancelled.done(); }, { once: true });
@@ -1989,7 +2025,7 @@ it("MCP body/DTO ceilings and Node completion retain the production owner", asyn
     options.commit({ value: "x".repeat(OPERATIONS_HTTP_LIMITS.responseBytes) }); return { status: "committed" };
   });
   const oversized = await f.driver.send().reply; expect(oversized.status).toBe(413); expect(oversized.body.error.reason).toBe("response_too_large");
-}, 20_000);
+});
 
 it.each([mcpInitialize, mcpNotification, mcpList, mcpCall])("MCP full witness gates post-buffer release for $method", async message => {
   const f = await mcpFixture(); if (!f.built.supported) throw new Error("supported fixture");
@@ -2003,7 +2039,7 @@ it.each([mcpInitialize, mcpNotification, mcpList, mcpCall])("MCP full witness ga
   f.state.maintenance = true; release.done(); const reply = await pending.reply;
   expect(reply.status).toBe(message === mcpNotification ? 401 : 200); expect(mcpError(reply).reason).toBe("listener_closed");
   expect(reply.body).not.toHaveProperty("result"); expect(commits).toBe(0);
-}, 20_000);
+});
 
 it("MCP security headers, raw singleton refusals and Node protocol ownership", async () => {
   const f = await mcpFixture(), mint = vi.spyOn(f.runtime, "mint");
@@ -2023,7 +2059,7 @@ it("MCP security headers, raw singleton refusals and Node protocol ownership", a
   expect(f.mcp.server.listenerCount("connect")).toBe(0); expect(f.mcp.server.listenerCount("upgrade")).toBe(0);
   for (const path of ["/mcp", "/mcp/operations", "/mcp/operations/"]) await expect(f.driver.wire(path, "CONNECT")).rejects.toMatchObject({ code: "ECONNRESET" });
   const upgrade = await f.driver.wire("/mcp/operations/", "GET", true); expect(upgrade.status).toBe(404);
-}, 20_000);
+});
 
 
 it.each(["open", "token", "better-auth", "legacy"])("MCP %s legacy secret headers never promote stored tokens on any method", async mode => {
@@ -2038,10 +2074,11 @@ it.each(["open", "token", "better-auth", "legacy"])("MCP %s legacy secret header
   }
   expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
   expect(f.oldAuthentication.authenticateInstallation).not.toHaveBeenCalled(); expect(f.oldAuthentication.anonymousInstallation).not.toHaveBeenCalled();
-}, 30_000);
+});
 
 
 describe("D1a-10 real Node listener expiry", () => {
+  // Waits for real Node header and request expiry, including 15-second worker expiry.
   it.each(["worker", "mcp"] as const)("%s production timeouts remain documented; real slow headers and request expiry refuse before mint", async listener => {
     // Keep the worker's production timeouts. Only MCP's minute-scale values
     // are shortened in the fixture. Keep Node's real parser, scanner and sockets;
@@ -2100,4 +2137,186 @@ it.each(["api", "unix", "worker", "mcp"] as const)("historical 5a refusal-only c
   expect(bodyReads).toBe(0); expect(acquire).not.toHaveBeenCalled(); expect(admission).not.toHaveBeenCalled();
   expect(mint).not.toHaveBeenCalled(); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
   expect(f.provider.isSessionAuthorityEligible).not.toHaveBeenCalled();
-}, 20_000);
+});
+
+
+/** The same real readRelease seam used by cookie and worker release cases. */
+function completedReadPause(f: Fixture) {
+  if (!f.built.supported) throw new Error("supported fixture required");
+  const runner = f.built.runner, real = runner.readRelease.bind(runner), entered = pause(), release = pause();
+  const commits: unknown[] = [];
+  const spy = vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
+    if (operation.kind === "stream") throw new Error("read required");
+    const prior = await runner.run(operation, context, raw); expect(prior.ok).toBe(true);
+    entered.done(); await release.promise;
+    return real(operation, context, raw, { ...options, commit(value) { commits.push(value); options.commit(value); } });
+  });
+  return { entered, release, commits, restore: () => spy.mockRestore() };
+}
+
+it.each(["api", "unix"] as const)("%s release after runner completion recomputes every applicable authority fence", async listener => {
+  const f = await fixture("better-auth");
+  for (const change of ["maintenance", "credential", "grant", "deadline", "disconnect", "configuration"] as const) {
+    if (listener === "unix" && change === "credential") continue; // Operator carries no credential.
+    await f.store.admission.run(() => { f.db.prepare("DELETE FROM account_grants WHERE account_id='agent'").run(); f.db.prepare("UPDATE principal_credentials SET status='active' WHERE id=?").run(f.credentialId); });
+    await f.grant();
+    const held = completedReadPause(f), disconnected = pause();
+    f.hooks.beforeMint = signal => signal?.addEventListener("abort", disconnected.done, { once: true });
+    const pending = f.send(listener, { headers: listener === "api" ? auth(f.agent) : undefined });
+    await held.entered.promise;
+    try {
+      if (change === "maintenance") f.state.maintenance = true;
+      if (change === "credential") await f.store.admission.run(() => f.db.prepare("UPDATE principal_credentials SET status='revoked' WHERE id=?").run(f.credentialId));
+      if (change === "grant") await f.store.admission.run(() => f.db.prepare("DELETE FROM account_grants WHERE account_id='agent'").run());
+      if (change === "deadline") f.clock.offset = OPERATIONS_HTTP_LIMITS.deadlineMs + 1;
+      if (change === "configuration") f.state.configChanged = true;
+      if (change === "disconnect") { pending.call.destroy(); await disconnected.promise; }
+    } finally { held.release.done(); }
+    if (change === "disconnect") await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
+    else {
+      const reply = await pending.reply;
+      if (change === "grant" || change === "configuration") {
+        expect(reply.status).toBe(200); expect(reply.body.actor.kind).toBe(listener === "unix" ? "operator" : "agent");
+        expect(reply.body.projects).toHaveLength(listener === "unix" ? 2 : change === "grant" ? 0 : 1);
+      } else {
+        expect(reply.status).toBe(change === "deadline" ? 503 : 401);
+        expect(reply.body).toEqual(change === "deadline" ? refusal("release_timed_out", "unavailable", 503, "retry") : refusal(change === "credential" ? "credential_no_longer_valid" : "listener_closed"));
+      }
+    }
+    expect(held.commits).toHaveLength(change === "grant" || change === "configuration" ? 1 : 0);
+    held.restore(); f.state.maintenance = false; f.state.configChanged = false; f.clock.offset = 0;
+  }
+});
+
+it("mounted MCP rejects strict JSON and spoofed authority fields without changing identity", async () => {
+  const f = await mcpFixture("better-auth"), headers = mcpHeaders(f.agent);
+  const baseline = (await f.driver.send({ headers }).reply).body.result.structuredContent;
+  for (const body of ['{"method":"tools/list","method":"tools/call"}', '{} {}', '[]', 'null', '{"x":{"x":{"x":{"x":{"x":{"x":{"x":{"x":{"x":{}}}}}}}}}}', Buffer.from([0xff])]) {
+    const reply = await f.driver.send({ headers, body }).reply;
+    expect(reply.status).toBe(400); expect(reply.body).toEqual(refusal("invalid_request", "invalid_request", 400, "none"));
+  }
+  for (const key of ["actor", "session", "listener"]) {
+    const argumentsReply = await f.driver.send({ headers, body: JSON.stringify({ ...mcpCall, params: { ...mcpCall.params, arguments: { [key]: "operator" } } }) }).reply;
+    expect(argumentsReply.status).toBe(200); expect(argumentsReply.body.result.isError).toBe(true);
+    expect(JSON.parse(argumentsReply.body.result.content[0].text)).toEqual(refusal("unexpected_input", "invalid_request", 400, "none"));
+    const paramsReply = await f.driver.send({ headers, body: JSON.stringify({ ...mcpCall, params: { ...mcpCall.params, [key]: "operator" } }) }).reply;
+    expect(paramsReply.status).toBe(200); expect(paramsReply.body.result.structuredContent).toEqual(baseline);
+  }
+  const spoofed = await f.driver.send({ headers: { ...headers, "X-Actor": "operator", "X-Session": "forged", "X-Listener": "unix" } }).reply;
+  expect(spoofed.status).toBe(200); expect(spoofed.body.result.structuredContent).toEqual(baseline);
+});
+
+it.each(["open", "token", "better-auth"])("API %s without a cookie boundary reports acceptance refusal after bounded body work", async mode => {
+  const f = await fixture(mode), mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run");
+  const acquire = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire"); let bodyReads = 0;
+  f.controller.server.prependListener("request", req => req.on("newListener", event => { if (event === "data") bodyReads++; }));
+  const reply = await f.send("api", { headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply;
+  expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal(mode === "open" ? "credential_in_open_mode" : mode === "token" ? "credential_not_accepted_here" : "invalid_credential"));
+  expect(bodyReads).toBeGreaterThan(0); expect(mint).toHaveBeenCalledOnce(); expect(admission).toHaveBeenCalled();
+  expect(acquire).not.toHaveBeenCalled(); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+});
+
+// Spawns real CLI processes on both paths; loader startup is included.
+it("mounted responses and diagnostic sinks never disclose stored session or credential row IDs", async () => {
+  const f = await fixture("better-auth", undefined, undefined, true, true);
+  const worker = await workerFixture("better-auth", false, undefined, f), mcp = await mcpFixture("better-auth", undefined, f);
+  const adapterLogs = (["error", "warn", "log", "info", "debug"] as const).map(method => vi.spyOn(console, method).mockImplementation(() => {}));
+  const responses: unknown[] = [];
+  const paths = resolveAppPaths(join(f.root, "data"), join(f.root, "state"));
+  mkdirSync(paths.stateDirectory, { recursive: true, mode: 0o700 });
+  symlinkSync(f.socketPath, paths.adminSocketPath);
+  const lock = acquireControllerLock(paths.controllerLockPath); cleanups.push(() => lock.release());
+  const cli = () => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+    const repository = fileURLToPath(new URL("../../../../", import.meta.url));
+    execFile(process.execPath, ["--import", "tsx", join(repository, "src/cli/index.ts"), "session", "describe", "--data-dir", paths.dataDirectory, "--state-dir", paths.stateDirectory],
+      { cwd: repository, env: { PATH: process.env.PATH, HOME: f.root, NODE_ENV: "test" }, timeout: 15000 }, (error, stdout, stderr) => {
+        if (error && typeof error.code !== "number") reject(error);
+        else resolve({ code: error?.code ?? 0, stdout, stderr });
+      });
+  });
+  const cliSuccess = await cli(); responses.push(cliSuccess);
+  expect(cliSuccess.code).toBe(0); expect(JSON.parse(cliSuccess.stdout).actor.kind).toBe("operator"); expect(cliSuccess.stderr).toBe("");
+  const cliHeld = completedReadPause(f), cliPending = cli(); await cliHeld.entered.promise;
+  f.state.maintenance = true; cliHeld.release.done();
+  const cliRefused = await cliPending; responses.push(cliRefused); cliHeld.restore(); f.state.maintenance = false;
+  expect(cliRefused.code).toBe(1); expect(cliRefused.stdout).toBe(""); expect(JSON.parse(cliRefused.stderr)).toEqual(refusal("listener_closed"));
+  const drivers = [f.drivers.api, f.drivers.unix, worker.driver, mcp.driver];
+  const remember = (reply: Reply) => { responses.push(reply); return reply; };
+  // The public wts_<uuid>_<secret> prefix embeds precisely the stored ID.
+  expect(f.agent.slice(4, 40)).toBe(f.credentialId);
+  await f.store.admission.run(() => {
+    expect(f.store.getCredentialForAuthentication(f.credentialId)).toMatchObject({ id: f.credentialId });
+    expect(f.db.prepare('SELECT id FROM authentication_ba_session WHERE id=?').get(f.session.sessionId)).toEqual({ id: f.session.sessionId });
+  });
+  for (const driver of drivers) {
+    const headers = driver.kind === "mcp" ? mcpHeaders(f.agent) : driver.kind === "unix" ? undefined : auth(f.agent);
+    expect(remember(await driver.send({ headers }).reply).status).toBe(200);
+    const wrong = remember(await driver.send({ headers: driver.kind === "mcp" ? mcpHeaders(token("wts", f.credentialId)) : auth(token("wts", f.credentialId)) }).reply);
+    expect(wrong.status).toBe(401); expect(wrong.body).toEqual(refusal(driver.kind === "unix" ? "credential_on_local_listener" : "invalid_credential"));
+  }
+  expect(remember(await f.send("api", { headers: cookieHeaders }).reply).body.actor.kind).toBe("human");
+  const cookieHeld = completedReadPause(f), cookiePending = f.send("api", { headers: cookieHeaders });
+  await cookieHeld.entered.promise; f.state.maintenance = true; cookieHeld.release.done();
+  const cookieRelease = remember(await cookiePending.reply); cookieHeld.restore(); f.state.maintenance = false;
+  expect(cookieRelease.status).toBe(401); expect(cookieRelease.body).toEqual(refusal("listener_closed"));
+  const sdk = await mcp.client(false, f.agent);
+  responses.push(await sdk.listTools(), await sdk.callTool({ name: "session_describe", arguments: {} }));
+  const rpcError = remember(await mcp.driver.send({ headers: mcpHeaders(f.agent), body: JSON.stringify({ ...mcpCall, method: "unknown_method" }) }).reply);
+  expect(rpcError.body.error.code).toBe(-32601);
+  await f.store.admission.run(() => f.db.prepare("UPDATE principal_credentials SET status='revoked' WHERE id=?").run(f.credentialId));
+  for (const driver of drivers) {
+    const reply = remember(await driver.send({ headers: driver.kind === "mcp" ? mcpHeaders(f.agent) : auth(f.agent) }).reply);
+    expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal(driver.kind === "unix" ? "credential_on_local_listener" : "invalid_credential"));
+  }
+  let sdkRefused = false;
+  try { responses.push(await sdk.callTool({ name: "session_describe", arguments: {} })); }
+  catch (error) { sdkRefused = true; responses.push(String(error)); expect(String(error)).toContain("invalid_credential"); }
+  expect(sdkRefused).toBe(true);
+  await f.store.admission.run(() => f.db.prepare("UPDATE principal_credentials SET status='active' WHERE id=?").run(f.credentialId));
+  for (const driver of drivers) {
+    if (driver.kind === "mcp") {
+      if (!f.built.supported) throw new Error("runtime required");
+      const runner = f.built.runner, real = runner.readRelease.bind(runner);
+      const spy = vi.spyOn(runner, "readRelease").mockImplementation(async (...args) => { if (args[3].expectedCanonical !== undefined) f.state.maintenance = true; return real(...args); });
+      const reply = remember(await driver.send({ headers: mcpHeaders(f.agent) }).reply);
+      expect(reply.status).toBe(200); expect(reply.body.error.code).toBe(-32000); expect(reply.body.error.data).toEqual(refusal("listener_closed").error);
+      spy.mockRestore();
+    } else {
+      const held = completedReadPause(f);
+      const pending = driver.send({ headers: driver.kind === "unix" ? undefined : auth(f.agent) });
+      await held.entered.promise; f.state.maintenance = true; held.release.done();
+      const reply = remember(await pending.reply); expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal("listener_closed")); held.restore();
+    }
+    f.state.maintenance = false;
+  }
+  f.provider.resolveRequest.mockReturnValueOnce({ result: Promise.resolve(null), settled: Promise.resolve() });
+  const wrongCookie = remember(await f.send("api", { headers: { ...cookieHeaders, Cookie: "wtc.session=wrong" } }).reply);
+  expect(wrongCookie.status).toBe(401); expect(wrongCookie.body).toEqual(refusal("invalid_credential"));
+  await f.store.admission.run(() => f.db.prepare('DELETE FROM authentication_ba_session WHERE id=?').run(f.session.sessionId));
+  const invalidCookie = remember(await f.send("api", { headers: cookieHeaders }).reply);
+  expect(invalidCookie.status).toBe(401); expect(invalidCookie.body).toEqual(refusal("invalid_credential"));
+  const snapshot = await mcp.mcp.diagnosticsSnapshot();
+  await sdk.close(); await mcp.mcp.close(); await worker.worker.close(); await f.controller.close(); await f.admin.close();
+  await f.store.closeAfterDrain(); lock.release();
+  const offlineSuccess = await cli(); responses.push(offlineSuccess);
+  expect(offlineSuccess.code).toBe(0); expect(JSON.parse(offlineSuccess.stdout).listener).toBe("offline"); expect(offlineSuccess.stderr).toBe("");
+  const offlineStore = new SqliteStateStore(paths.databasePath);
+  offlineStore.saveAuthenticationPolicy({ ...offlineStore.getAuthenticationPolicy(), mode: "legacy" }, "fixture", "fixture"); await offlineStore.closeAfterDrain();
+  const offlineRefused = await cli(); responses.push(offlineRefused);
+  expect(offlineRefused.code).toBe(1); expect(offlineRefused.stdout).toBe(""); expect(JSON.parse(offlineRefused.stderr)).toEqual(refusal("unknown_mode"));
+  responses.push(snapshot);
+  for (const id of [f.credentialId, f.session.sessionId]) {
+    expect(JSON.stringify(responses)).not.toContain(id);
+    expect(JSON.stringify([f.logs.controller.mock.calls, mcp.diagnostics, snapshot, adapterLogs.map(log => log.mock.calls)])).not.toContain(id);
+  }
+}, 30_000);
+
+
+it.each(["token", "better-auth"])("worker %s recognized tokens in legacy header names retain bearer semantics", async mode => {
+  const f = await workerFixture(mode);
+  for (const name of ["X-Worktree-Control-Token", "X-Worktree-Switcher-Token"]) {
+    const reply = await f.driver.send({ headers: { "Content-Type": "application/json", [name]: mode === "token" ? f.installation : f.agent } }).reply;
+    expect(reply.status).toBe(200); expect(reply.body.actor.kind).toBe(mode === "token" ? "installation" : "agent");
+  }
+  expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
+});

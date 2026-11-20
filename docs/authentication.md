@@ -55,16 +55,18 @@ See the [error mapping](authorization-contract.md#mounted-cli-boundary-d1a-8b).
 
 These requests use an existing synthetic installation. Set `WTC_API` and
 `WTC_MCP` to its API and MCP origins, and `WTC_WORKER` to its HTTPS worker
-origin. Replace `<INSTALLATION_TOKEN>` with the installation token in token
-mode, or use an agent token in better-auth mode. Keep secrets out of shell
-history. Open mode omits the Authorization header entirely; supplying a token
+origin. Read the installation token in token mode, or an agent token in better-auth
+mode, without echo. Keep secrets out of shell history; do not replace the
+placeholder by typing a token into an assignment. Open mode omits the Authorization header entirely; supplying a token
 there refuses `credential_in_open_mode`.
 
 ```bash
 WTC_API='http://127.0.0.1:4310'
 WTC_MCP='http://127.0.0.1:4311'
 WTC_WORKER='https://127.0.0.1:4312'
-WTC_BEARER='<INSTALLATION_TOKEN>'
+# At the prompt, supply <INSTALLATION_TOKEN> (or <AGENT_TOKEN>) without echo.
+IFS= read -r -s -p 'Bearer token: ' WTC_BEARER
+printf '\n'
 ```
 
 API bearer (`operations-api-${mode}` in the installed RBAC script):
@@ -106,7 +108,9 @@ await (await fetch('/api/operations/session.describe', {
 The DTO has `actor.kind: "human"`, the account ID, `mode: "better-auth"` and
 `listener: "api"`; fresh login reports `satisfied` with an ISO `validUntil`, or
 `stale`. An expired or signed-out cookie refuses `invalid_credential` (401).
-A wrong Origin refuses `origin_forbidden` (403). Adding a bearer to the cookie
+A wrong Origin refuses `origin_forbidden` (403), verified by
+`cookie Host and Origin rules: %s` in the listener conformance suite, not by
+the installed script. Adding a bearer to the cookie
 refuses `mixed_credentials`, even if the cookie is invalid.
 
 The private admin socket accepts the machine operator without a credential
@@ -171,6 +175,13 @@ Call returns the DTO in `result.structuredContent`, plus its JSON text in
 refuse `legacy_credential`, even when their value is a valid token. Tool argument
 refusals appear in a tool result with `isError: true`; release refusals after SDK
 construction use JSON-RPC error `-32000` with the public error in `error.data`.
+Tool-argument refusals are verified by `describe-rpc-${mode}` in the installed
+script. Post-SDK release refusals are verified by the Vitest test
+`post-SDK-buffer release rechecks %s`, not by the installed script.
+Tool-argument refusal is verified by `returns safe tool refusals without losing
+operations reasons` in `mcp-request-adapter.test.ts`, not by the installed script.
+Post-SDK release refusal is verified by `post-SDK-buffer release rechecks %s`
+in `http-boundary-conformance.test.ts`, not by the installed script.
 
 The [local CLI examples](#describe-local-authority-integration-branch) above run
 the same command through the socket while the fixture controller owns the lock,
@@ -417,7 +428,8 @@ New installations differ from earlier releases:
 ## The explicit upgrade (unreleased integration build)
 
 The integration build mounts the read-only `session.describe` operation on
-API and the private socket. In `token` mode, with the installation bearer
+API (bearer and supported better-auth cookies), the private socket, the configured
+worker listener and MCP, plus the lock-first CLI paths described above. In `token` mode, with the installation bearer
 already in `WTC_INSTALLATION_TOKEN` and the controller using its default port:
 
 ```sh
@@ -435,8 +447,9 @@ curl --fail-with-body --unix-socket "$WTC_ADMIN_SOCKET" \
   -H 'Content-Type: application/json' --data '{}'
 ```
 
-Cookies are refused on this route for now, including a cookie combined with a
-bearer. In `legacy` mode it answers `unauthenticated` / `unknown_mode`.
+The API accepts a provider cookie in better-auth mode with the configured public
+origin and cookie boundary. A cookie combined with a bearer is refused. The unix,
+worker and MCP listeners refuse provider cookies in every mode. In `legacy` mode it answers `unauthenticated` / `unknown_mode`.
 Existing routes retain their authentication. Responses describe authority as
 an informational hint; every later operation must authorize again.
 

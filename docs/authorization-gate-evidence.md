@@ -13,10 +13,15 @@ Statuses describe source evidence, not successful execution. Managed run results
 must accompany the commit. Synthetic fixtures only; no approval of live exposure.
 
 The guard `src/server/modules/operations/gate-audit.test.ts` parses this Markdown
-table directly (the simpler single source of truth). It parses named test files
-with TypeScript and checks literal titles, including verbatim `it.each` title
-templates. It also pins script step templates in the artifact matrix. A title's
-existence guards drift; the assertion's meaning still requires review.
+table directly. TypeScript parsing rejects skipped/todo/expected-failure titles,
+skipped ancestors and empty literal `each` tables. Presets resolve through
+`package.json` (including chained scripts), the selected Vitest config's include
+patterns and CLI file filters; script rows must name an invoked script. Document
+totals and the script's explicit surface/mode key set are checked exactly.
+The guard cannot establish whether an assertion means what its row says, or
+whether a non-skipped test inside dead code is reachable. Nonliteral tables and
+runtime skip conditions also require review. Defect, partial, deferral and
+not-applicable rows are explicitly not counted as executable proof.
 
 Provider methods below use real AccountProtection/SessionIssuance with fixture
 native rows; the real Better Auth bootstrap/login and lifetime tests run under
@@ -24,6 +29,8 @@ native rows; the real Better Auth bootstrap/login and lifetime tests run under
 sessions; agent/operator authority remains eligible by the accepted contract.
 A changed HTTP grant can yield a newly recomputed DTO while connected; MCP
 instead refuses a changed buffered witness. Neither writes a stale DTO.
+
+Gate rows: 191. Artifact cells: 21.
 
 ## Gate clauses
 
@@ -92,7 +99,7 @@ instead refuses a changed buffered witness. Neither writes a stale DTO.
 | Listeners worker: trailing slash | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
 | Listeners worker: query variants | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
 | Listeners worker: method variants | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
-| Listeners MCP: strict JSON | `src/server/modules/operations/mcp-request-adapter.test.ts` | `rejects batches, methods, aliases, bad Origin and strict-body/header violations` | `node:test:operations-mcp` | proven before this step |
+| Listeners MCP: strict JSON | `src/server/modules/operations/http-boundary-conformance.test.ts` | `mounted MCP rejects strict JSON and spoofed authority fields without changing identity` | `node:test:operations-mcp` | added in this step |
 | Listeners MCP: path traversal | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, reserved HTTP namespace, methods and batches are terminal` | `node:test:operations-mcp` | proven before this step |
 | Listeners MCP: encoding | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, reserved HTTP namespace, methods and batches are terminal` | `node:test:operations-mcp` | proven before this step |
 | Listeners MCP: trailing slash | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, reserved HTTP namespace, methods and batches are terminal` | `node:test:operations-mcp` | proven before this step |
@@ -159,6 +166,7 @@ instead refuses a changed buffered witness. Neither writes a stale DTO.
 | Historical 5a: cookie refused with no admission | `src/server/modules/operations/http-boundary-conformance.test.ts` | `historical 5a refusal-only cookie ordering on %s performs no application work` | `node:test:operations-mcp` | added in this step |
 | Historical 5a: cookie refused with no provider work | `src/server/modules/operations/http-boundary-conformance.test.ts` | `historical 5a refusal-only cookie ordering on %s performs no application work` | `node:test:operations-mcp` | added in this step |
 | Offline pre-open: pending handoff | `src/cli/session-describe.test.ts` | `%s restore handoff stops before store construction` | `node:test:session-describe` | proven before this step |
+| Offline pre-open: malformed handoff | `src/cli/session-describe.test.ts` | `%s restore handoff stops before store construction` | `node:test:session-describe` | proven before this step |
 | Offline pre-open: unreadable handoff | `src/cli/session-describe.test.ts` | `%s restore handoff stops before store construction` | `node:test:session-describe` | proven before this step |
 | Lifetime: mixed old/new shared budget saturation | `src/server/modules/operations/http-boundary-conformance.test.ts` | `shares the real unix ceiling and drain with a stubbed /auth executor after disconnect` | `node:test:operations-mcp` | proven before this step |
 | Lifetime: mixed browser/operations budget | `packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts` | `closes D1a-5a reserve deferral: sign-out and an accepted login completion succeed with operations initiating cap saturated` | `node:test:auth-provider-cli` | proven before this step |
@@ -184,9 +192,9 @@ instead refuses a changed buffered witness. Neither writes a stale DTO.
 | Fresh login: 600000 ms test operation | `src/server/modules/operations/adapters/provider-session-verifier.test.ts` | `allows 599999 ms and refuses 600000 ms` | `node:check` | proven before this step |
 | DTO parity: common semantics and actor/listener differences | `src/cli/session-describe.test.ts` | `unix %s equals offline and API authority with exactly actor/listener differences` | `node:test:session-describe` | proven before this step |
 | DTO parity: human freshness difference | `src/cli/session-describe.test.ts` | `better-auth human freshness differs exactly from the offline operator` | `node:test:session-describe` | proven before this step |
-| Non-disclosure: credential IDs in responses | `src/server/modules/operations/operations-runtime-composition.test.ts` | `keeps session and credential row identifiers out of DTOs and diagnostics, including a zero-role human` | `node:check` | added in this step |
-| Non-disclosure: credential IDs in diagnostics | `src/server/modules/operations/operations-runtime-composition.test.ts` | `keeps session and credential row identifiers out of DTOs and diagnostics, including a zero-role human` | `node:check` | added in this step |
-| Non-disclosure: session row IDs in responses | `src/server/modules/operations/operations-runtime-composition.test.ts` | `keeps session and credential row identifiers out of DTOs and diagnostics, including a zero-role human` | `node:check` | added in this step |
+| Non-disclosure: credential IDs in responses | `src/server/modules/operations/http-boundary-conformance.test.ts` | `mounted responses and diagnostic sinks never disclose stored session or credential row IDs` | `node:test:operations-mcp` | added in this step |
+| Non-disclosure: credential IDs in diagnostics | `src/server/modules/operations/http-boundary-conformance.test.ts` | `mounted responses and diagnostic sinks never disclose stored session or credential row IDs` | `node:test:operations-mcp` | added in this step |
+| Non-disclosure: session row IDs in responses | `src/server/modules/operations/http-boundary-conformance.test.ts` | `mounted responses and diagnostic sinks never disclose stored session or credential row IDs` | `node:test:operations-mcp` | added in this step |
 | Production registry: exactly approved operation IDs | `src/server/modules/operations/operations-runtime-composition.test.ts` | `pins the production registry and logs disposal failures without thrown values or credential facts` | `node:check` | proven before this step |
 | Earlier deferral worker: slow-header expiry | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s production timeouts remain documented; real slow headers and request expiry refuse before mint` | `node:test:operations-mcp` | added in this step |
 | Earlier deferral worker: request-timeout expiry | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s production timeouts remain documented; real slow headers and request expiry refuse before mint` | `node:test:operations-mcp` | added in this step |
@@ -197,13 +205,38 @@ instead refuses a changed buffered witness. Neither writes a stale DTO.
 | Earlier deferral: offline upgrade never enables writes | `src/cli/session-describe.test.ts` | `upgrade-required offline command preserves the diagnostic, never enables writes, and releases both locks` | `node:test:session-describe` | added in this step |
 | Earlier deferral: offline upgrade releases locks | `src/cli/session-describe.test.ts` | `upgrade-required offline command preserves the diagnostic, never enables writes, and releases both locks` | `node:test:session-describe` | added in this step |
 
+| Non-disclosure: session row IDs in diagnostics | `src/server/modules/operations/http-boundary-conformance.test.ts` | `mounted responses and diagnostic sinks never disclose stored session or credential row IDs` | `node:test:operations-mcp` | added in this step |
+| Listeners MCP: spoofed actor | `src/server/modules/operations/http-boundary-conformance.test.ts` | `mounted MCP rejects strict JSON and spoofed authority fields without changing identity` | `node:test:operations-mcp` | added in this step |
+| Listeners MCP: spoofed session | `src/server/modules/operations/http-boundary-conformance.test.ts` | `mounted MCP rejects strict JSON and spoofed authority fields without changing identity` | `node:test:operations-mcp` | added in this step |
+| Listeners MCP: spoofed listener | `src/server/modules/operations/http-boundary-conformance.test.ts` | `mounted MCP rejects strict JSON and spoofed authority fields without changing identity` | `node:test:operations-mcp` | added in this step |
+| Release after runner completion api: maintenance | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | added in this step |
+| Release after runner completion api: credential | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | added in this step |
+| Release after runner completion api: grants | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | added in this step |
+| Release after runner completion api: deadline | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | added in this step |
+| Release after runner completion api: connection | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | added in this step |
+| Release after runner completion api: provider configuration | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | not applicable: provider-only changes do not fence agent or operator authority; the named test asserts a fresh successful DTO |
+| Release after runner completion unix: maintenance | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | added in this step |
+| Release after runner completion unix: credential | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | not applicable: operator has no credential; the named test exercises all applicable fences |
+| Release after runner completion unix: grants | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | added in this step |
+| Release after runner completion unix: deadline | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | added in this step |
+| Release after runner completion unix: connection | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | added in this step |
+| Release after runner completion unix: provider configuration | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | not applicable: provider-only changes do not fence agent or operator authority; the named test asserts a fresh successful DTO |
+| Release after runner completion worker: provider configuration | `src/server/modules/operations/http-boundary-conformance.test.ts` | `fresh release after runner completion rechecks %s` | `node:test:operations-mcp` | not applicable: provider-only configuration does not fence agent authority; the named configuration case retains a fresh successful DTO |
+| API no cookie boundary: open/token/better-auth after body and admission | `src/server/modules/operations/http-boundary-conformance.test.ts` | `API %s without a cookie boundary reports acceptance refusal after bounded body work` | `node:test:operations-mcp` | added in this step |
+| Worker legacy header names: recognized token semantics | `src/server/modules/operations/http-boundary-conformance.test.ts` | `worker %s recognized tokens in legacy header names retain bearer semantics` | `node:test:operations-mcp` | added in this step |
+| Legacy real startup: API/unix/worker/MCP/CLI socket and offline | `scripts/package-rbac.mjs` | `legacy-startup-all-mounted-operations-and-cli` | `node:test:rbac-artifact` | added in this step |
+| Listing: complete serialized DTO byte bound | `src/server/modules/operations/session-describe.test.ts` | `accounts for the complete DTO when the last project puts it %i bytes over budget` | `node:check` | added in this step |
+| Listing: equal prefix across listener widths | `src/server/modules/operations/session-describe.test.ts` | `keeps the same prefix across API, MCP and worker at a listener-width boundary` | `node:check` | added in this step |
+| Listing: MCP SDK serialized message and DTO byte bounds | `src/server/modules/operations/mcp-request-adapter.test.ts` | `measures 500 full-authority projects with %i-byte IDs against both default DTO bounds` | `node:test:operations-mcp` | added in this step |
+
 ## Installed artifact matrix
 
 Each row is an installed controller/CLI assertion on synthetic state. Open mode
 accepts no bearer; its bearer cell proves anonymous success and credential refusal.
-Cookie cells in open/token mode are refusal-only by contract. CLI has no credential
-input: socket refusal is `admin_socket_missing`; offline refusal is the existing
-upgrade diagnostic (released-baseline lane), not an invented credential route.
+Cookie cells in open/token mode are refusal-only by contract. CLI has no credential input: socket refusal is `admin_socket_missing`. Each
+offline cell proves per-mode success; the upgrade diagnostic is one
+mode-independent step, `upgrade-required-offline-session-describe`, in the
+released-baseline lane. It is not a separate refusal in each mode.
 The unix wire cell proves `credential_on_local_listener` in every mode.
 
 `node:test:package:provider` builds the separate reproducible provider; it does
@@ -238,7 +271,11 @@ listener, refusal and timed step. The provider proof also runs separately.
 The Community smoke preset additionally runs `operations-installed-token-and-local`,
 `operations-installed-mcp-token` and `operations-installed-offline-token` in
 `scripts/package-smoke.mjs`. D1a-10 strengthens its API mode/listener assertions.
-No additional controller restart is needed for the matrix. Added raw MCP requests
+A separate `legacy-startup-all-mounted-operations-and-cli` step starts the real
+packaged controller against stopped synthetic legacy state and asserts the full
+`unknown_mode` envelope on all four listeners and both CLI paths. The public
+mode setter deliberately cannot select legacy; only this disposable fixture
+changes the stored policy directly before startup, then restores token mode. Added raw MCP requests
 and refusal probes are timed in existing script reports; exact runtime growth
 requires before/after measurements on the same host and is not inferred from
 source. The focused listener expiry tests use a 25 ms real Node scan interval. Worker
@@ -247,6 +284,41 @@ case spends eight seconds in headers so Node expires the complete request before
 the adapter's body deadline. MCP alone uses 200 ms headers and 400 ms request
 fixture overrides for its minute-scale defaults; production values are asserted
 before those overrides. No fake clock or production timeout change is used.
+
+## Long timeout exceptions
+
+All other composition, CLI and conformance cases use the default timeout.
+The exceptions are:
+
+- `bounds the listing, omits invalid IDs and includes archived projects`: 20 s,
+  inserts 500 durable rows.
+- `refuses normalized aliases before all legacy work, with cookie refusal first`:
+  30 s, hundreds of real HTTP requests.
+- `%s completes a large real DTO under real socket backpressure`: 20 s,
+  inserts 300 durable rows.
+- `uses the socket's real ten second deadline for a slow operations body`:
+  15 s, production timer.
+- `deadline aborts resolution and admission but retains real unsettled work and response drain`:
+  15 s, production timer.
+- `deadline cancels work held after mint, retains ownership, and shutdown joins work before SQLite and lock release`:
+  15 s, production timer.
+- `stored matrix in %s on every method; unchanged legacy authentication`:
+  30 s, real legacy SDK startup and exchanges.
+- `MCP deadline retains capacity until real work settles; legacy requests retain independent admission`:
+  30 s, production timer.
+- `%s production timeouts remain documented; real slow headers and request expiry refuse before mint`:
+  40 s, real Node header/request expiry.
+- `mounted responses and diagnostic sinks never disclose stored session or credential row IDs`:
+  30 s, real CLI subprocesses.
+- `upgrade-required offline command preserves the diagnostic, never enables writes, and releases both locks`:
+  40 s, real CLI subprocess.
+- `lock taken: %s fails exactly, never opens a store or acquires ownership`:
+  30 s, includes the real client timeout.
+- `$path: large output with $reader reader releases ownership before pipe drain`:
+  40 s, subprocesses, 500 rows and slow pipe readers.
+
+The existing adapter byte-bound test `measures 500 full-authority projects with %i-byte IDs against both default DTO bounds`
+keeps 30 s because it inserts 500 durable rows and exercises the SDK envelope.
 
 ## Earlier deferrals and scope
 
@@ -269,7 +341,29 @@ The final Gate quotes the D1a-5a refusal-only API cookie ordering, but D1a-5b
 subsequently mounted supported API cookies with a shared initiating slot,
 admission and provider resolution. On 2026-11-20 the lead directed this audit to
 treat 5a as a historical intermediate gate. Its four rows retain explicit
-no-body/no-budget/no-admission/no-provider assertions on unsupported API modes
-and the unix, worker and MCP mounts. Supported API cookie behavior is proved by
+no-body/no-budget/no-admission/no-provider assertions on legacy API and the
+unix, worker and MCP mounts. In open/token API mode, and better-auth without a
+configured public origin/cookie boundary, the body is read and mint uses
+admission before refusing `credential_in_open_mode`,
+`credential_not_accepted_here` and `invalid_credential` respectively. Those
+configurations do not use provider resolution or an initiating provider slot;
+the separate acceptance row asserts that ordering. Supported API cookie behavior is proved by
 the later cookie conformance and real-provider tests. This is a documented plan
 clarification, not a production defect or an expected-failure test.
+
+
+The disclosure row uses real SQLite human session/evidence and agent credential
+rows. The provider request resolver is controlled; verification/revalidation
+read the owned SQL adapter. Responses include headers, bodies, SDK results,
+JSON-RPC errors and real CLI stdout/stderr on socket and offline paths.
+Diagnostics include the composition logs port, every MCP diagnostic callback,
+MCP snapshots and adapter console sinks. The `wts_<uuid>_<secret>` public token
+part embeds the credential row UUID; that exact substring is checked too.
+CLI and unix operators have no wrong/revoked credential path; unix credential
+probes assert `credential_on_local_listener` instead. The CLI refusal is a real
+post-runner release refusal on socket and `unknown_mode` offline. Cookie wrong
+and revoked session probes assert `invalid_credential`.
+
+Restore handoff evidence distinguishes malformed content from unreadability.
+The latter uses mode 000 for non-root runs; root uses an injected EACCES at
+`readFileSync` for the exact fixture file, never a malformed-content substitute.

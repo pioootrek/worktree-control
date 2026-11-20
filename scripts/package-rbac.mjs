@@ -35,6 +35,30 @@ if (baseline === "historical-installed") {
 }
 const root = await mkdtemp(join(tmpdir(), "wtc-rbac-installed-"));
 const children = new Set(), steps = [], clients = [], operationsMatrix = [];
+const EXPECTED_OPERATIONS_MATRIX_KEYS = [
+  "api-bearer/open",
+  "api-bearer/token",
+  "api-bearer/better-auth",
+  "api-cookie/open",
+  "api-cookie/token",
+  "api-cookie/better-auth",
+  "unix/open",
+  "unix/token",
+  "unix/better-auth",
+  "worker-tls/open",
+  "worker-tls/token",
+  "worker-tls/better-auth",
+  "mcp/open",
+  "mcp/token",
+  "mcp/better-auth",
+  "cli-socket/open",
+  "cli-socket/token",
+  "cli-socket/better-auth",
+  "cli-offline/open",
+  "cli-offline/token",
+  "cli-offline/better-auth"
+];
+const operationRefusal = (reason, category = "unauthenticated", status = 401, retry = "reauthenticate") => ({ error: { category, status, reason, retry, effect: null } });
 const matrixCell = (surface, mode, actor, listener, refusal, step) => operationsMatrix.push({ surface, mode, actor, listener, refusal, step });
 let controller, failureStep, cleanupConfirmed = false;
 let native, operationsSdk, storedOwner;
@@ -206,7 +230,10 @@ async function operationSocket(mode) {
       call.setTimeout(10_000, () => call.destroy(new Error("Operations socket deadline"))); call.on("error", reject); call.end("{}");
     });
     const denied = await callSocket({ Authorization: `Bearer ${storedOwner}` });
-    assert.equal(denied.status, 401); assert.equal(denied.body.error.reason, "credential_on_local_listener");
+    assert.equal(denied.status, 401); assert.deepEqual(denied.body, operationRefusal("credential_on_local_listener"));
+    for (const [headers, reason] of [[{ Origin: origin }, "browser_headers_on_unix"], [{ Cookie: "__Secure-wtc.session_token=invalid" }, "provider_cookie_not_supported"]]) {
+      const reply = await callSocket(headers); assert.equal(reply.status, 401); assert.deepEqual(reply.body, operationRefusal(reason));
+    }
     const reply = await callSocket({});
     assert.equal(reply.status, 200); assert.equal(reply.body.actor.kind, "operator"); assert.equal(reply.body.listener, "unix"); assert.equal(reply.body.mode, mode);
     const success = await command(currentCli, ["session", "describe"]);
@@ -232,7 +259,7 @@ async function operationOffline(mode) {
     assert(!JSON.stringify(dto).match(/sessionId|credentialId|verifierHash/));
     for (const closedStderr of [false, true]) await step(`session-describe-offline-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
       () => closedSessionOutput("offline", closedStderr));
-    matrixCell("cli-offline", mode, "operator", "offline", "not applicable: no credential input; upgrade-required-offline-session-describe proves ordinary refusal", `operations-offline-${mode}`);
+    matrixCell("cli-offline", mode, "operator", "offline", "not applicable: no credential input; mode-independent upgrade-required-offline-session-describe step covers the released-baseline refusal once", `operations-offline-${mode}`);
   });
 }
 async function operationWorker(mode, secret) {
@@ -251,6 +278,7 @@ async function operationWorker(mode, secret) {
       const refused = await call(storedWorker ?? storedOwner); assert.equal(refused.status, 401);
       assert.deepEqual(refused.body, { error: { category: "unauthenticated", status: 401, reason: mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", retry: "reauthenticate", effect: null } });
     }
+    if (mode !== "open") { const missing = await call(); assert.equal(missing.status, 401); assert.deepEqual(missing.body, operationRefusal("credential_required")); }
     matrixCell("worker-tls", mode, mode === "better-auth" ? "agent" : "installation", "worker", mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", `operations-worker-${mode}`);
   });
 }
@@ -274,6 +302,8 @@ async function operationMcp(mode, secret) {
       await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL + "/operations"), { requestInit: { headers: secret ? { Authorization: `Bearer ${secret}` } : {} } }));
       assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ["session_describe"]);
       const result = await client.callTool({ name: "session_describe", arguments: {} });
+      const denied = await client.callTool({ name: "session_describe", arguments: { actor: "operator" } });
+      assert.equal(denied.isError, true); assert.deepEqual(denied.structuredContent, operationRefusal("unexpected_input", "invalid_request", 400, "none"));
       assert(!result.isError); const dto = result.structuredContent;
       assert.equal(dto.mode, mode); assert.equal(dto.listener, "mcp"); assert.equal(dto.actor.kind, mode === "better-auth" ? "agent" : "installation");
     } finally { await client.close(); }
@@ -297,7 +327,11 @@ async function operationApi(mode, secret) {
   await step(`operations-api-${mode}`, async () => {
     const denied = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${storedOwner}` }, body: "{}" });
     assert.equal(denied.status, 401); const reason = mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here";
-    assert.equal((await denied.json()).error.reason, reason);
+    assert.deepEqual(await denied.json(), operationRefusal(reason));
+    if (mode !== "open") {
+      const missing = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      assert.equal(missing.status, 401); assert.deepEqual(await missing.json(), operationRefusal("credential_required"));
+    }
     const reply = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: "{}" });
     assert.equal(reply.status, 200); const body = await reply.json(); assert.equal(body.mode, mode); assert.equal(body.listener, "api"); assert.equal(body.actor.kind, mode === "better-auth" ? "agent" : "installation");
     matrixCell("api-bearer", mode, mode === "better-auth" ? "agent" : "installation", "api", reason, `operations-api-${mode}`);
@@ -525,13 +559,43 @@ try {
     assert.deepEqual(admin, [{ account_id: oldOwner.principalId, role: "admin", scope_kind: "installation", project_id: null }]);
     resetEvidence = { credentialsRevoked: after.credentials.length, grantsRevoked: after.grants.length, adminGrant: "owner" };
   });
+  await step("legacy-startup-all-mounted-operations-and-cli", async () => {
+    const databasePath = join(directoryArgs[1], "state.sqlite3");
+    const setMode = mode => { const db = new native.Database(databasePath); try {
+      const policy = JSON.parse(db.prepare("SELECT value_json FROM controller_settings WHERE key='authentication'").get().value_json);
+      db.prepare("UPDATE controller_settings SET value_json=? WHERE key='authentication'").run(JSON.stringify({ ...policy, mode }));
+    } finally { db.close(); } };
+    setMode("legacy");
+    try {
+      assert.deepEqual(await refusal(currentCli, ["session", "describe"]), operationRefusal("unknown_mode"));
+      await start();
+      const api = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      assert.equal(api.status, 401); assert.deepEqual(await api.json(), operationRefusal("unknown_mode"));
+      const rpc = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+      assert.equal(rpc.status, 401); assert.deepEqual(await rpc.json(), operationRefusal("unknown_mode"));
+      for (const listener of ["unix", "worker"]) {
+        const reply = await new Promise((accept, reject) => {
+          const call = (listener === "unix" ? httpRequest : httpsRequest)({ ...(listener === "unix" ? { socketPath: join(directoryArgs[3], "admin.sock") } : { hostname: "127.0.0.1", port: workerPort, ca: workerCa }),
+            path: "/api/operations/session.describe", method: "POST", headers: { "Content-Type": "application/json" } }, response => {
+            const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.once("error", reject);
+            response.once("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
+          });
+          call.on("error", reject); call.setTimeout(10000, () => call.destroy(new Error("Legacy fixture deadline"))); call.end("{}");
+        });
+        assert.equal(reply.status, 401); assert.deepEqual(reply.body, operationRefusal("unknown_mode"));
+      }
+      assert.deepEqual(await refusal(currentCli, ["session", "describe"]), operationRefusal("unknown_mode"));
+    } finally { await stop(); setMode("token"); }
+  });
   await step("community-token-mode-without-provider", async () => {
     // The installation token and the mode are kept by the upgrade.
     assert.equal((await json(currentCli, ["auth", "status"])).mode, "token");
     await operationOffline("token"); await start();
     storedOwner = oldOwner.token;
     await operationApi("token", installation.token); await operationSocket("token");
-    assert.equal((await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" })).body.error.reason, "credential_not_accepted_here");
+    const cookieRefused = await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" });
+    assert.equal(cookieRefused.status, 401); assert.deepEqual(cookieRefused.body, operationRefusal("credential_not_accepted_here"));
     matrixCell("api-cookie", "token", null, "api", "credential_not_accepted_here", "community-token-mode-without-provider");
     const authorized = await fetch(endpoint + "/api/dashboard", { headers: { Authorization: `Bearer ${installation.token}` } }); await authorized.arrayBuffer();
     assert.equal(authorized.status, 200, "Installation token must keep working without a provider.");
@@ -591,7 +655,8 @@ try {
   await step("community-open-mode-without-provider", async () => {
     await json(currentCli, ["auth", "mode", "set", "open"]); await operationOffline("open"); await start();
     await operationApi("open"); await operationSocket("open");
-    assert.equal((await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" })).body.error.reason, "credential_in_open_mode");
+    const cookieRefused = await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" });
+    assert.equal(cookieRefused.status, 401); assert.deepEqual(cookieRefused.body, operationRefusal("credential_in_open_mode"));
     matrixCell("api-cookie", "open", null, "api", "credential_in_open_mode", "community-open-mode-without-provider");
     const anonymous = await fetch(endpoint + "/api/dashboard"); await anonymous.arrayBuffer(); assert.equal(anonymous.status, 200);
     await stop(); await json(currentCli, ["auth", "mode", "set", "token"]);
@@ -632,6 +697,8 @@ try {
     assert.equal(description.body.mode, "better-auth"); assert.equal(description.body.listener, "api");
     const invalidCookie = await browser.call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" });
     assert.equal(invalidCookie.status, 401); assert.equal(invalidCookie.body.error.reason, "invalid_credential");
+    const wrongOrigin = await browser.call("/api/operations/session.describe", {}, { Origin: "https://wrong.invalid" });
+    assert.equal(wrongOrigin.status, 403); assert.deepEqual(wrongOrigin.body, operationRefusal("origin_forbidden", "forbidden", 403, "none"));
     matrixCell("api-cookie", "better-auth", "human", "api", "invalid_credential", "public-packaged-login-and-transport-denial-matrix");
     assert.equal((await browser.call("/api/operations/session.describe", {}, { Authorization: `Bearer ${installation.token}` })).body.error.reason, "mixed_credentials");
     await operationApi("better-auth", currentAgentCredential.token); await operationSocket("better-auth");
@@ -692,7 +759,8 @@ try {
   });
   await step("logout-and-ordinary-restart", async () => {
     const old = browser.cookies.get("__Secure-wtc.session_token"); await browser.call("/api/auth/sign-out", {});
-    assert.equal((await browser.call("/api/operations/session.describe", {}, { Cookie: `__Secure-wtc.session_token=${old}` })).body.error.reason, "invalid_credential");
+    const signedOut = await browser.call("/api/operations/session.describe", {}, { Cookie: `__Secure-wtc.session_token=${old}` });
+    assert.equal(signedOut.status, 401); assert.deepEqual(signedOut.body, operationRefusal("invalid_credential"));
     assert.equal((await browser.call("/api/auth/get-session", undefined, { Cookie: `__Secure-wtc.session_token=${old}` })).body.authenticated, false);
     await stop(); await start(); assert.equal((await cookieJar().call("/api/auth/sign-in/email", { email: "owner@fixture.invalid", password })).status, 200); await stop();
   });
@@ -815,7 +883,7 @@ try {
   const snapshot = { baseline, oldSchema: before.schema, currentSchema: CURRENT_SCHEMA, communityWithoutProvider: ["token", "open"], ownerContinuity: true, authority,
     oldCredentialsNotWidened: true, restorationQuarantinesAuthority: true, publicBackupRestore: oldBackup ? ["existing-installation", "empty-installation"] : [],
     durationMs: steps.reduce((sum, entry) => sum + (entry.ms ?? 0), 0) };
-  assert.equal(new Set(operationsMatrix.map(cell => `${cell.surface}/${cell.mode}`)).size, 21);
+  assert.deepEqual([...new Set(operationsMatrix.map(cell => `${cell.surface}/${cell.mode}`))].sort(), [...EXPECTED_OPERATIONS_MATRIX_KEYS].sort());
   report = { result: "passed", steps, source: (await bounded("git", ["rev-parse", "HEAD"], { cwd: repository })).stdout.trim(),
     community: { path: tarball, sha256: communitySha256 }, provider: artifact,
     baseline: { kind: baseline, artifact: baselineArtifact, cliSha256: oldCliSha256 }, evidence: snapshot };
