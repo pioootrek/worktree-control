@@ -196,6 +196,11 @@ permission or peer verification. The server publishes a 0600 socket in a 0700
 directory. This step reuses that implementation without claiming a new peer
 check. Adding client-side checks is a separate hardening/interface decision.
 
+The schema-entry guard classifies this one `SqliteStateStore(paths.databasePath)`
+opening as ordinary, retaining its single-argument/default-admission checks and
+negative controls. The focused `test:session-describe` preset includes that
+inventory as well as the operations importer guard.
+
 The mode matrix follows the shared acceptance table, without CLI mode branches:
 
 | Path | open | token | better-auth | legacy |
