@@ -143,12 +143,17 @@ and its lock-first socket/offline choice remain D1a-8b.
 
 The record identity is its PID and random token plus filesystem device/inode.
 `held()` synchronously refuses missing, malformed, foreign-owned, aliased,
-non-regular, permission-changed (not 0600), replaced or released records. It
-never throws, repairs, writes or releases. Once it observes loss it stays
-false, even if the original bytes or inode return. An unobserved rewrite that
-restores the same bytes on the same inode is indistinguishable from continued
-ownership. This detects accidental ownership loss, not a hostile same-UID
-process.
+non-regular, permission-changed (not exactly 0600, including special bits),
+replaced or released records. Before one read of at most 512 bytes, it checks
+the opened descriptor's type, identity, ownership, mode, link count and size;
+afterward it re-verifies the descriptor and path, including size, mtime and
+ctime against the pre-read descriptor. UID comparison is skipped when
+`process.getuid` is unavailable, as in the existing private-storage checks.
+It never throws, repairs, writes or releases; observed loss stays false for the
+lock object's lifetime, even if the original bytes or inode return. Any error,
+including transient open/read errors or a failed close, fails closed and is
+sticky. Changes after the final check, unobserved byte-identical rewrites on
+the same inode, and a hostile same-UID process remain outside this accidental-loss check.
 
 Offline callers dispose producers, then drain and close their store before
 releasing the controller lock. `closeOfflineStore` extracts the existing auth
