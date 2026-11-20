@@ -148,6 +148,16 @@ refuses `credential_not_accepted_here` in token mode and `invalid_credential` in
 better-auth mode; provider cookies refuse `provider_cookie_not_supported`. All
 are verified by installed `operations-worker-${mode}`.
 
+> **Open mode and an exposed worker port.** In `open` mode this request needs no
+> credential, so anyone who can reach the worker port and complete TLS receives
+> the installation's authority description, including up to 500 project IDs
+> with their permissions (no names, paths, secrets or history). Until this is
+> decided before the release (a recorded release blocker), keep the worker
+> listener on `127.0.0.1` or `::1` in `open` mode, or use `token` or
+> `better-auth` mode before exposing it. Poll and report still require a worker
+> token in every mode. See the [changelog](../CHANGELOG.md) and
+> [owner decision 4(b)](authorization-contract.md#mounted-worker-boundary).
+
 MCP uses a separate port and the exact `/mcp/operations` path. Each POST is
 stateless and authenticates independently. No session ID is needed. This exchange
 is executed verbatim as JSON messages by `describe-rpc-${mode}` in the installed

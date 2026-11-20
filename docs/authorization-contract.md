@@ -77,8 +77,10 @@ new-namespace observations, not statements about legacy public/status routes.
 
 Recorded release blockers, with owners:
 
-- Owner decision 4(b), unchanged below: non-loopback worker binding in open mode.
-  The owner decides; D1a-10 implements no restriction.
+- Owner decision 4(b): non-loopback worker binding in open mode, with the
+  exposure and interim guidance [below](#mounted-worker-boundary).
+  The owner decides before the release (left open on 2026-11-20); no
+  restriction is implemented.
 - Knowledge project ID grammar: the owner owns the recorded hand migration;
   the Knowledge create/Hub import implementation owns prevention and an approved
   repair procedure. Release remains blocked on conforming IDs, prevention and
@@ -751,7 +753,19 @@ serve the worker listener on a non-loopback address at all, or only with an
 explicit operator acknowledgement. Recommend: refuse a non-loopback worker
 binding in `open` mode unless the operator explicitly acknowledges the disclosed
 authority and data exposure; settle this before the release. D1a-6 does not
-implement that restriction.
+implement that restriction. On 2026-11-20 the owner chose to leave the
+decision open until the release.
+
+What is exposed today: in `open` mode an anonymous caller that reaches the
+worker port and completes TLS receives the installation DTO: actor kind
+`installation`, mode, `listener: "worker"`, `fullAuthority: true`, the
+installation permissions, the bounded project-ID prefix with each project's
+permissions (at most 500 entries and the serialized-DTO byte budget),
+`projectsTruncated` and `freshLogin`. No project names, paths, secrets,
+history, credential or session identifiers. Poll and report still require a
+stored worker token. Interim operator guidance, repeated in the changelog and
+[authentication](authentication.md): in `open` mode keep the worker listener on
+loopback, or use `token` or `better-auth` mode before exposing it.
 
 ### Mounted MCP boundary (D1a-7b)
 

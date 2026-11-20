@@ -17,11 +17,19 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
   unchanged, and no ID is changed. Prevention in create and import and a repair
   procedure are still missing.
 
-- **Unreleased authorization integration:** mount `session.describe` at
-  `POST /api/operations/session.describe` on the API and private unix socket.
-  Reads use current authorization inside admission, bounded JSON and request
-  lifetimes. Cookies are refused pending the next adapter step; `legacy`
-  mode answers `unknown_mode`. Existing routes retain their authentication.
+- **Unreleased authorization integration:** the read-only `session.describe`
+  operation describes the caller's current authority on every surface:
+  `POST /api/operations/session.describe` on the API (bearer, and the browser
+  session cookie in `better-auth` mode with a configured public origin), on the
+  private unix socket and on the configured HTTPS worker listener;
+  `POST /mcp/operations` (tool `session_describe`) on the MCP port; and the new
+  command `worktree-control session describe`, which asks a running controller
+  through its private socket or, when no controller holds the lock, reads
+  offline. Reads use current authorization inside admission, bounded JSON and
+  request lifetimes; `legacy` mode answers `unknown_mode`. Existing routes
+  retain their authentication. See
+  [authentication](docs/authentication.md) and the
+  [authorization contract](docs/authorization-contract.md).
 
 - **Explicit offline upgrade to schema 52 (integration branch, not
   released).** This build runs schema 52 and no longer migrates an existing
@@ -58,6 +66,27 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
   [authentication](docs/authentication.md).
 
 ### Known issues
+
+- **Release blocker, open owner decision: in `open` mode the HTTPS worker
+  listener now answers `session.describe` to anyone who can reach it.** Before
+  this integration build that port refused every caller without a worker
+  token. Now, in `open` mode, a caller with no credential that can reach the
+  worker port and complete TLS receives the installation's authority
+  description: actor kind, mode, listener, `fullAuthority: true`, the
+  installation permissions, up to 500 project IDs with the permissions held on
+  each (fewer when the response byte budget is reached), `projectsTruncated`
+  and `freshLogin`. It receives no project names, paths, secrets or history,
+  and it cannot poll or report work. Affected: an installation in `open` mode
+  that configures the worker listener on an address other than loopback.
+  `token` and `better-auth` modes are not affected in this way; there the port
+  accepts only the installation token or an agent token. Until the decision:
+  in `open` mode bind the worker listener to `127.0.0.1` or `::1`, or switch the
+  installation to `token` or `better-auth` mode before exposing the worker
+  port. The owner decided on 2026-11-20 to settle this before the release
+  (decision 4(b) in the [authorization contract](docs/authorization-contract.md));
+  the recommended outcome is to refuse a non-loopback worker listener in
+  `open` mode unless the operator explicitly acknowledges the exposure. This
+  build implements no restriction.
 
 - **A stop the controller cannot catch, or a storage failure, during a
   protected write can leave the installation refusing to start until
