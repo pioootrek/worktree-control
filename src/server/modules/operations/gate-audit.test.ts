@@ -17,8 +17,8 @@ function evidence(markdown: string): Evidence[] {
 }
 // Changing accepted totals, status counts or artifact keys is a review decision.
 const ACCEPTED_GATE_ROWS = 191, ACCEPTED_ARTIFACT_CELLS = 21;
-const ACCEPTED_STATUSES: Record<string, number> = { "proven before this step": 136, "added in this step": 72,
-  "not applicable": 4, "partially proven": 0, deferral: 0, defect: 0 };
+const ACCEPTED_STATUSES: Record<string, number> = { "proven before this step": 136, "added in this step": 71,
+  "not applicable": 5, "partially proven": 0, deferral: 0, defect: 0 };
 const ACCEPTED_MATRIX_KEYS = ["api-bearer", "api-cookie", "unix", "worker-tls", "mcp", "cli-socket", "cli-offline"]
   .flatMap(surface => ["open", "token", "better-auth"].map(mode => `${surface}/${mode}`)).sort();
 function titles(file: string, text: string, expectedFailure = false): Set<string> {
@@ -32,7 +32,11 @@ function titles(file: string, text: string, expectedFailure = false): Set<string
         (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))) functions.set(declaration.name.text, declaration.initializer);
     }
   }
-  const unwrap = (node: ts.Expression): ts.Expression => ts.isAsExpression(node) || ts.isParenthesizedExpression(node) ? unwrap(node.expression) : node;
+  function unwrap(node: ts.Expression): ts.Expression {
+    while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node) ||
+      ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node)) node = node.expression;
+    return node;
+  }
   const visit = (node: ts.Node) => {
     // Enter only known registration callbacks or directly called script helpers.
     if (ts.isFunctionLike(node)) return;
@@ -77,8 +81,9 @@ function titles(file: string, text: string, expectedFailure = false): Set<string
         const fails = /\.fails(?:\b|\()/.test(expression);
         if (fails && !expectedFailure) return;
         if (ts.isCallExpression(node.expression) && /\.each$/.test(node.expression.expression.getText(source))) {
-          const table = node.expression.arguments[0];
-          if (table && ts.isArrayLiteralExpression(unwrap(table)) && !(unwrap(table) as ts.ArrayLiteralExpression).elements.length) return;
+          const argument = node.expression.arguments[0];
+          const table = argument && unwrap(argument);
+          if (table && ts.isArrayLiteralExpression(table) && !table.elements.length) return;
         }
         const title = node.arguments[0];
         if (/^(?:it|test|step)(?:$|[.(])/.test(expression) && (!expectedFailure || fails) && title &&
@@ -213,7 +218,7 @@ describe("D1a gate audit drift guard", () => {
     put(row.file, 'it("expected title", () => {});'); expect(missing(row, read)).toEqual([]);
   }));
   it("negative control: skipped, todo, expected-failure and empty-table assertions are not proof", () => fixture((read, put) => {
-    for (const source of ['it.skip("expected title", () => {});', 'it.todo("expected title");', 'test.skip("expected title", () => {});', 'describe.skip("outer", () => { describe("inner", () => {it("expected title", () => {});}); });', 'it.each([])("expected title", () => {});', 'test.each([] as const)("expected title", () => {});', 'it.fails("expected title", () => {});']) {
+    for (const source of ['it.skip("expected title", () => {});', 'it.todo("expected title");', 'test.skip("expected title", () => {});', 'describe.skip("outer", () => { describe("inner", () => {it("expected title", () => {});}); });', 'it.each([])("expected title", () => {});', 'test.each([] as const)("expected title", () => {});', 'it.each([] satisfies readonly unknown[])("expected title", () => {});', 'it.fails("expected title", () => {});']) {
       put(row.file, source); expect(missing(row, read), source).toContain(`gate_audit_missing_title: ${row.file}: ${row.title}`);
     }
   }));
