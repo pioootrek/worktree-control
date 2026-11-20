@@ -166,13 +166,6 @@ export function createOperationsMcp(options: {
       const target = projectToolCall(body as Record<string, unknown>);
       // A holder, not a local: closures set it, and control-flow narrowing must not assume null.
       const tool$: { result: ToolResult | null } = { result: null };
-      const toolValue = (dto: object) => {
-        const serialized = JSON.stringify(dto);
-        // The DTO alone may not exceed the response ceiling; the envelope bound applies after the SDK.
-        tool$.result = Buffer.byteLength(serialized) > limits.responseBytes
-          ? Object.freeze({ ok: false as const, error: failure("payload_too_large", "response_too_large") })
-          : Object.freeze({ ok: true as const, serialized, canonical: canonicalJson(dto) });
-      };
       let dispatched = false;
       const dispatch = async (): Promise<{ status: number; buffer: Buffer }> => {
         if (dispatched) throw new OperationError("internal", "invalid_operation");
@@ -240,37 +233,50 @@ export function createOperationsMcp(options: {
       // No await, SDK send, or network drain inside admission. SDK security or
       // session headers cannot replace this boundary's response headers.
       const write = (output: { status: number; buffer: Buffer }) => () => { writeOperationsResponse(response, output.status, output.buffer.toString("utf8")); };
-      // The final write of everything but a project tool's own success is gated by the describe witness.
-      const describedRelease = async () => {
+      const tool = target ? runtime.registry.get(target.tool.operation) : undefined;
+      if (!target || !tool) {
+        // Initialize, listing, notifications and session_describe: the final write is gated by the describe witness.
         const output = await dispatch();
         const released = await runtime.runner.readRelease(operation, context.authentication, {}, {
           ...releaseOptions, expectedCanonical: context.canonical, commit: write(output) });
         if (released.status !== "committed") refuse(released.error);
-      };
-      const tool = target ? runtime.registry.get(target.tool.operation) : undefined;
-      if (!target || !tool) { await describedRelease(); return; }
-      if (tool.kind === "query") {
-        // Discovery runs once. The SDK envelope is built from the value of a fresh
-        // decision, and written only after another fresh decision re-projects it unchanged.
-        let output: { status: number; buffer: Buffer } | undefined;
-        const released = await runtime.runner.queryRelease(tool, context.authentication, target.arguments, {
-          ...releaseOptions,
-          async stage(value: object) { toolValue(value); output = await dispatch(); },
-          commit() { if (output) write(output)(); },
-        });
-        if (released.status === "committed") return;
-        if (dispatched) { refuse(released.error); return; }
-        tool$.result = Object.freeze({ ok: false as const, error: released.error });
-        await describedRelease(); return;
+        return;
       }
-      const first = await runtime.runner.readRelease(tool, context.authentication, target.arguments, { ...releaseOptions, commit: toolValue });
-      if (first.status !== "committed") tool$.result = Object.freeze({ ok: false as const, error: first.error });
-      const succeeded = tool$.result;
-      if (!succeeded?.ok) { await describedRelease(); return; }
-      const output = await dispatch();
+      // A project tool's answer, success or refusal, is released by that tool alone: its envelope is
+      // built outside admission and written only inside a fresh admitted phase of the same tool and
+      // arguments that reproduces it. The describe witness plays no part, so a change of unrelated
+      // authority never replaces the tool's own answer.
+      let output: { status: number; buffer: Buffer } | undefined;
+      const stageTool = async (result: ToolResult) => { tool$.result = result; output = await dispatch(); };
+      const commitTool = () => { if (!output) throw new OperationError("internal", "invalid_operation"); write(output)(); };
+      // The DTO alone may not exceed the response ceiling; the envelope bound applies after the SDK.
+      const toolValue = (dto: object): { result: ToolResult; canonical: string } => {
+        const serialized = JSON.stringify(dto), canonical = canonicalJson(dto);
+        return Buffer.byteLength(serialized) > limits.responseBytes
+          ? { result: Object.freeze({ ok: false as const, error: failure("payload_too_large", "response_too_large") }), canonical }
+          : { result: Object.freeze({ ok: true as const, serialized, canonical }), canonical };
+      };
+      const refusal = { stage: (error: PublicOperationError) => stageTool(Object.freeze({ ok: false as const, error })), commit: commitTool };
+      if (tool.kind === "query") {
+        // Discovery runs once. The envelope is built from the value of a fresh decision and
+        // written only after another fresh decision re-projects it unchanged.
+        const released = await runtime.runner.queryRelease(tool, context.authentication, target.arguments, {
+          ...releaseOptions, refusal, async stage(value: object) { await stageTool(toolValue(value).result); }, commit: commitTool });
+        if (released.status !== "committed") refuse(released.error);
+        return;
+      }
+      // A holder, not a local: the commit closure sets it, and narrowing must not assume undefined.
+      const first$: { value?: { result: ToolResult; canonical: string } } = {};
+      const read = await runtime.runner.readRelease(tool, context.authentication, target.arguments, {
+        ...releaseOptions, refusal, commit(dto) { first$.value = toolValue(dto); } });
+      if (read.status !== "committed") { refuse(read.error); return; }
+      // Committed without a value: the tool's refusal was written.
+      const first = first$.value;
+      if (!first) return;
+      await stageTool(first.result);
       // A fresh read of the same tool must project exactly the value the envelope carries.
       const released = await runtime.runner.readRelease(tool, context.authentication, target.arguments, {
-        ...releaseOptions, expectedCanonical: succeeded.canonical, commit: write(output) });
+        ...releaseOptions, expectedCanonical: first.canonical, commit: commitTool });
       if (released.status !== "committed") refuse(released.error);
     } catch (error) {
       refuse(operationsRequestFailure(error, abort.signal, timedOut));

@@ -1370,6 +1370,21 @@ Its `stage` option is the buffered shape: see [Project reads](#project-reads-d2a
 A read passed to `queryRelease`, or a query passed to `readRelease`, is
 `internal`/`invalid_operation`.
 
+Both `readRelease` and `queryRelease` take an optional `refusal` delivery
+(`stage`, `commit`) for a buffered refusal. Without it a refusal is only
+returned. With it, the operation's own refusal is staged outside admission and
+committed only inside a fresh admitted phase of the same operation and input
+that reproduces the identical public error. The fresh phase repeats the step
+that refused: the read, the plan of step 1, the decision on the same resolution
+after a failed or timed-out work, or step 3. Input refusals repeat the
+authority and policy checks first. When the fresh phase answers anything else,
+nothing staged is committed and the fresh answer is returned: another refusal
+as itself, a success as `conflict`/`release_payload_changed`. The release
+policy's own refusals (`release_not_eligible`, `release_timed_out`,
+`request_cancelled`) are never staged, a query never stages a refusal after it
+staged a value, and the work never runs again. A delivery combined with
+`expectedCanonical`, or without both functions, is `invalid_request`/`invalid_input`.
+
 ### Project reads (D2a)
 
 `project.list`, `project.status` and `project.worktrees` are the first product
@@ -1411,17 +1426,19 @@ registrations add `selectedWorktreePath`, `startedAt` and `managedServer`. Gated
 fields are absent, never null, when not released:
 
 - `launch` (`executable`, `args`): only with `config:read` on the project.
-- `claimHolder` (`kind`, `accountId`, `reason`, `createdAt`, `expiresAt`): only
-  with `claims:manage`, and only for an active claim. `accountId` is the claim's
-  stored principal when it is a contract ID, otherwise null. The owner string,
-  lease token hash, credential and idempotency key are never read into the
-  operation.
+- `claimHolder` (`kind`, `accountId`): the holder's identity only, with
+  `claims:manage`, and only for an active claim. `accountId` is the claim's
+  stored principal when it is a contract ID, otherwise null. The claim's
+  reason, owner string, times, lease token hash, credential and idempotency key
+  are never read into the operation (the catalog query does not select them).
 
 `compact: true` returns the summary registration entries. `project.worktrees`
-releases per registration `discovery` (`complete` or `unavailable`) and the
-worktree allowlist `path`, `branch`, `head`, `shortHead`, `detached`, `locked`,
-`prunable` and `dirty`. A failed or malformed discovery is `unavailable`, with
-nothing about its cause.
+releases per registration `discovery` and the worktree allowlist `path`,
+`branch`, `head`, `shortHead`, `detached`, `locked`, `prunable` and `dirty`.
+`discovery` is `complete` when every released tree has its status, `partial`
+when Git listed the trees but could not read the status of at least one (its
+`dirty` is null), and `unavailable` when the listing failed or was malformed.
+Nothing about a cause is released.
 
 **Claim relation.** The relation is `none` without an active claim and `other`
 with one. `own` needs the caller's coordination session as the holder. Stored
@@ -1435,14 +1452,24 @@ opaque key cursor (`p:<project>` or `r:<registration>`), at most 512 characters.
 Each project releases at most 16 registrations (`registrationsTruncated`), and one
 `project.worktrees` call at most 64 worktrees (`worktreesTruncated`). The catalog
 refuses more than 1000 projects or 5000 registrations as `internal`, never
-truncated. Discovery keeps at most 16 repositories in flight
-(`busy`/`discovery_capacity`, retry) and at most 64 trees per repository. The query
-bound is 8000 ms, below the 10 s transport deadline, so slow Git answers
+truncated. One call lists every repository of the project first, with no status
+read. It then assigns its budget of 64 status reads in registration order, so
+the first registration's trees come first, and runs `git status` only on the
+assigned trees. Trees past the budget are never read and set
+`worktreesTruncated`. Discovery keeps at most 16 distinct listings and 64
+distinct status reads in flight and at most 64 trees from one listing. A call
+that would exceed a bound starts nothing new and is refused as
+`busy`/`discovery_capacity` with retry, as is a call whose Git command admission
+is full; neither is reported as a failed discovery. The query bound is 8000 ms,
+below the 10 s transport deadline, so slow Git answers
 `unavailable`/`query_timed_out` with retry.
 
-**Discovery and release.** Concurrent callers of one repository share the one Git
-listing in flight. Nothing is cached after it settles, so every call discovers.
-A caller's cancellation detaches only that caller. Release of `project.worktrees`
+**Discovery and release.** Concurrent callers share the one Git listing of a
+repository, and the one status read of a worktree, while it is in flight.
+Nothing is cached after it settles, so every call discovers. A caller's
+cancellation detaches only that caller. When the last caller of a shared read
+leaves before it settles, the read is aborted: Git command admission drops it
+from its queue or stops its process. Release of `project.worktrees`
 follows [Queries](#queries) through `OperationRunner.queryRelease`. The commit
 runs inside the admitted phase of step 3, after a fresh decision on an unchanged
 resolution, as `readRelease` does for reads. A `project` resolution keeps its
@@ -1458,10 +1485,17 @@ the same canonical value and only then writes. Discovery runs once.
 `registry.idsOn("mcp")`. Their JSON Schemas only advertise input. The decision
 deferred from the D1a plan is made: no machine-readable schema lives on the
 operation, and its `parse` is the only validation. A project tool's release
-refusal is a tool result with `isError: true` and the public error. That
-result, initialize and listing are written under the `session.describe`
-witness. A successful read is written only after a fresh `readRelease` of the
-same tool matches the buffered value (`expectedCanonical`).
+refusal is a tool result with `isError: true` and the public error. A project
+tool's answer is released by that tool alone, never under the
+`session.describe` witness, so a change of unrelated authority cannot replace
+it. Its refusal uses the `refusal` delivery: the SDK envelope is built outside
+admission and written inside a fresh phase of the same tool that reproduces the
+same error. A successful read is written only after a fresh `readRelease` of the
+same tool matches the buffered value (`expectedCanonical`); a query re-projects
+it as described above. When that final decision differs, the request answers a
+JSON-RPC error whose `data` is the fresh public error, for example
+`resource_not_found` after a revocation. Initialize, listing, notifications and
+`session_describe` remain written under the `session.describe` witness.
 
 **CLI.** `projects list|status|worktrees` share `session describe`'s lock-first
 selection: the private socket while a controller owns the lock, otherwise one

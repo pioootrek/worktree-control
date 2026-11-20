@@ -8,14 +8,15 @@ import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite/sqlite-state-store";
 import { AccountGrantsQueries } from "@/server/infrastructure/sqlite/account-grants-queries";
 import { ProjectDirectoryQueries } from "@/server/infrastructure/sqlite/project-directory-queries";
-import { CoalescingWorktreeDiscovery } from "./adapters/worktree-discovery";
+import { GitCommandCapacityError } from "@/server/git-worktrees";
+import { CoalescingWorktreeDiscovery, type WorktreeGit } from "./adapters/worktree-discovery";
 import { sqliteGrants } from "./adapters/sqlite-grants";
 import { SqliteResourceResolver } from "./adapters/sqlite-resolver";
 import type { AuthenticationContext } from "./authentication-context";
 import { OperationRegistry, type Operation } from "./operation";
 import type { ProjectListResult } from "@/shared/contracts/operations";
 import { createWorld } from "./operations-fixture";
-import { createProjectReads, MAX_PROJECT_REGISTRATIONS } from "./project-reads";
+import { createProjectReads, MAX_PROJECT_REGISTRATIONS, MAX_PROJECT_WORKTREES } from "./project-reads";
 import { OperationRunner, type RunResult } from "./runner";
 
 /**
@@ -55,12 +56,15 @@ function fixture(processes?: ProcessManager) {
     // Fields outside the allowlist that the Git reader really returns; they must never be released.
     statusError: "private Git error text", lastCommitAt: AT, merged: false, mergedInto: "main", isDefaultBranch: false });
   const gates = new Map<string, ReturnType<typeof deferred<unknown[]>>>();
-  const git = { list: vi.fn((path: string): Promise<unknown[]> => {
-    const gate = gates.get(path);
-    if (gate) return gate.promise;
-    if (path.endsWith("broken")) return Promise.reject(new Error("fatal: private path /secret"));
-    return Promise.resolve([tree(path, "main"), tree(`${path}-feature`, "feature")]);
-  }) };
+  const git = {
+    listTrees: vi.fn((path: string): Promise<unknown[]> => {
+      const gate = gates.get(path);
+      if (gate) return gate.promise;
+      if (path.endsWith("broken")) return Promise.reject(new Error("fatal: private path /secret"));
+      return Promise.resolve([tree(path, "main"), tree(`${path}-feature`, "feature")]);
+    }),
+    worktreeDirty: vi.fn(async (_path: string) => true),
+  };
   const discovery = new CoalescingWorktreeDiscovery(git);
   const placement = processes ?? { statusSummary: vi.fn((id: string) => id === ids.alpha
     ? { phase: "running", worktreePath: "/code/alpha-feature", startedAt: AT } : { phase: "stopped", worktreePath: null, startedAt: null }) };
@@ -113,7 +117,7 @@ describe("project reads (D2a)", () => {
       expect(await f.runner.run(f.status, zero, { projectId })).toEqual(notFound);
       expect(await f.runner.run(f.worktrees, zero, { projectId })).toEqual(notFound);
     }
-    expect(f.git.list).not.toHaveBeenCalled();
+    expect(f.git.listTrees).not.toHaveBeenCalled();
   });
 
   it("reads runtime summaries only for registrations on the visible page", async () => {
@@ -189,7 +193,9 @@ describe("project reads (D2a)", () => {
     expect(alpha(reader.value).launch).toEqual({ executable: "node", args: ["--secret-flag", "alpha"] });
     expect(alpha(reader.value)).not.toHaveProperty("claimHolder");
     expect(operator.value.writable).toBe(true);
-    expect(alpha(operator.value).claimHolder).toEqual({ kind: "human", accountId: "agent-holder", reason: "private holder reason", createdAt: expect.any(String), expiresAt: null });
+    // Holder identity only: never the claim's reason, owner string or times.
+    expect(alpha(operator.value).claimHolder).toEqual({ kind: "human", accountId: "agent-holder" });
+    expect(JSON.stringify(operator.value)).not.toMatch(/private holder reason|expiresAt|createdAt/);
     expect(alpha(maintainer.value)).toMatchObject({ claim: "other", selectedWorktreePath: null, startedAt: AT, managedServer: true, phase: "running" });
     // The serialized DTO carries no owner string, token hash or credential.
     expect(JSON.stringify(maintainer.value)).not.toMatch(/local-user|token_hash|credential/);
@@ -226,7 +232,7 @@ describe("project reads (D2a)", () => {
       expect(await f.runner.run(operation as unknown as Operation<unknown, unknown, object>, f.world.installation("worker").context, input))
         .toMatchObject({ ok: false, error: { category: "not_found", reason: "operation_not_registered" } });
     }
-    expect(f.git.list).not.toHaveBeenCalled();
+    expect(f.git.listTrees).not.toHaveBeenCalled();
   });
 
   it("releases only allowlisted worktree fields and reports a failed discovery without its cause", async () => {
@@ -250,10 +256,10 @@ describe("project reads (D2a)", () => {
     await vi.waitFor(() => expect(f.discovery.inFlight).toBe(1));
     gate.resolve([f.tree("/code/beta", "main")]);
     expect((await first).ok && (await second).ok).toBe(true);
-    expect(f.git.list.mock.calls.filter(([path]) => path === "/code/beta")).toHaveLength(1);
+    expect(f.git.listTrees.mock.calls.filter(([path]) => path === "/code/beta")).toHaveLength(1);
     f.gates.delete("/code/beta");
     await f.runner.run(f.worktrees, context, { projectId: "project-b" });
-    expect(f.git.list.mock.calls.filter(([path]) => path === "/code/beta")).toHaveLength(2);
+    expect(f.git.listTrees.mock.calls.filter(([path]) => path === "/code/beta")).toHaveLength(2);
   });
 
   it("releases nothing when authority is revoked while discovery waits", async () => {
@@ -290,7 +296,7 @@ describe("project reads (D2a)", () => {
     expect(await cancelled).toMatchObject({ ok: false, error: { category: "unavailable", reason: "request_cancelled", retry: "retry" } });
     gate.resolve([f.tree("/code/beta", "main")]);
     expect(await kept).toMatchObject({ ok: true });
-    expect(f.git.list.mock.calls.filter(([path]) => path === "/code/beta")).toHaveLength(1);
+    expect(f.git.listTrees.mock.calls.filter(([path]) => path === "/code/beta")).toHaveLength(1);
   });
 
   it("bounds registrations per project and refuses discovery beyond the in-flight bound", async () => {
@@ -301,10 +307,121 @@ describe("project reads (D2a)", () => {
     }
     const status = await f.runner.run(f.status, f.world.installation("api").context, { projectId: "project-empty" });
     expect(status.ok && [status.value.registrations.length, status.value.registrationsTruncated]).toEqual([MAX_PROJECT_REGISTRATIONS, true]);
-    const small = new CoalescingWorktreeDiscovery({ list: () => new Promise(() => undefined) }, { maxInFlight: 1 });
-    const signal = new AbortController().signal;
-    void small.discover("/one", signal).catch(() => undefined);
-    await expect(small.discover("/two", signal)).rejects.toMatchObject({ category: "busy", reason: "discovery_capacity" });
+  });
+
+  it("spends one budget of status reads across the project's registrations, after listing all of them", async () => {
+    const f = fixture();
+    const many = (path: string, count: number) => Array.from({ length: count }, (_, i) => f.tree(`${path}/t${String(i).padStart(2, "0")}`, `b${i}`));
+    f.gates.set("/code/alpha", { ...deferred<unknown[]>(), promise: Promise.resolve(many("/code/alpha", 40)) });
+    f.gates.set("/code/alpha2", { ...deferred<unknown[]>(), promise: Promise.resolve(many("/code/alpha2", 40)) });
+    const order: string[] = [];
+    f.git.listTrees.mockImplementation(async (path: string) => { order.push(`list ${path}`); return f.gates.get(path)!.promise; });
+    f.git.worktreeDirty.mockImplementation(async (path: string) => { order.push(`status ${path}`); return false; });
+    const found = await f.runner.run(f.worktrees, f.world.installation("api").context, { projectId: "project-a" });
+    if (!found.ok) throw new Error(found.error.reason);
+    // Every listing came before the first status read, and only the budget was read.
+    expect(order.slice(0, 2).sort()).toEqual(["list /code/alpha", "list /code/alpha2"]);
+    expect(f.git.worktreeDirty).toHaveBeenCalledTimes(MAX_PROJECT_WORKTREES);
+    // The budget goes in registration order: the first keeps all 40 trees, the second the rest.
+    const [first, second] = found.value.registrations;
+    expect([first.worktrees.length, first.worktreesTruncated, first.discovery]).toEqual([40, false, "complete"]);
+    expect([second.worktrees.length, second.worktreesTruncated, second.discovery]).toEqual([MAX_PROJECT_WORKTREES - 40, true, "complete"]);
+    // Exactly the released trees were read, nothing past the budget.
+    expect(new Set(f.git.worktreeDirty.mock.calls.map(([path]) => path))).toEqual(new Set(found.value.registrations.flatMap(entry => entry.worktrees.map(tree => tree.path))));
+  });
+});
+
+describe("CoalescingWorktreeDiscovery (D2a)", () => {
+  const fact = (path: string) => ({ path, branch: "main", head: "c".repeat(40), shortHead: "cccccccc", detached: false, locked: false, prunable: false });
+  function git(overrides: Partial<WorktreeGit> = {}) {
+    const signals = new Map<string, AbortSignal>();
+    const listTrees = vi.fn(async (path: string, options: { signal: AbortSignal }) => { signals.set(`list ${path}`, options.signal); return [fact(`${path}/main`), fact(`${path}/b`)]; });
+    const worktreeDirty = vi.fn(async (path: string, options: { signal: AbortSignal }) => { signals.set(`status ${path}`, options.signal); return path.endsWith("/b"); });
+    return { listTrees, worktreeDirty, signals, ...overrides };
+  }
+  const never = <T>() => new Promise<T>(() => undefined);
+
+  it("reports status failures as partial with dirty null and failed listings as unavailable, without causes", async () => {
+    const reader = git();
+    reader.listTrees.mockImplementation(async (path: string) => { if (path === "/gone") throw new Error("fatal: /secret"); return [fact(`${path}/main`), fact(`${path}/b`)]; });
+    reader.worktreeDirty.mockImplementation(async (path: string) => { if (path === "/r/b") throw new Error("private"); return false; });
+    const found = await new CoalescingWorktreeDiscovery(reader).discover(["/r", "/gone"], 64, new AbortController().signal);
+    expect(found).toEqual([
+      { state: "partial", truncated: false, worktrees: [{ ...fact("/r/main"), dirty: false }, { ...fact("/r/b"), dirty: null }] },
+      { state: "unavailable" },
+    ]);
+  });
+
+  it("refuses a call beyond the listing or status bound before starting anything new", async () => {
+    const reader = git(), signal = new AbortController().signal;
+    reader.listTrees.mockImplementation(() => never());
+    const listings = new CoalescingWorktreeDiscovery(reader, { maxRepositories: 1 });
+    void listings.discover(["/one"], 64, signal).catch(() => undefined);
+    await expect(listings.discover(["/two"], 64, signal)).rejects.toMatchObject({ category: "busy", reason: "discovery_capacity", retry: "retry" });
+    expect(reader.listTrees.mock.calls.map(([path]) => path)).toEqual(["/one"]);
+
+    const slow = git();
+    slow.worktreeDirty.mockImplementation(() => never());
+    const statuses = new CoalescingWorktreeDiscovery(slow, { maxStatuses: 2 });
+    void statuses.discover(["/one"], 64, signal).catch(() => undefined);
+    await vi.waitFor(() => expect(statuses.statusesInFlight).toBe(2));
+    await expect(statuses.discover(["/two"], 64, signal)).rejects.toMatchObject({ category: "busy", reason: "discovery_capacity" });
+    expect(slow.worktreeDirty).toHaveBeenCalledTimes(2);
+  });
+
+  it("answers Git admission capacity as busy, never as a failed discovery", async () => {
+    const reader = git();
+    reader.listTrees.mockRejectedValue(new GitCommandCapacityError());
+    await expect(new CoalescingWorktreeDiscovery(reader).discover(["/r"], 64, new AbortController().signal))
+      .rejects.toMatchObject({ category: "busy", reason: "discovery_capacity", retry: "retry" });
+    const statuses = git();
+    statuses.worktreeDirty.mockRejectedValue(new GitCommandCapacityError());
+    await expect(new CoalescingWorktreeDiscovery(statuses).discover(["/r"], 64, new AbortController().signal))
+      .rejects.toMatchObject({ category: "busy", reason: "discovery_capacity" });
+  });
+
+  it("shares listings and status reads in flight, and aborts a shared read only when its last caller leaves", async () => {
+    const reader = git(), gate = deferred<unknown[]>();
+    reader.listTrees.mockImplementation(async (path: string, options: { signal: AbortSignal }) => { reader.signals.set(`list ${path}`, options.signal); return gate.promise; });
+    const discovery = new CoalescingWorktreeDiscovery(reader);
+    const first = new AbortController(), second = new AbortController();
+    const left = discovery.discover(["/r"], 64, first.signal), kept = discovery.discover(["/r"], 64, second.signal);
+    await vi.waitFor(() => expect(discovery.inFlight).toBe(1));
+    first.abort();
+    await expect(left).rejects.toMatchObject({ category: "unavailable", reason: "request_cancelled" });
+    expect(reader.signals.get("list /r")!.aborted).toBe(false);
+    gate.resolve([fact("/r/main"), fact("/r/b")]);
+    expect(await kept).toEqual([{ state: "complete", truncated: false, worktrees: [{ ...fact("/r/main"), dirty: false }, { ...fact("/r/b"), dirty: true }] }]);
+    expect(reader.listTrees).toHaveBeenCalledTimes(1);
+    expect([discovery.inFlight, discovery.statusesInFlight]).toEqual([0, 0]);
+
+    // Two calls reaching the same status reads share them.
+    const statusGate = deferred<boolean>();
+    reader.worktreeDirty.mockImplementation(() => statusGate.promise);
+    const a = discovery.discover(["/s"], 64, new AbortController().signal), b = discovery.discover(["/s"], 64, new AbortController().signal);
+    await vi.waitFor(() => expect(discovery.statusesInFlight).toBe(2));
+    statusGate.resolve(false);
+    expect((await a)[0]).toEqual((await b)[0]);
+    expect(reader.worktreeDirty).toHaveBeenCalledTimes(2 + 2);
+
+    // The only caller leaving aborts the Git read, and the next call starts a new one.
+    reader.listTrees.mockImplementation(async (path: string, options: { signal: AbortSignal }) => { reader.signals.set(`list ${path}`, options.signal); return never(); });
+    const alone = new AbortController();
+    const abandoned = discovery.discover(["/t"], 64, alone.signal);
+    await vi.waitFor(() => expect(discovery.inFlight).toBe(1));
+    alone.abort();
+    await expect(abandoned).rejects.toMatchObject({ reason: "request_cancelled" });
+    expect(reader.signals.get("list /t")!.aborted).toBe(true);
+    expect(discovery.inFlight).toBe(0);
+  });
+
+  it("keeps at most maxTrees from one listing and marks it truncated", async () => {
+    const reader = git();
+    reader.listTrees.mockResolvedValue(Array.from({ length: 5 }, (_, i) => fact(`/r/${i}`)));
+    const [found] = await new CoalescingWorktreeDiscovery(reader, { maxTrees: 3 }).discover(["/r"], 64, new AbortController().signal);
+    expect(found).toMatchObject({ state: "complete", truncated: true });
+    expect(found.state !== "unavailable" && found.worktrees.map(tree => tree.path)).toEqual(["/r/0", "/r/1", "/r/2"]);
+    expect(reader.worktreeDirty).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -325,7 +442,7 @@ describe("queryRelease (D2a)", () => {
       .toMatchObject({ status: "refused", error: { category: "internal", reason: "invalid_operation" } });
     expect(await f.runner.queryRelease(f.worktrees, context, { projectId: "project-b" }, options(f, commit, { eligible: () => false })))
       .toMatchObject({ status: "refused", error: { reason: "release_not_eligible" } });
-    expect(f.git.list).not.toHaveBeenCalled();
+    expect(f.git.listTrees).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
   });
 
@@ -338,6 +455,6 @@ describe("queryRelease (D2a)", () => {
     const ok = vi.fn();
     const kept = f.agent("kept", "reader", "project-b");
     expect(await f.runner.queryRelease(f.worktrees, kept, { projectId: "project-b" }, options(f, ok, { stage: async () => undefined }))).toEqual({ status: "committed" });
-    expect(f.git.list.mock.calls.filter(([path]) => path === "/code/beta")).toHaveLength(2);
+    expect(f.git.listTrees.mock.calls.filter(([path]) => path === "/code/beta")).toHaveLength(2);
   });
 });

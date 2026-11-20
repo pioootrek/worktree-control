@@ -29,7 +29,7 @@ const deferred = <T>() => { let resolve!: (value: T) => void; const promise = ne
 let ports = 0;
 const tree = (path: string) => ({ path, branch: "main", head: "b".repeat(40), shortHead: "bbbbbbbb", detached: false, locked: false, prunable: false, dirty: false, statusError: "private" });
 
-async function fixture(mode: "open" | "token" | "better-auth") {
+async function fixture(mode: "open" | "token" | "better-auth" | "legacy") {
   const root = mkdtempSync(join(tmpdir(), "project-reads-transports-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict" });
@@ -52,12 +52,14 @@ async function fixture(mode: "open" | "token" | "better-auth") {
     return { a: register("alpha", "project-a"), b: register("beta-repo", "project-b"), loose: register("loose", null) };
   });
   const gates = new Map<string, ReturnType<typeof deferred<unknown[]>>>();
-  const git = { list: vi.fn((path: string) => gates.get(path)?.promise ?? Promise.resolve([tree(path)])) };
+  const git = { listTrees: vi.fn((path: string) => gates.get(path)?.promise ?? Promise.resolve([tree(path)])), worktreeDirty: vi.fn(async () => false) };
+  // Called inside every admitted read phase of project.list and project.status; a test may write the store there.
+  const placement = { hook: undefined as (() => void) | undefined, statusSummary: vi.fn(() => { placement.hook?.(); return { phase: "stopped", worktreePath: null, startedAt: null }; }) };
   const eligibility = createControllerOperationEligibility({ maintenance: () => false, stopping: () => false, configurationRestartRequired: () => false, runtime: () => undefined });
   const built = buildOperationsRuntime({ store, activeMode: mode, now: Date.now, logs: { controller() {} }, provider: null, eligibility,
-    projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git },
+    projectReads: { placement, git },
     requestBudget: new AuthenticationRequestBudget(16, 4), listeners: { api: () => true, unix: () => true, worker: () => true, mcp: () => true } });
-  if (!built.supported) throw new Error("unsupported");
+  if (!built.supported && mode !== "legacy") throw new Error("unsupported");
   const serve = async (handler: Parameters<typeof createServer>[1], stop: () => Promise<void>) => {
     const server = createServer(handler);
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -88,13 +90,15 @@ async function fixture(mode: "open" | "token" | "better-auth") {
       { requestInit: { headers: secret ? { Authorization: `Bearer ${secret}` } : {} } }));
     return c;
   };
-  const grant = (role: string, projectId: string) => admission.run(() => db.prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('agent',?,'project',?,?)").run(role, projectId, iso(NOW)));
-  const revoke = () => admission.run(() => db.prepare("DELETE FROM account_grants WHERE account_id='agent'").run());
+  const grantNow = (role: string, projectId: string) => db.prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('agent',?,'project',?,?)").run(role, projectId, iso(NOW));
+  const revokeNow = () => db.prepare("DELETE FROM account_grants WHERE account_id='agent'").run();
+  const grant = (role: string, projectId: string) => admission.run(() => grantNow(role, projectId));
+  const revoke = () => admission.run(revokeNow);
   const reparent = (id: string, parent: string) => admission.run(() => {
     db.prepare("UPDATE project_mapping_clock SET value=value+1 WHERE singleton=1").run();
     db.prepare("UPDATE projects SET parent_project_id=?,mapping_version=(SELECT value FROM project_mapping_clock WHERE singleton=1) WHERE id=?").run(parent, id);
   });
-  return { built, ids, git, gates, post, client, grant, revoke, reparent };
+  return { built, ids, git, gates, placement, admission, post, client, grant, revoke, grantNow, revokeNow, reparent };
 }
 const refusal = (category: string, status: number, reason: string, retry = "none") => ({ error: { category, status, reason, retry, effect: null } });
 const inputs = { "project.list": {}, "project.status": { projectId: "project-a" }, "project.worktrees": { projectId: "project-b" } } as const;
@@ -126,7 +130,7 @@ describe("project reads over every transport (D2a)", () => {
     expect((await c.callTool({ name: "project_list", arguments: {} })).structuredContent).toEqual({ items: [], nextCursor: null });
     const viaMcp = await c.callTool({ name: "project_worktrees", arguments: { projectId: "project-b" } });
     expect(viaMcp.isError).toBe(true); expect(viaMcp.structuredContent).toEqual(refusal("not_found", 404, "resource_not_found"));
-    expect(f.git.list).not.toHaveBeenCalled();
+    expect(f.git.listTrees).not.toHaveBeenCalled();
     await f.grant("reader", "project-a");
     const reader = (await f.post("api", "project.status", { projectId: "project-a" })).body as Record<string, unknown>;
     expect(reader).toMatchObject({ projectId: "project-a", writable: false, revision: 1 });
@@ -140,22 +144,20 @@ describe("project reads over every transport (D2a)", () => {
     const gate = deferred<unknown[]>(); f.gates.set("/repo/beta-repo", gate);
     const http = f.post("api", "project.worktrees", { projectId: "project-b" });
     const viaMcp = c.callTool({ name: "project_worktrees", arguments: { projectId: "project-b" } }).then(result => ({ result }), (error: Error) => ({ error }));
-    await vi.waitFor(() => expect(f.git.list).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(f.git.listTrees).toHaveBeenCalledTimes(1));
     await f.revoke();
     gate.resolve([tree("/repo/beta-repo")]);
     expect(await http).toEqual({ status: 404, body: refusal("not_found", 404, "resource_not_found") });
-    // The tool's refusal is written under the session.describe witness of D1a. Revocation also changed
-    // that witness, so the final gate refuses the whole response; either way no worktree is released.
+    // The tool's refusal is released by the tool's own fresh decision, as on HTTP, never replaced by the describe witness.
     const mcpResult = await viaMcp;
-    expect(mcpResult).not.toHaveProperty("result");
-    expect("error" in mcpResult && mcpResult.error.message).toMatch(/release_payload_changed/);
+    expect(mcpResult).toEqual({ result: expect.objectContaining({ isError: true, structuredContent: refusal("not_found", 404, "resource_not_found") }) });
     // Both callers shared one discovery of the repository.
-    expect(f.git.list).toHaveBeenCalledTimes(1);
+    expect(f.git.listTrees).toHaveBeenCalledTimes(1);
   });
 
   it("open: a cancelled caller leaves a shared discovery to the other, and a registration moved during discovery is a conflict", async () => {
     const f = await fixture("open");
-    const calls = (path: string) => f.git.list.mock.calls.filter(([each]) => each === path).length;
+    const calls = (path: string) => f.git.listTrees.mock.calls.filter(([each]) => each === path).length;
     const shared = deferred<unknown[]>(); f.gates.set("/repo/alpha", shared);
     const abort = new AbortController();
     const cancelled = f.post("api", "project.worktrees", { projectId: "project-a" }, { signal: abort.signal }).catch(error => error as Error);
@@ -174,5 +176,69 @@ describe("project reads over every transport (D2a)", () => {
     await f.reparent(f.ids.b, "project-a");
     moved.resolve([tree("/repo/beta-repo")]);
     expect(await pending).toEqual({ status: 409, body: refusal("conflict", 409, "resource_changed") });
+  });
+
+  it("better-auth: a project refusal stays the tool's own answer when unrelated authority changes before it is written", async () => {
+    const f = await fixture("better-auth"), c = await f.client();
+    // The refusal envelope is built outside admission; a grant on another project lands then and changes session.describe.
+    const idle = f.admission.idle.bind(f.admission);
+    let granted = 0;
+    vi.spyOn(f.admission, "idle").mockImplementation(async operation => {
+      if (granted++ === 0) await f.grant("reader", "project-b");
+      return idle(operation);
+    });
+    const hidden = await c.callTool({ name: "project_status", arguments: { projectId: "project-a" } });
+    expect(granted).toBeGreaterThan(0);
+    expect(hidden).toMatchObject({ isError: true, structuredContent: refusal("not_found", 404, "resource_not_found") });
+    expect(await f.post("api", "project.status", { projectId: "project-a" })).toEqual({ status: 404, body: refusal("not_found", 404, "resource_not_found") });
+    // The neighbour granted meanwhile is readable on both transports.
+    expect((await c.callTool({ name: "project_status", arguments: { projectId: "project-b" } })).structuredContent).toEqual((await f.post("api", "project.status", { projectId: "project-b" })).body);
+  });
+
+  it("better-auth: a read revoked between its buffered value and the write is refused by the tool's fresh decision", async () => {
+    const f = await fixture("better-auth"), c = await f.client();
+    await f.grant("reader", "project-a");
+    // Revoke inside the first admitted read phase, after its decision: the final read of the same tool decides again.
+    let calls = 0;
+    f.placement.hook = () => { if (calls++ === 0) f.revokeNow(); };
+    const outcome = await c.callTool({ name: "project_status", arguments: { projectId: "project-a" } }).then(result => ({ result }), (error: Error & { data?: unknown }) => ({ error }));
+    expect(calls).toBe(1);
+    expect(outcome).not.toHaveProperty("result");
+    const error = (outcome as { error: Error & { data?: unknown } }).error;
+    expect(error.message).toMatch(/resource_not_found/);
+    expect(error.data).toEqual(refusal("not_found", 404, "resource_not_found").error);
+    f.placement.hook = undefined;
+    expect(await f.post("api", "project.status", { projectId: "project-a" })).toEqual({ status: 404, body: refusal("not_found", 404, "resource_not_found") });
+  });
+
+  it("better-auth: HTTP and MCP decide alike for granted, hidden, missing, secrets-only and malformed requests", async () => {
+    const f = await fixture("better-auth"), c = await f.client();
+    await f.grant("reader", "project-a"); await f.grant("secrets", "project-b");
+    const cases: [string, Record<string, unknown>][] = [
+      ["project.list", {}], ["project.status", { projectId: "project-a" }], ["project.worktrees", { projectId: "project-a" }],
+      ["project.status", { projectId: "project-b" }], ["project.worktrees", { projectId: "project-b" }],
+      ["project.status", { projectId: "nope" }], ["project.status", { projectId: "a b" }], ["project.list", { limit: 0 }],
+    ];
+    for (const [operation, input] of cases) {
+      const api = await f.post("api", operation, input);
+      const viaMcp = await c.callTool({ name: tools[operation as keyof typeof tools], arguments: input });
+      expect(viaMcp.structuredContent, `${operation} ${JSON.stringify(input)}`).toEqual(api.body);
+      expect(Boolean(viaMcp.isError), operation).toBe(api.status !== 200);
+    }
+    const list = (await f.post("api", "project.list", {})).body as { items: { projectId: string }[] };
+    expect(list.items.map(item => item.projectId)).toEqual(["project-a"]);
+    expect((await f.post("api", "project.status", { projectId: "project-b" })).body).toEqual(refusal("forbidden", 403, "permission_denied"));
+    // The secrets-only project's repository was never discovered.
+    expect(f.git.listTrees.mock.calls.map(([path]) => path)).toEqual(["/repo/alpha", "/repo/alpha"]);
+  });
+
+  it("legacy: every listener refuses the project reads without running them", async () => {
+    const f = await fixture("legacy");
+    for (const operation of Object.keys(inputs) as (keyof typeof inputs)[]) {
+      for (const listener of ["api", "unix"] as const) {
+        expect(await f.post(listener, operation, inputs[operation]), `${listener} ${operation}`).toEqual({ status: 401, body: refusal("unauthenticated", 401, "unknown_mode", "reauthenticate") });
+      }
+    }
+    expect(f.git.listTrees).not.toHaveBeenCalled(); expect(f.placement.statusSummary).not.toHaveBeenCalled();
   });
 });

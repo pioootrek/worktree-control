@@ -258,11 +258,13 @@ A registration without a project appears only to full authority, as an item with
 write Knowledge there (`writable`), and per registration `selectedWorktreePath`,
 `startedAt` and `managedServer`. `launch` (executable and arguments) appears only
 with `config:read` on the project. `claimHolder` appears only with `claims:manage`
-and an active claim. `{"compact":true}` returns the list's registration entries
-instead. `project.worktrees` discovers Git worktrees on every call. For each
-registration it returns `discovery` (`complete` or `unavailable`) and up to 64
-worktrees in total with `path`, `branch`, `head`, `shortHead`, `detached`,
-`locked`, `prunable` and `dirty`.
+and an active claim, and names only the holder (`kind`, `accountId`), never the
+claim's reason or times. `{"compact":true}` returns the list's registration
+entries instead. `project.worktrees` discovers Git worktrees on every call. For
+each registration it returns `discovery` (`complete`, `partial` when Git could
+not read a tree's status, or `unavailable`) and up to 64 worktrees in total with
+`path`, `branch`, `head`, `shortHead`, `detached`, `locked`, `prunable` and
+`dirty` (null when its status could not be read).
 
 An account with no role on any project gets an empty list. A hidden project and a
 missing project both refuse `resource_not_found` (404). A project visible only
@@ -283,7 +285,9 @@ JSON
 ```
 
 A tool refusal is a tool result with `isError: true` and the public error as
-`structuredContent`. The local operator uses the CLI. Like `session describe`,
+`structuredContent`, decided by the tool itself as on HTTP. If authority
+changes between the buffered answer and its write, the request answers a
+JSON-RPC error carrying the fresh public error instead. The local operator uses the CLI. Like `session describe`,
 it goes through the private socket while a controller owns the lock and reads
 offline otherwise. Offline, every registration reports `phase: "stopped"`:
 
