@@ -7,7 +7,7 @@ import {
   OperationError, OperationRegistry, OperationRunner, ProviderSessionVerifier, sessionDescribe,
   sqliteGrants, SqliteResourceResolver, admissionFailureOf, classify, mintOfflineContext, publicError, resolveAcceptance,
   type AuthenticationContext, type ListenerBoundary, type OperationRuntime, type PresentedCredentials, type RegistrationPlacementReader,
-  type WorktreeLister,
+  type WorktreeGit,
 } from "../modules/operations";
 import { authenticationModes, type AuthenticationMode, type ListenerKind, type PublicOperationError } from "../../shared/contracts/operations";
 import { CONTROLLER_OPERATION_SESSION_POLICY, ControllerOperationSessionResolutionError, type ControllerOperationSessionAuthority, type ProviderSessionEligibility, type createControllerOperationEligibility } from "./authentication-provider-lifetime";
@@ -32,7 +32,7 @@ export interface OperationsRuntimeOptions {
    * manager's in-memory placement and its Git reader; offline callers pass a
    * stopped placement (no controller runs managed servers) and their own reader.
    */
-  projectReads: { placement: RegistrationPlacementReader; git: WorktreeLister };
+  projectReads: { placement: RegistrationPlacementReader; git: WorktreeGit };
 }
 
 function holds(call: () => unknown): boolean {

@@ -55,7 +55,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const state = { maintenance: false, stopping: false, configChanged: false, offset: 0 };
   const eligibility = createControllerOperationEligibility({ maintenance: () => state.maintenance, stopping: () => state.stopping, configurationRestartRequired: () => state.configChanged, runtime: () => undefined });
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + state.offset, logs: { controller() {} }, provider: null,
-    eligibility, projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { list: async () => [] } }, requestBudget: new AuthenticationRequestBudget(16, 4), listeners: { mcp: () => true, api: () => true } });
+    eligibility, projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { listTrees: async () => [], worktreeDirty: async () => false } }, requestBudget: new AuthenticationRequestBudget(16, 4), listeners: { mcp: () => true, api: () => true } });
   if (!built.supported) throw new Error("fixture mode unsupported");
   const handles: Promise<void>[] = [];
   const hooks: { beforeHandle?: (request: IncomingMessage, response: ServerResponse) => void; beforeFinal?: (response: ServerResponse) => void | Promise<void>; beforeMint?: (signal?: AbortSignal) => void | Promise<void> } = {};

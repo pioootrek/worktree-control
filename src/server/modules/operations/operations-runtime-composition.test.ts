@@ -82,7 +82,7 @@ async function fixture(mode = "better-auth", withProvider = false, admissionTime
   const logs = { controller: vi.fn() };
   const options: OperationsRuntimeOptions = { store, activeMode: mode, now: () => clock.now, logs,
     listeners: { api: () => true, mcp: () => true, worker: () => true, unix: () => true },
-    eligibility, projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { list: async () => [] } }, requestBudget: new AuthenticationRequestBudget(16, 4), provider: withProvider ? {
+    eligibility, projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { listTrees: async () => [], worktreeDirty: async () => false } }, requestBudget: new AuthenticationRequestBudget(16, 4), provider: withProvider ? {
       ...providerRuntime, providerId: "better-auth", reader: store.authenticationProviderStorage(),
       resolveRequest: () => ({ result: Promise.resolve(null), settled: Promise.resolve() }),
     } : null };

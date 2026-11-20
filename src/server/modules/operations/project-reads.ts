@@ -51,9 +51,21 @@ export interface RegistrationPlacementReader {
 
 /** One discovered worktree, before the allowlist. */
 export type WorktreeFact = Readonly<Record<string, unknown>>;
-/** Bounded, coalesced worktree discovery of one repository; rejects on failure or abort. */
+/**
+ * What discovery found for one repository. `partial`: Git listed the trees but
+ * could not read the status of at least one, released with `dirty: null`.
+ * `truncated`: trees were left out by the per-repository bound or the call's budget.
+ */
+export type RepositoryDiscovery =
+  | { state: "unavailable" }
+  | { state: "complete" | "partial"; worktrees: readonly WorktreeFact[]; truncated: boolean };
+/**
+ * Bounded, coalesced worktree discovery of one project's repositories, in the
+ * given order, with one budget of status reads across all of them. Answers one
+ * entry per path; rejects with `busy` on capacity and on abort.
+ */
 export interface WorktreeDiscoveryPort {
-  discover(repositoryPath: string, signal: AbortSignal): Promise<{ worktrees: readonly WorktreeFact[]; truncated: boolean }>;
+  discover(repositoryPaths: readonly string[], budget: number, signal: AbortSignal): Promise<readonly RepositoryDiscovery[]>;
 }
 
 export interface ProjectReadPorts {
@@ -63,7 +75,8 @@ export interface ProjectReadPorts {
 }
 
 interface CatalogProject { id: ProjectId; name: string; status: "active" | "archived"; revision: number }
-interface CatalogClaim { kind: "human" | "agent"; accountId: string | null; reason: string | null; createdAt: string; expiresAt: string | null }
+/** Holder identity only (dispositions 4.9): the claim's reason, owner and times are never read into the operation. */
+interface CatalogClaim { kind: "human" | "agent"; accountId: string | null }
 interface CatalogRegistration {
   id: RegistrationId;
   /** `undefined`: a stored parent the contract cannot name. */
@@ -109,11 +122,9 @@ function projectRow(row: unknown): CatalogProject | null {
 
 function claimRow(row: unknown): CatalogClaim | null {
   if (row === null) return null;
-  const kind = own(row, "kind"), principal = own(row, "principalId"), reason = own(row, "reason"), createdAt = own(row, "createdAt"), expiresAt = own(row, "expiresAt");
-  if ((kind !== "human" && kind !== "agent") || !optionalText(principal) || !optionalText(reason) || !isText(createdAt) || !optionalText(expiresAt)) {
-    throw corrupt("invalid_stored_registration");
-  }
-  return { kind, accountId: principal === null ? null : (tryId(accountId, principal) ?? null), reason, createdAt, expiresAt };
+  const kind = own(row, "kind"), principal = own(row, "principalId");
+  if ((kind !== "human" && kind !== "agent") || !optionalText(principal)) throw corrupt("invalid_stored_registration");
+  return { kind, accountId: principal === null ? null : (tryId(accountId, principal) ?? null) };
 }
 
 function registrationRow(row: unknown): CatalogRegistration | null {
@@ -255,6 +266,8 @@ function listOperation(ports: ProjectReadPorts): ReadOperation<ListInput, ListIn
 interface StatusInput { projectId: ProjectId; compact: boolean }
 interface StatusInternal { input: StatusInput; project: CatalogProject; registrations: Placed[]; truncated: boolean }
 
+const LAUNCH_KEYS = Object.freeze(["executable", "args"] as const);
+const CLAIM_HOLDER_KEYS = Object.freeze(["kind", "accountId"] as const);
 const statusKeys = Object.freeze(["projectId", "name", "status", "revision", "writable", "compact", "registrations", "registrationsTruncated"] as const);
 
 function statusDetail(registration: Placed, projectId: ProjectId, release: ReleaseContext): RegistrationStatus {
@@ -262,11 +275,10 @@ function statusDetail(registration: Placed, projectId: ProjectId, release: Relea
     ...summary(registration), selectedWorktreePath: registration.selectedWorktreePath, startedAt: registration.startedAt, managedServer: registration.managedServer,
   };
   // Gated categories (section 4.9): the raw command only with config:read, holder identity only with claims:manage.
-  if (release.can("config:read", projectId)) detail.launch = { executable: registration.executable, args: [...registration.args] };
+  if (release.can("config:read", projectId)) detail.launch = pick({ executable: registration.executable, args: [...registration.args] }, LAUNCH_KEYS);
   if (registration.claim && release.can("claims:manage", projectId)) {
-    const { kind, accountId: holder, reason, createdAt, expiresAt } = registration.claim;
-    const claimHolder: ClaimHolder = { kind, accountId: holder as ClaimHolder["accountId"], reason, createdAt, expiresAt };
-    detail.claimHolder = claimHolder;
+    // The identity allowlist: who holds the claim, nothing about why or until when.
+    detail.claimHolder = pick({ kind: registration.claim.kind, accountId: registration.claim.accountId as ClaimHolder["accountId"] }, CLAIM_HOLDER_KEYS);
   }
   return detail;
 }
@@ -307,7 +319,8 @@ function statusOperation(ports: ProjectReadPorts): ReadOperation<StatusInput, St
 interface WorktreesInput { projectId: ProjectId }
 interface PlannedRegistration { id: RegistrationId; mappingVersion: number; repositoryPath: string }
 interface WorktreesPlan { projectId: ProjectId; registrations: PlannedRegistration[]; truncated: boolean }
-interface WorktreesInternal { plan: WorktreesPlan; results: Array<{ id: RegistrationId; worktrees: DiscoveredWorktree[] | null; truncated: boolean }> }
+interface WorktreesResult { id: RegistrationId; discovery: RegistrationWorktrees["discovery"]; worktrees: DiscoveredWorktree[]; truncated: boolean }
+interface WorktreesInternal { plan: WorktreesPlan; results: WorktreesResult[] }
 
 const worktreesKeys = Object.freeze(["projectId", "registrations", "registrationsTruncated"] as const);
 const WORKTREE_KEYS = Object.freeze(["path", "branch", "head", "shortHead", "detached", "locked", "prunable", "dirty"] as const);
@@ -317,7 +330,7 @@ function worktreeFact(fact: WorktreeFact): DiscoveredWorktree {
   const path = own(fact, "path"), branch = own(fact, "branch"), head = own(fact, "head"), shortHead = own(fact, "shortHead");
   const detached = own(fact, "detached"), locked = own(fact, "locked"), prunable = own(fact, "prunable"), dirty = own(fact, "dirty");
   if (!isText(path) || !optionalText(branch) || !isText(head) || !isText(shortHead) || typeof detached !== "boolean" || typeof locked !== "boolean"
-    || typeof prunable !== "boolean" || typeof dirty !== "boolean") throw new Error("Malformed worktree.");
+    || typeof prunable !== "boolean" || (typeof dirty !== "boolean" && dirty !== null)) throw new Error("Malformed worktree.");
   return pick({ path, branch, head, shortHead, detached, locked, prunable, dirty }, WORKTREE_KEYS);
 }
 
@@ -339,16 +352,31 @@ function worktreesOperation(ports: ProjectReadPorts): QueryOperation<WorktreesIn
       return { projectId: input.projectId, ...plannedRegistrations(ports.catalog, scope.now, input.projectId) };
     },
     async work(plan, signal) {
-      // Every call discovers (no refresh operation); discovery itself is bounded and coalesced per repository.
-      const results = await Promise.all(plan.registrations.map(async registration => {
-        try {
-          const found = await ports.discovery.discover(registration.repositoryPath, signal);
-          return { id: registration.id, worktrees: found.worktrees.map(worktreeFact), truncated: found.truncated };
-        } catch (error) {
-          if (signal.aborted) throw error;
-          return { id: registration.id, worktrees: null, truncated: false };
-        }
-      }));
+      // Every call discovers (no refresh operation). One discovery for the whole project, so the
+      // budget of MAX_PROJECT_WORKTREES status reads covers all its registrations, not each one.
+      let found: unknown;
+      try {
+        found = await ports.discovery.discover(plan.registrations.map(registration => registration.repositoryPath), MAX_PROJECT_WORKTREES, signal);
+      } catch (error) {
+        // Cancellation and capacity keep their public answer; anything else says nothing about its cause.
+        if (signal.aborted || error instanceof OperationError) throw error;
+        throw new OperationError("unavailable", "discovery_failed", { retry: "retry" });
+      }
+      if (!Array.isArray(found) || found.length !== plan.registrations.length) throw corrupt("discovery_failed");
+      let remaining = MAX_PROJECT_WORKTREES;
+      const results = plan.registrations.map((registration, index): WorktreesResult => {
+        const unavailable: WorktreesResult = { id: registration.id, discovery: "unavailable", worktrees: [], truncated: false };
+        const entry: unknown = found[index], state = own(entry, "state"), facts = own(entry, "worktrees"), truncated = own(entry, "truncated");
+        if (state !== "complete" && state !== "partial") return unavailable;
+        if (!Array.isArray(facts) || typeof truncated !== "boolean") return unavailable;
+        // A malformed tree fails that registration's discovery, never the call.
+        let worktrees: DiscoveredWorktree[];
+        try { worktrees = facts.map(worktreeFact); } catch { return unavailable; }
+        // The port answers within its budget; the cut here keeps the bound whatever it answers.
+        const kept = worktrees.slice(0, remaining);
+        remaining -= kept.length;
+        return { id: registration.id, discovery: state, worktrees: kept, truncated: truncated || kept.length < worktrees.length };
+      });
       return { plan, results };
     },
     publicKeys: worktreesKeys,
@@ -363,13 +391,9 @@ function worktreesOperation(ports: ProjectReadPorts): QueryOperation<WorktreesIn
           return registration.id === planned.id && registration.mappingVersion === planned.mappingVersion && registration.repositoryPath === planned.repositoryPath;
         });
       if (!same) throw new OperationError("conflict", "resource_changed");
-      let remaining = MAX_PROJECT_WORKTREES;
-      const entries: RegistrationWorktrees[] = results.map(result => {
-        if (result.worktrees === null) return { registrationId: result.id, discovery: "unavailable", worktrees: [], worktreesTruncated: false };
-        const worktrees = result.worktrees.slice(0, remaining);
-        remaining -= worktrees.length;
-        return { registrationId: result.id, discovery: "complete", worktrees, worktreesTruncated: result.truncated || worktrees.length < result.worktrees.length };
-      });
+      const entries: RegistrationWorktrees[] = results.map(result => ({
+        registrationId: result.id, discovery: result.discovery, worktrees: result.worktrees, worktreesTruncated: result.truncated,
+      }));
       return pick({ projectId: plan.projectId, registrations: entries, registrationsTruncated: plan.truncated }, worktreesKeys);
     },
   };

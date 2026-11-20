@@ -131,7 +131,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   }
   const logs = { controller: vi.fn() };
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs,
-    eligibility, projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { list: async () => [] } }, requestBudget: new AuthenticationRequestBudget(16, 4), provider: mode === "better-auth" ? provider : null, listeners: { mcp: () => state.mcpOpen, worker: () => state.workerOpen, api: () => apiOpen, unix: () => unixOpen } });
+    eligibility, projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { listTrees: async () => [], worktreeDirty: async () => false } }, requestBudget: new AuthenticationRequestBudget(16, 4), provider: mode === "better-auth" ? provider : null, listeners: { mcp: () => state.mcpOpen, worker: () => state.workerOpen, api: () => apiOpen, unix: () => unixOpen } });
   const hooks: { beforeMint?: (signal: AbortSignal | undefined) => void; afterMint?: () => void | Promise<void>; legacy?: (body: unknown) => unknown } = {};
   const runtime = { ...built, mint: async (...args: Parameters<Extract<typeof built, { supported: true }>["mint"]>) => {
     hooks.beforeMint?.(args[3].signal);

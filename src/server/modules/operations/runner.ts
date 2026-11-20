@@ -136,7 +136,27 @@ export interface ReadReleaseOptions<P> extends RunOptions {
   expectedCanonical?: string;
   /** Synchronous write of the fresh released value (or of the validated buffered payload). Never retried. */
   commit(value: P): void;
+  /**
+   * Buffered delivery of a refusal (MCP). Without it a refusal is only
+   * returned. With it, a refusal of the operation itself is staged outside
+   * admission and committed only inside a fresh admitted phase of the same
+   * operation and input that reproduces the identical public error; then the
+   * result is `committed`. When the fresh phase answers anything else, nothing
+   * staged is committed and that fresh answer is returned as `refused`
+   * (`conflict`/`release_payload_changed` when it would now succeed). The
+   * release policy's own refusals (eligibility, deadline, cancellation) are
+   * never staged. Not combined with `expectedCanonical`.
+   */
+  refusal?: RefusalRelease;
 }
+export interface RefusalRelease {
+  /** Prepares the refusal outside admission, for example a protocol envelope. Must not write to the caller. */
+  stage(error: PublicOperationError): Promise<void>;
+  /** Synchronous write of the staged refusal, inside the admitted phase that reproduced it. Never retried. */
+  commit(error: PublicOperationError): void;
+}
+/** Refusals that belong to the request's release policy, not to the operation: never staged as the operation's answer. */
+const RELEASE_POLICY_REASONS: readonly string[] = Object.freeze(["release_not_eligible", "release_timed_out", "request_cancelled"]);
 export type ReadReleaseResult =
   | { status: "committed" }
   | { status: "refused"; error: PublicOperationError }
@@ -170,12 +190,33 @@ function gateOf(operation: { requirement: OperationRequirement; excludedListener
   return { requirement: operation.requirement, excluded: operation.excludedListeners };
 }
 
+/** A read's or query's parsed input and references: everything before its first admitted phase. */
+interface Planned<I> { input: I; refs: Readonly<Record<string, ResourceRef>>; gate: Gate }
+
+/** How far a query got, so a staged refusal can be reproduced by the same step. */
+interface QueryProgress<I> {
+  step: "input" | "plan" | "work" | "release" | "staged";
+  planned?: Planned<I>;
+  resources?: ResolvedResources;
+}
+
 /** What steps 1 and 2 of a query leave for its release. The work result never leaves the runner unprojected. */
 interface QueryWorked<R> {
   gate: Gate;
   refs: Readonly<Record<string, ResourceRef>>;
   resources: ResolvedResources;
   outcome: { ok: true; value: R } | { ok: false; error: unknown };
+}
+
+/** A validated copy of a refusal delivery, or undefined. Invalid or combined with `expectedCanonical`: `invalid_input`. */
+function refusalOf(value: unknown, expectedCanonical: string | undefined): RefusalRelease | undefined {
+  if (value === undefined) return undefined;
+  const { stage, commit } = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
+  if (expectedCanonical !== undefined || typeof stage !== "function" || typeof commit !== "function") throw new OperationError("invalid_request", "invalid_input");
+  return Object.freeze({
+    stage: (error: PublicOperationError) => Reflect.apply(stage, value, [error]) as Promise<void>,
+    commit: (error: PublicOperationError) => { Reflect.apply(commit, value, [error]); },
+  });
 }
 
 /** The release policy of a request, checked at the start of an admitted phase (decision Y). */
@@ -657,26 +698,44 @@ export class OperationRunner {
    */
   async readRelease<I, R, P extends object>(operation: Operation<I, R, P> | StreamOperation<I, R, P>, context: AuthenticationContext,
     raw: unknown, options: ReadReleaseOptions<P>): Promise<ReadReleaseResult> {
+    const { signal } = options;
+    let refusal: RefusalRelease | undefined, check: ((now: number) => void) | undefined, deadline = 0;
+    let gate: Gate | undefined, planned: Planned<I> | undefined;
     try {
       if (operation.kind !== "read") throw new OperationError("internal", "invalid_operation");
+      const read = operation as ReadOperation<I, R, P>;
       // Capture the call's policy and payload before waiting for admission.
-      const { eligible, connected, deadline, expectedCanonical, commit, signal, idempotencyKey } = options;
+      const { eligible, connected, expectedCanonical, commit, idempotencyKey } = options;
+      deadline = options.deadline;
       if (typeof eligible !== "function" || typeof connected !== "function" || typeof commit !== "function"
         || !Number.isFinite(deadline) || (expectedCanonical !== undefined && typeof expectedCanonical !== "string")) {
         throw new OperationError("invalid_request", "invalid_input");
       }
-      const check = releaseCheck(options, eligible, connected, deadline, signal);
-      const result = await this.readWith(operation, context, raw, { signal, idempotencyKey }, value => {
+      refusal = refusalOf(options.refusal, expectedCanonical);
+      check = releaseCheck(options, eligible, connected, deadline, signal);
+      gate = gateOf(read);
+      if (!this.registeredFor(read, context)) throw notRegistered();
+      this.idempotency(false, idempotencyKey);
+      planned = this.planned(read, raw, gate);
+      const ready = planned, policy = check;
+      return await this.runtime.admission.run(() => {
+        const value = this.readPhase(read, context, ready, signal, policy);
         // canonicalJson runs the strict serializer and sorts object keys;
         // serializeRelease alone returns data, not canonical comparison text.
         if (expectedCanonical !== undefined && canonicalJson(value) !== expectedCanonical) {
           throw new OperationError("conflict", "release_payload_changed");
         }
         return this.commitRelease(options, commit, value, deadline);
-      }, check);
-      return result.ok ? result.value : { status: "refused", error: result.error };
+      }, { signal });
     } catch (error) {
-      return { status: "refused", error: failure(error, null, undefined) };
+      const refused = failure(error, null, signal);
+      if (!refusal || !gate || !check) return { status: "refused", error: refused };
+      const read = operation as ReadOperation<I, R, P>, policy = check, ready = planned, frozenGate = gate;
+      // Reproduced in a fresh phase: the full read when its input parsed, otherwise the authority and policy checks before the same input refusal.
+      return this.releaseRefusal(refusal, refused, signal, deadline, () => {
+        if (!ready) { this.prepare(context, frozenGate, policy); throw error; }
+        this.readPhase(read, context, ready, signal, policy);
+      });
     }
   }
 
@@ -691,20 +750,53 @@ export class OperationRunner {
     try {
       if (!this.registeredFor(operation, context)) throw notRegistered();
       this.idempotency(false, options.idempotencyKey);
-      const input = this.parse(operation.parse, raw);
-      const refs = this.references(operation, input);
-      const gate = gateOf(operation);
-      const value = await this.runtime.admission.run(() => {
-        const phase = this.decideOn(this.prepare(context, gate, check), gate, refs);
-        const live: Liveness = { open: true };
-        let result: R;
-        try { result = operation.read(input, this.scope(phase, signal, live)); } finally { live.open = false; }
-        if (isThenable(result)) { absorb(result); throw new OperationError("internal", "read_not_synchronous"); }
-        return finish(releaseValue<P>(synchronous(operation.project(result, phase.release), "projection_not_synchronous"), operation.publicKeys));
-      }, { signal });
+      const planned = this.planned(operation, raw, gateOf(operation));
+      const value = await this.runtime.admission.run(() => finish(this.readPhase(operation, context, planned, signal, check)), { signal });
       return { ok: true, value, replayed: false };
     } catch (error) {
       return { ok: false, error: failure(error, null, signal) };
+    }
+  }
+
+  /** Parse and references, before any admitted phase. Input refusals are `invalid_request`. */
+  private planned<I>(operation: { parse(raw: unknown): I; resources(input: I): Readonly<Record<string, ResourceRef>> }, raw: unknown, gate: Gate): Planned<I> {
+    const input = this.parse(operation.parse, raw);
+    return { input, refs: this.references(operation, input), gate };
+  }
+
+  /** The admitted phase of a read: a fresh decision (`check` first), the read and its projection. Must run inside an admitted phase. */
+  private readPhase<I, R, P extends object>(operation: ReadOperation<I, R, P>, context: AuthenticationContext, planned: Planned<I>,
+    signal: AbortSignal | undefined, check?: (now: number) => void): P {
+    const phase = this.decideOn(this.prepare(context, planned.gate, check), planned.gate, planned.refs);
+    const live: Liveness = { open: true };
+    let result: R;
+    try { result = operation.read(planned.input, this.scope(phase, signal, live)); } finally { live.open = false; }
+    if (isThenable(result)) { absorb(result); throw new OperationError("internal", "read_not_synchronous"); }
+    return releaseValue<P>(synchronous(operation.project(result, phase.release), "projection_not_synchronous"), operation.publicKeys);
+  }
+
+  /**
+   * Buffered delivery of an operation's refusal: `stage` outside admission,
+   * then a fresh admitted phase that runs `reproduce` (which throws the
+   * operation's current refusal) and commits the staged refusal only when the
+   * fresh public error is identical. Never throws.
+   */
+  private async releaseRefusal(refusal: RefusalRelease, error: PublicOperationError, signal: AbortSignal | undefined, deadline: number,
+    reproduce: () => void): Promise<ReadReleaseResult> {
+    if (signal?.aborted || RELEASE_POLICY_REASONS.includes(error.reason)) return { status: "refused", error };
+    try {
+      const expected = canonicalJson(error);
+      await this.runtime.admission.idle(async () => { await Reflect.apply(refusal.stage, refusal, [error]); });
+      if (signal?.aborted) throw cancelled();
+      return await this.runtime.admission.run((): ReadReleaseResult => {
+        let fresh: PublicOperationError | null = null;
+        try { reproduce(); } catch (thrown) { fresh = failure(thrown, null, signal); }
+        if (fresh === null) throw new OperationError("conflict", "release_payload_changed");
+        if (canonicalJson(fresh) !== expected) return { status: "refused", error: fresh };
+        return this.commitRelease(refusal, refusal.commit, error, deadline);
+      }, { signal });
+    } catch (thrown) {
+      return { status: "refused", error: failure(thrown, null, signal) };
     }
   }
 
@@ -731,21 +823,18 @@ export class OperationRunner {
 
   /** Steps 1 and 2 of a query: the admitted authorization and plan, then the bounded work outside admission. */
   private async queryWork<I, R, P extends object>(operation: QueryOperation<I, R, P>, context: AuthenticationContext, raw: unknown,
-    signal: AbortSignal | undefined, check?: (now: number) => void): Promise<QueryWorked<R>> {
+    signal: AbortSignal | undefined, check?: (now: number) => void, progress?: QueryProgress<I>): Promise<QueryWorked<R>> {
     const { admission } = this.runtime;
     const work: unknown = operation.work, timeout: unknown = operation.timeoutMs;
     if (typeof work !== "function" || typeof operation.plan !== "function" || (timeout !== undefined && (!Number.isSafeInteger(timeout) || (timeout as number) < 1))) {
       throw new OperationError("internal", "invalid_operation");
     }
-    const input = this.parse(operation.parse, raw);
-    const refs = this.references(operation, input);
     const gate = gateOf(operation);
-    const first = await admission.run(() => {
-      const phase = this.decideOn(this.prepare(context, gate, check), gate, refs);
-      const live: Liveness = { open: true };
-      try { return { phase, plan: synchronous(operation.plan(input, this.scope(phase, signal, live)), "plan_not_synchronous") }; } finally { live.open = false; }
-    }, { signal });
+    const planned = this.planned(operation, raw, gate);
+    if (progress) { progress.planned = planned; progress.step = "plan"; }
+    const first = await admission.run(() => this.queryStart(operation, context, planned, signal, check), { signal });
     if (signal?.aborted) throw cancelled();
+    if (progress) { progress.resources = first.phase.resources; progress.step = "work"; }
 
     // 2. The asynchronous work, outside admission, bounded and cancellable. A caller that
     //    already holds admission (`run` joins it) is suspended through `idle`, so other
@@ -775,7 +864,16 @@ export class OperationRunner {
         signal?.removeEventListener("abort", onAbort);
       }
     });
-    return { gate, refs, resources: first.phase.resources, outcome };
+    if (progress) progress.step = "release";
+    return { gate, refs: planned.refs, resources: first.phase.resources, outcome };
+  }
+
+  /** Step 1 of a query: a fresh decision (`check` first) and the synchronous plan. Must run inside an admitted phase. */
+  private queryStart<I, R, P extends object>(operation: QueryOperation<I, R, P>, context: AuthenticationContext, planned: Planned<I>,
+    signal: AbortSignal | undefined, check?: (now: number) => void): { phase: Phase; plan: unknown } {
+    const phase = this.decideOn(this.prepare(context, planned.gate, check), planned.gate, planned.refs);
+    const live: Liveness = { open: true };
+    try { return { phase, plan: synchronous(operation.plan(planned.input, this.scope(phase, signal, live)), "plan_not_synchronous") }; } finally { live.open = false; }
   }
 
   /**
@@ -807,33 +905,58 @@ export class OperationRunner {
   async queryRelease<I, R, P extends object>(operation: AnyOperation, context: AuthenticationContext, raw: unknown,
     options: ReadReleaseOptions<P> & { stage?(value: P): Promise<void> }): Promise<ReadReleaseResult> {
     const { signal } = options;
+    const progress: QueryProgress<I> = { step: "input" };
+    let refusal: RefusalRelease | undefined, check: ((now: number) => void) | undefined, deadline = 0;
+    let worked: QueryWorked<R> | undefined;
+    const query = operation as QueryOperation<I, R, P>;
     try {
       if (operation.kind !== "query") throw new OperationError("internal", "invalid_operation");
-      const query = operation as QueryOperation<I, R, P>;
-      const { eligible, connected, deadline, commit, stage, idempotencyKey } = options;
+      const { eligible, connected, commit, stage, idempotencyKey } = options;
+      deadline = options.deadline;
       if (typeof eligible !== "function" || typeof connected !== "function" || typeof commit !== "function"
         || !Number.isFinite(deadline) || (stage !== undefined && typeof stage !== "function") || options.expectedCanonical !== undefined) {
         throw new OperationError("invalid_request", "invalid_input");
       }
+      refusal = refusalOf(options.refusal, undefined);
+      check = releaseCheck(options, eligible, connected, deadline, signal);
       if (!this.registeredFor(query, context)) throw notRegistered();
       this.idempotency(false, idempotencyKey);
-      const check = releaseCheck(options, eligible, connected, deadline, signal);
-      const worked = await this.queryWork(query, context, raw, signal, check);
+      const policy = check;
+      const done = await this.queryWork(query, context, raw, signal, policy, progress);
+      worked = done;
       const { admission } = this.runtime;
       let expected: string | undefined;
       if (stage) {
-        const staged = await admission.run(() => this.queryPhase(query, context, worked, signal, check), { signal });
+        const staged = await admission.run(() => this.queryPhase(query, context, done, signal, policy), { signal });
         expected = canonicalJson(staged);
+        // From here a refusal is never staged: `stage` already prepared this call's one envelope.
+        progress.step = "staged";
         await admission.idle(async () => { await Reflect.apply(stage, options, [staged]); });
         if (signal?.aborted) throw cancelled();
       }
       return await admission.run((): ReadReleaseResult => {
-        const value = this.queryPhase(query, context, worked, signal, check);
+        const value = this.queryPhase(query, context, done, signal, policy);
         if (expected !== undefined && canonicalJson(value) !== expected) throw new OperationError("conflict", "release_payload_changed");
         return this.commitRelease(options, commit, value, deadline);
       }, { signal });
     } catch (error) {
-      return { status: "refused", error: failure(error, null, signal) };
+      const refused = failure(error, null, signal);
+      if (!refusal || !check || progress.step === "staged") return { status: "refused", error: refused };
+      const policy = check, { step, planned, resources } = progress, done = worked;
+      // Reproduced by the step that refused, in a fresh admitted phase; the work never runs again.
+      return this.releaseRefusal(refusal, refused, signal, deadline, () => {
+        if (step === "release" && done) { this.queryPhase(query, context, done, signal, policy); return; }
+        if (step === "plan" && planned) { this.queryStart(query, context, planned, signal, policy); return; }
+        if (step === "work" && planned && resources) {
+          // The work itself failed (a timeout or cancellation): the same decision on the same resolution, then the same failure.
+          const phase = this.decideOn(this.prepare(context, planned.gate, policy), planned.gate, planned.refs);
+          if (!sameResolution(resources, phase.resources)) throw new OperationError("conflict", "resource_changed");
+          throw error;
+        }
+        // Input refusals: the authority and policy checks, then the same refusal.
+        this.prepare(context, gateOf(query), policy);
+        throw error;
+      });
     }
   }
 

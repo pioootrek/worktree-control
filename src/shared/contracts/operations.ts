@@ -216,14 +216,15 @@ export interface ProjectListItem {
 }
 export interface ProjectListResult { items: ProjectListItem[]; nextCursor: string | null }
 
-/** Holder identity of another claim. Released only with `claims:manage` on the project. */
+/**
+ * Holder identity of another claim (dispositions 4.9), released only with
+ * `claims:manage` on the project. Identity only: never the claim's reason,
+ * owner string, times, lease or credential.
+ */
 export interface ClaimHolder {
   kind: "human" | "agent";
   /** The holder's account, when the claim is bound to one that the contract can name; otherwise null. */
   accountId: AccountId | null;
-  reason: string | null;
-  createdAt: string;
-  expiresAt: string | null;
 }
 /** `project.status` detail of one registration. Gated fields are absent, never null, when not released. */
 export interface RegistrationStatus extends RegistrationSummary {
@@ -257,12 +258,17 @@ export interface DiscoveredWorktree {
   detached: boolean;
   locked: boolean;
   prunable: boolean;
-  dirty: boolean;
+  /** Null when Git could not read the tree's status (its registration is then `partial`). */
+  dirty: boolean | null;
 }
 export interface RegistrationWorktrees {
   registrationId: RegistrationId;
-  /** `unavailable`: discovery failed for this registration; nothing about the failure is released. */
-  discovery: "complete" | "unavailable";
+  /**
+   * `complete`: every released tree has its status. `partial`: Git listed the
+   * trees but could not read the status of at least one (`dirty: null`).
+   * `unavailable`: the listing failed; nothing about the failure is released.
+   */
+  discovery: "complete" | "partial" | "unavailable";
   worktrees: DiscoveredWorktree[];
   worktreesTruncated: boolean;
 }

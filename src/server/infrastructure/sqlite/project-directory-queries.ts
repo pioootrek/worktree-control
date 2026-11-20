@@ -164,20 +164,17 @@ export interface CatalogRegistrationRow {
   readonly executable: unknown;
   readonly argsJson: unknown;
   readonly selectedWorktreePath: unknown;
-  /** The active claim, or null. Never the owner, lease token or credential. */
+  /** The active claim's holder identity, or null. Never its reason, owner, times, lease token or credential. */
   readonly claim: {
     readonly kind: unknown;
     readonly principalId: unknown;
-    readonly reason: unknown;
-    readonly createdAt: unknown;
-    readonly expiresAt: unknown;
   } | null;
 }
 
 type CatalogRegistrationSql = {
   id: unknown; parent_project_id: unknown; mapping_version: unknown; name: unknown; repository_path: unknown; port: unknown;
   launch_preset: unknown; executable: unknown; args_json: unknown; selected_worktree_path: unknown;
-  claim_id: unknown; claim_kind: unknown; claim_principal: unknown; claim_reason: unknown; claim_created: unknown; claim_expires: unknown;
+  claim_id: unknown; claim_kind: unknown; claim_principal: unknown;
 };
 
 /*
@@ -226,8 +223,8 @@ export class ProjectCatalogQueries {
     const where = projectId === undefined ? "" : "WHERE p.parent_project_id=@project";
     const rows = this.database.prepare(`SELECT p.id,p.parent_project_id,p.mapping_version,p.name,p.repository_path,p.port,p.launch_preset,
         p.executable,p.args_json,p.selected_worktree_path,
-        c.id AS claim_id,c.kind AS claim_kind,c.principal_id AS claim_principal,c.reason AS claim_reason,c.created_at AS claim_created,c.expires_at AS claim_expires
-      FROM projects p LEFT JOIN (SELECT r.* FROM reservations r WHERE ${ACTIVE_CLAIM}) c ON c.project_id=p.id
+        c.id AS claim_id,c.kind AS claim_kind,c.principal_id AS claim_principal
+      FROM projects p LEFT JOIN (SELECT r.id,r.project_id,r.kind,r.principal_id FROM reservations r WHERE ${ACTIVE_CLAIM}) c ON c.project_id=p.id
       ${where} ORDER BY p.id LIMIT @limit`)
       .all({ now: text(now), limit: PROJECT_CATALOG_REGISTRATION_LIMIT + 1, ...(projectId === undefined ? {} : { project: text(projectId) }) }) as CatalogRegistrationSql[];
     if (rows.length > PROJECT_CATALOG_REGISTRATION_LIMIT) throw new Error("Registration catalog exceeds its limit.");
@@ -236,7 +233,7 @@ export class ProjectCatalogQueries {
     return rows.map(row => ({
       id: row.id, projectId: row.parent_project_id, mappingVersion: row.mapping_version, name: row.name, repositoryPath: row.repository_path,
       port: row.port, launchPreset: row.launch_preset, executable: row.executable, argsJson: row.args_json, selectedWorktreePath: row.selected_worktree_path,
-      claim: row.claim_id === null ? null : { kind: row.claim_kind, principalId: row.claim_principal, reason: row.claim_reason, createdAt: row.claim_created, expiresAt: row.claim_expires },
+      claim: row.claim_id === null ? null : { kind: row.claim_kind, principalId: row.claim_principal },
     }));
   }
 }

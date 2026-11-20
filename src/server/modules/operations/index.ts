@@ -44,9 +44,9 @@ export {
 export { MAX_DESCRIBED_BYTES, MAX_DESCRIBED_PROJECTS, sessionDescribe } from "./session-describe";
 export {
   createProjectReads, MAX_PROJECT_REGISTRATIONS, MAX_PROJECT_WORKTREES, PROJECT_LIST_DEFAULT_LIMIT, PROJECT_WORKTREES_TIMEOUT_MS,
-  type ProjectCatalogReader, type ProjectReadPorts, type RegistrationPlacementReader, type WorktreeDiscoveryPort, type WorktreeFact,
+  type ProjectCatalogReader, type ProjectReadPorts, type RegistrationPlacementReader, type RepositoryDiscovery, type WorktreeDiscoveryPort, type WorktreeFact,
 } from "./project-reads";
-export { CoalescingWorktreeDiscovery, WORKTREE_DISCOVERY_LIMITS, type WorktreeDiscoveryLimits, type WorktreeLister } from "./adapters/worktree-discovery";
+export { CoalescingWorktreeDiscovery, WORKTREE_DISCOVERY_LIMITS, type WorktreeDiscoveryLimits, type WorktreeGit } from "./adapters/worktree-discovery";
 export { InstallationVerifier, type InstallationPolicy, type InstallationPolicyReader, type InstallationVerifierOptions } from "./adapters/installation-verifier";
 export { AgentTokenVerifier, type AgentCredentialReader, type AgentCredentialRecord, type AgentTokenVerifierOptions } from "./adapters/agent-token-verifier";
 export { CompositeCredentialVerifier, type CompositeCredentialVerifierOptions } from "./adapters/composite-credential-verifier";

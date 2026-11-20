@@ -72,7 +72,7 @@ function observe() {
   return { opened, acquire };
 }
 const options = (store: stores.SqliteStateStore, mode: string) => ({ store, activeMode: mode, now: Date.now,
-  logs: { controller: vi.fn() }, projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { list: async () => [] } }, requestBudget: new AuthenticationRequestBudget(16, 4), provider: null,
+  logs: { controller: vi.fn() }, projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { listTrees: async () => [], worktreeDirty: async () => false } }, requestBudget: new AuthenticationRequestBudget(16, 4), provider: null,
   eligibility: { controllerEligible: () => true, providerSessionEligible: () => false }, listeners: { unix: () => true, api: () => true, worker: () => true, mcp: () => true } });
 
 describe("session describe CLI mount", () => {

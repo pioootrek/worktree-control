@@ -15,6 +15,14 @@ interface AdmissionJob<T> {
   signal?: AbortSignal;
 }
 
+/** Git admission cannot take more work now: a true capacity limit, never a Git failure. Callers may retry. */
+export class GitCommandCapacityError extends Error {
+  constructor() {
+    super("Kolejka poleceń Git jest zajęta. Spróbuj ponownie później.");
+    this.name = "GitCommandCapacityError";
+  }
+}
+
 export class GitCommandAdmission {
   private readonly operational: AdmissionJob<unknown>[] = [];
   private readonly background: AdmissionJob<unknown>[] = [];
@@ -36,7 +44,7 @@ export class GitCommandAdmission {
     const queue = priority === "operational" ? this.operational
       : priority === "remote" ? this.remote : this.background;
     if (queue.length >= this.maxQueued) {
-      return Promise.reject(new Error("Kolejka poleceń Git jest zajęta. Spróbuj ponownie później."));
+      return Promise.reject(new GitCommandCapacityError());
     }
     return new Promise<T>((resolve, reject) => {
       const job = { priority, operation, resolve, reject, signal: options.signal } as AdmissionJob<T>;
@@ -153,27 +161,42 @@ export class SystemGitWorktreeReader implements GitWorktreeReader {
 
   async list(repositoryPath: string, options: { priority?: GitCommandPriority; includeInsights?: boolean } = {}): Promise<Worktree[]> {
     const priority = options.priority ?? "operational";
-    const { stdout } = await this.admission.run(priority, (signal) => execute(
-      "git", ["-C", repositoryPath, "worktree", "list", "--porcelain", "-z"],
-      { encoding: "utf8", timeout: 8000, maxBuffer: 2 * 1024 * 1024, signal },
-    ));
-    const worktrees = parseWorktreePorcelain(stdout);
+    const worktrees = await this.listTrees(repositoryPath, { priority });
     const insights = options.includeInsights ? await this.branchInsights(repositoryPath, priority) : new Map<string, Partial<Worktree>>();
     return Promise.all(worktrees.map(async (worktree) => {
       let dirty = false;
       let statusError: string | undefined;
       try {
-        const { stdout: status } = await this.admission.run(priority, (signal) => execute(
-          "git", ["-C", worktree.path, "status", "--porcelain", "--untracked-files=normal"],
-          { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024, signal },
-        ));
-        dirty = status.length > 0;
+        dirty = await this.worktreeDirty(worktree.path, { priority });
       } catch {
         dirty = true;
         statusError = "Nie udało się odczytać stanu worktree.";
       }
       return { ...worktree, ...insights.get(worktree.branch ?? ""), dirty, ...(statusError ? { statusError } : {}) };
     }));
+  }
+
+  /**
+   * The repository's worktrees from one `git worktree list`, parsed, without a
+   * status read per tree. A caller that bounds the status work chooses which
+   * trees to pass to {@link worktreeDirty}. The signal leaves the admission
+   * queue or stops the running Git process.
+   */
+  async listTrees(repositoryPath: string, options: { priority?: GitCommandPriority; signal?: AbortSignal } = {}): Promise<Omit<Worktree, "dirty">[]> {
+    const { stdout } = await this.admission.run(options.priority ?? "operational", (signal) => execute(
+      "git", ["-C", repositoryPath, "worktree", "list", "--porcelain", "-z"],
+      { encoding: "utf8", timeout: 8000, maxBuffer: 2 * 1024 * 1024, signal },
+    ), { signal: options.signal });
+    return parseWorktreePorcelain(stdout);
+  }
+
+  /** Whether one worktree has changes, from `git status`. Rejects when Git cannot answer, including on admission capacity. */
+  async worktreeDirty(worktreePath: string, options: { priority?: GitCommandPriority; signal?: AbortSignal } = {}): Promise<boolean> {
+    const { stdout } = await this.admission.run(options.priority ?? "operational", (signal) => execute(
+      "git", ["-C", worktreePath, "status", "--porcelain", "--untracked-files=normal"],
+      { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024, signal },
+    ), { signal: options.signal });
+    return stdout.length > 0;
   }
 
   private async branchInsights(repositoryPath: string, priority: GitCommandPriority): Promise<Map<string, Partial<Worktree>>> {

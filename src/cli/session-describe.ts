@@ -101,16 +101,15 @@ const registrationSummary = z.object({ registrationId, name: z.string(), port: z
   phase: z.enum(["stopped", "starting", "running", "stopping", "failed"]), worktreePath: z.string().nullable(), claim: z.enum(["none", "own", "other"]) }).strict();
 const registrationStatus = registrationSummary.extend({ selectedWorktreePath: z.string().nullable(), startedAt: z.string().nullable(), managedServer: z.boolean(),
   launch: z.object({ executable: z.string(), args: z.array(z.string()) }).strict().optional(),
-  claimHolder: z.object({ kind: z.enum(["human", "agent"]), accountId: projectIdText.nullable(), reason: z.string().nullable(), createdAt: z.string(),
-    expiresAt: z.string().nullable() }).strict().optional() }).strict();
+  claimHolder: z.object({ kind: z.enum(["human", "agent"]), accountId: projectIdText.nullable() }).strict().optional() }).strict();
 /** The released DTOs of the project reads, as the operator receives them. Unknown fields are errors. */
 const projectList = z.object({ items: z.array(z.object({ projectId: projectIdText.nullable(), name: z.string(), status: z.enum(["active", "archived"]).nullable(),
   registrations: z.array(registrationSummary).max(16), registrationsTruncated: z.boolean() }).strict()).max(100), nextCursor: z.string().nullable() }).strict();
 const projectStatus = z.object({ projectId: projectIdText, name: z.string(), status: z.enum(["active", "archived"]), revision: z.number().int().positive(),
   writable: z.boolean(), compact: z.boolean(), registrations: z.array(z.union([registrationStatus, registrationSummary])).max(16), registrationsTruncated: z.boolean() }).strict();
-const projectWorktrees = z.object({ projectId: projectIdText, registrations: z.array(z.object({ registrationId, discovery: z.enum(["complete", "unavailable"]),
+const projectWorktrees = z.object({ projectId: projectIdText, registrations: z.array(z.object({ registrationId, discovery: z.enum(["complete", "partial", "unavailable"]),
   worktrees: z.array(z.object({ path: z.string(), branch: z.string().nullable(), head: z.string(), shortHead: z.string(), detached: z.boolean(), locked: z.boolean(),
-    prunable: z.boolean(), dirty: z.boolean() }).strict()).max(64), worktreesTruncated: z.boolean() }).strict()).max(16), registrationsTruncated: z.boolean() }).strict();
+    prunable: z.boolean(), dirty: z.boolean().nullable() }).strict()).max(64), worktreesTruncated: z.boolean() }).strict()).max(16), registrationsTruncated: z.boolean() }).strict();
 
 type OfflineRuntime = Extract<ReturnType<typeof buildOfflineOperationsRuntime>, { supported: true }>;
 interface LockFirstRead {
