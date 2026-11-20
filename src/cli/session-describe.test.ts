@@ -372,10 +372,11 @@ describe("session describe output", () => {
     const stdout = new Writable({ write(_chunk, _encoding, done) { done(); } });
     const stderr = new Writable({ write(_chunk, _encoding, done) { done(); } });
     const fail = vi.fn(), bytes: { fd: number; bytes: Buffer }[] = [];
-    const syscall = vi.spyOn(fs, "writeSync").mockImplementation((fd, buffer, offset, length) => {
-      bytes.push({ fd, bytes: Buffer.from((buffer as Buffer).subarray(offset as number, (offset as number) + (length as number))) });
-      return length as number;
+    const syscall = vi.fn<(fd: number, buffer: Buffer, offset: number, length: number) => number>((fd, buffer, offset, length) => {
+      bytes.push({ fd, bytes: Buffer.from(buffer.subarray(offset, offset + length)) });
+      return length;
     });
+    vi.spyOn(fs, "writeSync").mockImplementation(syscall as typeof fs.writeSync);
     return { stdout, stderr, fail, bytes, syscall, io: createSessionDescribeOutput(stdout, stderr, fail) };
   }
 
@@ -385,8 +386,8 @@ describe("session describe output", () => {
     vi.spyOn(Atomics, "wait").mockReturnValue("timed-out");
     o.syscall.mockImplementation((_fd, buffer, offset, length) => {
       if (attempts++ === 1) throw Object.assign(new Error("private"), { code: "EAGAIN" });
-      const count = Math.min(length as number, 8192);
-      written.push(Buffer.from((buffer as Buffer).subarray(offset as number, (offset as number) + count))); return count;
+      const count = Math.min(length, 8192);
+      written.push(Buffer.from(buffer.subarray(offset, offset + count))); return count;
     });
     o.io.write(expected);
     expect(Buffer.concat(written).toString()).toBe(`${expected}\n`); expect(o.fail).not.toHaveBeenCalled();
@@ -416,8 +417,8 @@ describe("session describe output", () => {
     o.stdout._write = (_chunk, _encoding, done) => { process.nextTick(() => done(new Error("late private EPIPE"))); };
     o.syscall.mockImplementation((fd, buffer, offset, length) => {
       if (fd === 1) { expect(o.stdout.write("fixture")).toBe(true); events.push("write-returned"); }
-      else o.bytes.push({ fd, bytes: Buffer.from((buffer as Buffer).subarray(offset as number, (offset as number) + (length as number))) });
-      return length as number;
+      else o.bytes.push({ fd, bytes: Buffer.from(buffer.subarray(offset, offset + length)) });
+      return length;
     });
     const drain = RealStore.prototype.closeAfterDrain;
     if (path === "offline") vi.spyOn(RealStore.prototype, "closeAfterDrain").mockImplementation(async function (this: stores.SqliteStateStore) {
@@ -438,9 +439,9 @@ describe("session describe output", () => {
   it("a pipe closing mid-write leaves only the prefix and reports failure without retrying it", () => {
     const o = output(), prefix: Buffer[] = [];
     o.syscall.mockImplementation((fd, buffer, offset) => {
-      if (fd === 1 && prefix.length === 0) { prefix.push(Buffer.from((buffer as Buffer).subarray(offset as number, (offset as number) + 3))); return 3; }
+      if (fd === 1 && prefix.length === 0) { prefix.push(Buffer.from(buffer.subarray(offset, offset + 3))); return 3; }
       if (fd === 1) throw Object.assign(new Error("private"), { code: "EPIPE" });
-      return (buffer as Buffer).length;
+      return buffer.length;
     });
     expect(() => o.io.write('{"projects":[]}')).toThrow(expect.objectContaining({ error: operationError("output_unavailable") }));
     expect(Buffer.concat(prefix).toString()).toBe('{"p'); expect(o.syscall).toHaveBeenCalledTimes(2);

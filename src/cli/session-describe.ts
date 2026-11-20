@@ -57,7 +57,10 @@ function writeDescriptor(fd: number, line: string): void {
   }
 }
 
-type OutputStream = Pick<NodeJS.WriteStream, "on" | "destroyed">;
+type OutputStream = {
+  readonly destroyed: boolean;
+  on(event: "error", listener: () => void): unknown;
+};
 
 /** Install only for this finite command, before its first write. Keep listeners until
  * process termination: a delayed stream error can arrive even after main resolves.
