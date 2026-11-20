@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { acceptanceError } from "./package-rbac-report.mjs";
+import { acceptanceError, failureReport } from "./package-rbac-report.mjs";
+
+test("failure attribution follows the first failed step in completion order", () => {
+  const passed = { name: "closed-stdout", ok: true };
+  const child = { name: "socket", ok: false };
+  const parent = { name: "token-mode", ok: false };
+  const report = steps => failureReport("fresh", steps, "fixture failure");
+  assert.equal(report([passed, parent]).failureStep, parent.name);
+  assert.equal(report([passed, child, parent]).failureStep, child.name);
+  assert.equal(report([passed]).failureStep, undefined);
+});
 
 test("installed failure report preserves the cause and removes secrets and temporary roots before bounding", () => {
   const secret = "fixture-secret-123", root = "/private/fixture-root";

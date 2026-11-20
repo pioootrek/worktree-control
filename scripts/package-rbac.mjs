@@ -1,6 +1,6 @@
 // Finite installed-artifact acceptance. All writable state and listeners belong to this fixture.
 import assert from "node:assert/strict";
-import { acceptanceError } from "./package-rbac-report.mjs";
+import { acceptanceError, failureReport } from "./package-rbac-report.mjs";
 import { existsSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -61,7 +61,7 @@ const EXPECTED_OPERATIONS_MATRIX_KEYS = [
 ];
 const operationRefusal = (reason, category = "unauthenticated", status = 401, retry = "reauthenticate") => ({ error: { category, status, reason, retry, effect: null } });
 const matrixCell = (surface, mode, actor, listener, refusal, step) => operationsMatrix.push({ surface, mode, actor, listener, refusal, step });
-let controller, failureStep, cleanupConfirmed = false;
+let controller, cleanupConfirmed = false;
 let native, operationsSdk, storedOwner;
 const secretValues = new Set();
 const password = `finite-${randomBytes(20).toString("hex")}`, replacement = `finite-${randomBytes(20).toString("hex")}`;
@@ -73,7 +73,7 @@ const bounded = (file, args, options = {}) => exec(file, args, { cwd: root, env,
 // Each step records its duration: the hosted runner is about twice as slow as a workstation and
 // the job has a 25-minute limit, so the report shows where the time goes.
 const step = async (name, action) => {
-  failureStep = name; process.stderr.write(`rbac acceptance: ${name}\n`);
+  process.stderr.write(`rbac acceptance: ${name}\n`);
   const started = performance.now();
   try {
     const value = await action(), ms = Math.round(performance.now() - started);
@@ -875,7 +875,7 @@ try {
     community: { path: tarball, sha256: communitySha256 }, provider: artifact,
     baseline: { kind: baseline, artifact: baselineArtifact, cliSha256: oldCliSha256 }, evidence: snapshot };
 } catch (error) {
-  report = { result: "failed", baseline, failureStep, steps, error: acceptanceError(error, secretValues, [root, oldRoot, tmpdir()]) };
+  report = failureReport(baseline, steps, acceptanceError(error, secretValues, [root, oldRoot, tmpdir()]));
   // npm's own error code is a fixed token, safe to report without its message.
   const npmCode = /npm error code ([A-Z0-9_]{2,40})/.exec(String(error?.stderr ?? ""))?.[1];
   if (npmCode) report.npmErrorCode = npmCode;
