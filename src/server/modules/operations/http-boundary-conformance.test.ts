@@ -2080,7 +2080,7 @@ it.each(["api", "unix", "worker", "mcp"] as const)("historical 5a refusal-only c
   // 5b intentionally supersedes supported API cookie refusal. The unsupported
   // API mode and the three cookie-free mounts retain the original preflight.
   const f = listener === "worker" ? await workerFixture() : listener === "mcp" ? await mcpFixture() : await fixture(listener === "api" ? "legacy" : "open");
-  const driver = "driver" in f ? f.driver : f.drivers[listener === "api" ? "api" : "unix"];
+  const driver = (f as Fixture & { driver?: BoundaryDriver }).driver ?? f.drivers[listener === "api" ? "api" : "unix"];
   const mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run");
   const acquire = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire");
   let bodyReads = 0;
