@@ -13,15 +13,23 @@ Statuses describe source evidence, not successful execution. Managed run results
 must accompany the commit. Synthetic fixtures only; no approval of live exposure.
 
 The guard `src/server/modules/operations/gate-audit.test.ts` parses this Markdown
-table directly. TypeScript parsing rejects skipped/todo/expected-failure titles,
-skipped ancestors and empty literal `each` tables. Presets resolve through
-`package.json` (including chained scripts), the selected Vitest config's include
-patterns and CLI file filters; script rows must name an invoked script. Document
-totals and the script's explicit surface/mode key set are checked exactly.
-The guard cannot establish whether an assertion means what its row says, or
-whether a non-skipped test inside dead code is reachable. Nonliteral tables and
-runtime skip conditions also require review. Defect, partial, deferral and
-not-applicable rows are explicitly not counted as executable proof.
+table directly. It accepts registration at module level or in active
+`describe`/`suite` callbacks (including `each`), literal-true branches and
+nonempty literal-array `for...of` loops there. It rejects skipped, todo,
+expected-failure proof, empty literal tables, dynamic/false branches, uncalled
+functions, arbitrary nested callbacks, index-based loops and try/catch registration.
+Script steps additionally follow direct calls to named module-level helpers and
+step callbacks; only the outer reporting try whose catch unconditionally sets
+`process.exitCode = 1` is allowed. Other try paths are rejected. Presets resolve
+through package-manager script chains, Vitest include patterns and CLI filters;
+script rows require `node <supported flags> <file>`, never a filename in echo or
+another program's arguments. Accepted totals, per-status counts and all 21
+surface/mode keys are anchored in the guard independently of this document.
+Defect rows still require reachable `it.fails`/`test.fails` evidence and a matching
+preset. Defect, partial, deferral and not-applicable rows are not executable proof.
+The guard cannot establish assertion meaning, runtime success, table contents
+when nonliteral, import side effects, helper termination or runtime skip behavior.
+It conservatively rejects registration forms outside the static rules above.
 
 Provider methods below use real AccountProtection/SessionIssuance with fixture
 native rows; the real Better Auth bootstrap/login and lifetime tests run under
@@ -64,15 +72,15 @@ Gate rows: 191. Artifact cells: 21.
 | Composition: changed fingerprint after mint | `src/server/modules/operations/operations-runtime-composition.test.ts` | `refuses a changed %s after mint` | `node:check` | proven before this step |
 | Listeners API/unix: allowed matrix | `src/server/modules/operations/http-boundary-conformance.test.ts` | `full wire matrix in %s, with no old authentication or usage write` | `node:test:operations-mcp` | proven before this step |
 | Listeners API/unix: denied matrix and exact public reasons | `src/server/modules/operations/http-boundary-conformance.test.ts` | `full wire matrix in %s, with no old authentication or usage write` | `node:test:operations-mcp` | proven before this step |
-| Listeners API/unix: legacy startup and unknown_mode | `scripts/package-rbac.mjs` | `legacy-startup-all-mounted-operations-and-cli` | `node:test:rbac-artifact` | added in this step |
+| Listeners API/unix: legacy startup and unknown_mode (source start: installed CLI cannot select legacy) | `src/server/modules/operations/http-boundary-conformance.test.ts` | `real legacy startup refuses all mounted operations and CLI with a consistent fence` | `node:test:operations-mcp` | added in this step |
 | Listeners API/unix: unchanged legacy authentication | `src/server/modules/operations/http-boundary-conformance.test.ts` | `full wire matrix in %s, with no old authentication or usage write` | `node:test:operations-mcp` | proven before this step |
 | Listeners worker: allowed matrix | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored credential matrix in %s; protocol retains worker authentication` | `node:test:operations-mcp` | proven before this step |
 | Listeners worker: denied matrix and exact public reasons | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored credential matrix in %s; protocol retains worker authentication` | `node:test:operations-mcp` | proven before this step |
-| Listeners worker: legacy startup and unknown_mode | `scripts/package-rbac.mjs` | `legacy-startup-all-mounted-operations-and-cli` | `node:test:rbac-artifact` | added in this step |
+| Listeners worker: legacy startup and unknown_mode (source start: installed CLI cannot select legacy) | `src/server/modules/operations/http-boundary-conformance.test.ts` | `real legacy startup refuses all mounted operations and CLI with a consistent fence` | `node:test:operations-mcp` | added in this step |
 | Listeners worker: unchanged legacy authentication | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored credential matrix in %s; protocol retains worker authentication` | `node:test:operations-mcp` | proven before this step |
 | Listeners MCP: allowed matrix | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored matrix in %s on every method; unchanged legacy authentication` | `node:test:operations-mcp` | proven before this step |
 | Listeners MCP: denied matrix and exact public reasons | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored matrix in %s on every method; unchanged legacy authentication` | `node:test:operations-mcp` | proven before this step |
-| Listeners MCP: legacy startup and unknown_mode | `scripts/package-rbac.mjs` | `legacy-startup-all-mounted-operations-and-cli` | `node:test:rbac-artifact` | added in this step |
+| Listeners MCP: legacy startup and unknown_mode (source start: installed CLI cannot select legacy) | `src/server/modules/operations/http-boundary-conformance.test.ts` | `real legacy startup refuses all mounted operations and CLI with a consistent fence` | `node:test:operations-mcp` | added in this step |
 | Listeners MCP: unchanged legacy authentication | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored matrix in %s on every method; unchanged legacy authentication` | `node:test:operations-mcp` | proven before this step |
 | Listeners API/unix: duplicate credentials | `src/server/modules/operations/http-boundary-conformance.test.ts` | `preserves duplicate and mixed raw credentials` | `node:test:operations-mcp` | proven before this step |
 | Listeners API/unix: mixed credentials | `src/server/modules/operations/http-boundary-conformance.test.ts` | `preserves duplicate and mixed raw credentials` | `node:test:operations-mcp` | proven before this step |
@@ -224,7 +232,7 @@ Gate rows: 191. Artifact cells: 21.
 | Release after runner completion worker: provider configuration | `src/server/modules/operations/http-boundary-conformance.test.ts` | `fresh release after runner completion rechecks %s` | `node:test:operations-mcp` | not applicable: provider-only configuration does not fence agent authority; the named configuration case retains a fresh successful DTO |
 | API no cookie boundary: open/token/better-auth before body but with mint admission | `src/server/modules/operations/http-boundary-conformance.test.ts` | `API %s without a cookie boundary refuses before body and provider slots but uses mint admission` | `node:test:operations-mcp` | added in this step |
 | Worker legacy header names: recognized token semantics | `src/server/modules/operations/http-boundary-conformance.test.ts` | `worker %s recognized tokens in legacy header names retain bearer semantics` | `node:test:operations-mcp` | added in this step |
-| Legacy real startup: API/unix/worker/MCP/CLI socket and offline | `scripts/package-rbac.mjs` | `legacy-startup-all-mounted-operations-and-cli` | `node:test:rbac-artifact` | added in this step |
+| Legacy real startup: API/unix/worker/MCP/CLI socket and offline (source start: installed CLI cannot select legacy) | `src/server/modules/operations/http-boundary-conformance.test.ts` | `real legacy startup refuses all mounted operations and CLI with a consistent fence` | `node:test:operations-mcp` | added in this step |
 | Listing: complete serialized DTO byte bound | `src/server/modules/operations/session-describe.test.ts` | `accounts for the complete DTO when the last project puts it %i bytes over budget` | `node:check` | added in this step |
 | Listing: equal prefix across listener widths | `src/server/modules/operations/session-describe.test.ts` | `keeps the same prefix across API, MCP and worker at a listener-width boundary` | `node:check` | added in this step |
 | Listing: MCP SDK serialized message and DTO byte bounds | `src/server/modules/operations/mcp-request-adapter.test.ts` | `measures 500 full-authority projects with %i-byte IDs against both default DTO bounds` | `node:test:operations-mcp` | added in this step |
@@ -288,7 +296,20 @@ before those overrides. No fake clock or production timeout change is used.
 ## Long timeout exceptions
 
 All other composition, CLI and conformance cases use the default timeout.
+The four former 30 s cases in `session-describe.test.ts` now use the default:
+they build in-memory project lists without durable writes, subprocesses or real
+timers. The nine former 20 s cases in `offline-ownership.test.ts` now use the
+default too: each uses one small synthetic store and controlled promise barriers,
+with no large row load, child process or elapsed-time wait.
 The exceptions are:
+
+- The four 30 s cases in `unmounted.test.ts` (`has exactly the approved importers and no unlisted non-literal specifier`,
+  `allows only the separate MCP listener to mount the request adapter, including indirect production importers`,
+  `allows only controller start and the unmounted offline composition to import the composition`,
+  `allows exactly the session describe command to mount the offline composition`):
+  parse the full repository import graph; retain headroom for this large source scan.
+- `real legacy startup refuses all mounted operations and CLI with a consistent fence`:
+  40 s, real CLI startup, TLS listener and multiple CLI subprocesses.
 
 - `bounds the listing, omits invalid IDs and includes archived projects`: 20 s,
   inserts 500 durable rows.

@@ -67,13 +67,25 @@ WTC_WORKER='https://127.0.0.1:4312'
 # At the prompt, supply <INSTALLATION_TOKEN> (or <AGENT_TOKEN>) without echo.
 IFS= read -r -s -p 'Bearer token: ' WTC_BEARER
 printf '\n'
+WTC_HEADER_FILE=$(mktemp)
+chmod 600 "$WTC_HEADER_FILE"
+trap 'rm -f -- "$WTC_HEADER_FILE"; unset WTC_BEARER WTC_HEADER_FILE' EXIT
+printf 'Authorization: Bearer %s\n' "$WTC_BEARER" > "$WTC_HEADER_FILE"
+unset WTC_BEARER
 ```
+
+These Bash examples assume curl 7.76.0 or newer (`--fail-with-body`). Its
+[7.76.0 header manual](https://github.com/curl/curl/blob/curl-7_76_0/docs/cmdline-opts/header.d)
+supports `-H @file` (available since 7.55.0). The private header file keeps the
+secret out of curl's argument list and leaves stdin available for MCP JSON.
+After the last request, run `rm -f -- "$WTC_HEADER_FILE"; unset WTC_HEADER_FILE`;
+the exit trap also removes it when the shell exits.
 
 API bearer (`operations-api-${mode}` in the installed RBAC script):
 
 ```bash
 curl --fail-with-body "$WTC_API/api/operations/session.describe" \
-  -H "Authorization: Bearer $WTC_BEARER" -H 'Content-Type: application/json' --data '{}'
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' --data '{}'
 ```
 
 A missing token in token/account mode refuses `credential_required` (401).
@@ -138,7 +150,7 @@ certificate verification:
 ```bash
 curl --fail-with-body --cacert /tmp/wtc-example/worker-ca.pem \
   "$WTC_WORKER/api/operations/session.describe" \
-  -H "Authorization: Bearer $WTC_BEARER" -H 'Content-Type: application/json' --data '{}'
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' --data '{}'
 ```
 
 The DTO has `listener: "worker"`, the active mode and installation authority in
@@ -165,17 +177,17 @@ RBAC script, as well as through the installed SDK client:
 
 ```bash
 curl --fail-with-body "$WTC_MCP/mcp/operations" \
-  -H "Authorization: Bearer $WTC_BEARER" -H 'Content-Type: application/json' \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' --data-binary @- <<'JSON'
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"authority-example","version":"1"}}}
 JSON
 curl --fail-with-body "$WTC_MCP/mcp/operations" \
-  -H "Authorization: Bearer $WTC_BEARER" -H 'Content-Type: application/json' \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' --data-binary @- <<'JSON'
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 JSON
 curl --fail-with-body "$WTC_MCP/mcp/operations" \
-  -H "Authorization: Bearer $WTC_BEARER" -H 'Content-Type: application/json' \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' --data-binary @- <<'JSON'
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"session_describe","arguments":{}}}
 JSON
@@ -191,12 +203,10 @@ refuse `legacy_credential`, even when their value is a valid token. Tool argumen
 refusals appear in a tool result with `isError: true`; release refusals after SDK
 construction use JSON-RPC error `-32000` with the public error in `error.data`.
 Tool-argument refusals are verified by `describe-rpc-${mode}` in the installed
-script. Post-SDK release refusals are verified by the Vitest test
-`post-SDK-buffer release rechecks %s`, not by the installed script.
-Tool-argument refusal is verified by `returns safe tool refusals without losing
-operations reasons` in `mcp-request-adapter.test.ts`, not by the installed script.
-Post-SDK release refusal is verified by `post-SDK-buffer release rechecks %s`
-in `http-boundary-conformance.test.ts`, not by the installed script.
+script and `returns safe tool refusals without losing operations reasons` in
+`mcp-request-adapter.test.ts`. Post-SDK release refusals are verified by
+`post-SDK-buffer release rechecks %s` in `http-boundary-conformance.test.ts`,
+not by the installed script.
 
 The [local CLI examples](#describe-local-authority-integration-branch) above run
 the same command through the socket while the fixture controller owns the lock,

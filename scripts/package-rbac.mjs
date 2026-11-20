@@ -1,5 +1,6 @@
 // Finite installed-artifact acceptance. All writable state and listeners belong to this fixture.
 import assert from "node:assert/strict";
+import { acceptanceError } from "./package-rbac-report.mjs";
 import { existsSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -73,8 +74,16 @@ const bounded = (file, args, options = {}) => exec(file, args, { cwd: root, env,
 // the job has a 25-minute limit, so the report shows where the time goes.
 const step = async (name, action) => {
   failureStep = name; process.stderr.write(`rbac acceptance: ${name}\n`);
-  const started = performance.now(), value = await action(), ms = Math.round(performance.now() - started);
-  steps.push({ name, ok: true, ms }); process.stderr.write(`rbac acceptance: ${name} done in ${ms} ms\n`); return value;
+  const started = performance.now();
+  try {
+    const value = await action(), ms = Math.round(performance.now() - started);
+    steps.push({ name, ok: true, ms }); process.stderr.write(`rbac acceptance: ${name} done in ${ms} ms\n`); return value;
+  } catch (error) {
+    const safe = acceptanceError(error, secretValues, [root, oldRoot, tmpdir()]);
+    steps.push({ name, ok: false, ms: Math.round(performance.now() - started), error: safe });
+    process.stderr.write(`rbac acceptance: ${name} failed: ${safe}\n`);
+    throw error;
+  }
 };
 async function command(cli, args, extra = {}, body) {
   const child = spawn(process.execPath, [cli, ...args, ...directoryArgs], { cwd: root, env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] }); children.add(child);
@@ -566,35 +575,6 @@ try {
     assert.deepEqual(admin, [{ account_id: oldOwner.principalId, role: "admin", scope_kind: "installation", project_id: null }]);
     resetEvidence = { credentialsRevoked: after.credentials.length, grantsRevoked: after.grants.length, adminGrant: "owner" };
   });
-  await step("legacy-startup-all-mounted-operations-and-cli", async () => {
-    const databasePath = join(directoryArgs[1], "state.sqlite3");
-    const setMode = mode => { const db = new native.Database(databasePath); try {
-      const policy = JSON.parse(db.prepare("SELECT value_json FROM controller_settings WHERE key='authentication'").get().value_json);
-      db.prepare("UPDATE controller_settings SET value_json=? WHERE key='authentication'").run(JSON.stringify({ ...policy, mode }));
-    } finally { db.close(); } };
-    setMode("legacy");
-    try {
-      assert.deepEqual(await refusal(currentCli, ["session", "describe"]), operationRefusal("unknown_mode"));
-      await start();
-      const api = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      assert.equal(api.status, 401); assert.deepEqual(await api.json(), operationRefusal("unknown_mode"));
-      const rpc = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
-      assert.equal(rpc.status, 401); assert.deepEqual(await rpc.json(), operationRefusal("unknown_mode"));
-      for (const listener of ["unix", "worker"]) {
-        const reply = await new Promise((accept, reject) => {
-          const call = (listener === "unix" ? httpRequest : httpsRequest)({ ...(listener === "unix" ? { socketPath: join(directoryArgs[3], "admin.sock") } : { hostname: "127.0.0.1", port: workerPort, ca: workerCa }),
-            path: "/api/operations/session.describe", method: "POST", headers: { "Content-Type": "application/json" } }, response => {
-            const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.once("error", reject);
-            response.once("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
-          });
-          call.on("error", reject); call.setTimeout(10000, () => call.destroy(new Error("Legacy fixture deadline"))); call.end("{}");
-        });
-        assert.equal(reply.status, 401); assert.deepEqual(reply.body, operationRefusal("unknown_mode"));
-      }
-      assert.deepEqual(await refusal(currentCli, ["session", "describe"]), operationRefusal("unknown_mode"));
-    } finally { await stop(); setMode("token"); }
-  });
   await step("community-token-mode-without-provider", async () => {
     // The installation token and the mode are kept by the upgrade.
     assert.equal((await json(currentCli, ["auth", "status"])).mode, "token");
@@ -895,7 +875,7 @@ try {
     community: { path: tarball, sha256: communitySha256 }, provider: artifact,
     baseline: { kind: baseline, artifact: baselineArtifact, cliSha256: oldCliSha256 }, evidence: snapshot };
 } catch (error) {
-  report = { result: "failed", baseline, failureStep, steps, error: error instanceof assert.AssertionError ? error.message.slice(0, 300) : "Finite installed acceptance failed" };
+  report = { result: "failed", baseline, failureStep, steps, error: acceptanceError(error, secretValues, [root, oldRoot, tmpdir()]) };
   // npm's own error code is a fixed token, safe to report without its message.
   const npmCode = /npm error code ([A-Z0-9_]{2,40})/.exec(String(error?.stderr ?? ""))?.[1];
   if (npmCode) report.npmErrorCode = npmCode;

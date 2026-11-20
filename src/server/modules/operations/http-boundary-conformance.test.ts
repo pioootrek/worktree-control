@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createMcpControllerServer } from "@/server/mcp-http-server";
 import { createOperationsMcp, OPERATIONS_MCP_TOOLS } from "@/server/transports/operations-mcp";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { IdentityService } from "@/server/modules/identity";
 import type { RemoteVerificationController } from "@/server/modules/remote-verification";
 import { createRemoteVerificationServer } from "@/server/transports/remote-verification-http";
@@ -16,7 +16,7 @@ import { request, type IncomingMessage, type Server, type ServerResponse } from 
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import type { AddressInfo, Socket } from "node:net";
+import { createServer as netServer, type AddressInfo, type Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { listenAdminSocket } from "@/server/admin-socket";
 import { AuthenticationProviderError, AuthenticationService } from "@/server/modules/authentication";
@@ -1502,7 +1502,7 @@ describe("worker HTTPS boundary conformance", () => {
     if (change === "disconnect") await expect(pending.reply).rejects.toMatchObject({ code: "ECONNRESET" });
     else {
       const reply = await pending.reply;
-      if (change === "grant" || change === "configuration") { expect(reply.status).toBe(200); expect(reply.body.projects).toHaveLength(change === "grant" ? 0 : 1); }
+      if (change === "grant" || change === "configuration") { expect(reply.status).toBe(200); if (change === "grant") expect(reply.body.projects).toEqual([]); else expect(reply.body.projects).toHaveLength(1); }
       else { const reason = change === "credential" ? "credential_no_longer_valid" : change === "deadline" ? "release_timed_out" : "listener_closed";
         expect(reply.status).toBe(change === "deadline" ? 503 : 401); expect(reply.body).toEqual(refusal(reason, change === "deadline" ? "unavailable" : "unauthenticated", reply.status, change === "deadline" ? "retry" : "reauthenticate")); }
     }
@@ -2277,7 +2277,7 @@ it("mounted responses and diagnostic sinks never disclose stored session or cred
   }
   let sdkRefused = false;
   try { responses.push(await sdk.callTool({ name: "session_describe", arguments: {} })); }
-  catch (error) { sdkRefused = true; responses.push(String(error)); expect(String(error)).toContain("invalid_credential"); }
+  catch (error) { sdkRefused = true; responses.push(error); expect(String(error)).toContain("invalid_credential"); }
   expect(sdkRefused).toBe(true);
   await f.store.admission.run(() => f.db.prepare("UPDATE principal_credentials SET status='active' WHERE id=?").run(f.credentialId));
   for (const driver of drivers) {
@@ -2313,8 +2313,8 @@ it("mounted responses and diagnostic sinks never disclose stored session or cred
   expect(offlineRefused.code).toBe(1); expect(offlineRefused.stdout).toBe(""); expect(JSON.parse(offlineRefused.stderr)).toEqual(refusal("unknown_mode"));
   responses.push(snapshot);
   for (const id of [f.credentialId, f.session.sessionId]) {
-    expect(JSON.stringify(responses)).not.toContain(id);
-    expect(JSON.stringify([f.logs.controller.mock.calls, mcp.diagnostics, snapshot, adapterLogs.map(log => log.mock.calls)])).not.toContain(id);
+    expect(disclosureStrings(responses).join("\n")).not.toContain(id);
+    expect(disclosureStrings([f.logs.controller.mock.calls, mcp.diagnostics, snapshot, adapterLogs.map(log => log.mock.calls)]).join("\n")).not.toContain(id);
   }
 }, 30_000);
 
@@ -2327,3 +2327,99 @@ it.each(["token", "better-auth"])("worker %s recognized tokens in legacy header 
   }
   expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
 });
+
+/** Include non-enumerable Error fields and keys (notably HTTP header names). */
+function disclosureStrings(value: unknown, seen = new Set<object>()): string[] {
+  if (typeof value === "string") return [value];
+  if (value === null || typeof value !== "object" || seen.has(value)) return [];
+  seen.add(value);
+  if (value instanceof Headers) return [...value].flatMap(([name, entry]) => [name, entry]);
+  const strings: string[] = [];
+  for (const key of new Set([...Reflect.ownKeys(value), ...(value instanceof Error ? ["message", "stack", "cause"] : [])])) {
+    strings.push(String(key), ...disclosureStrings(Reflect.get(value, key), seen));
+  }
+  return strings;
+}
+
+it("negative control: diagnostic string collector detects an Error leak hidden by JSON serialization", () => {
+  const sink = vi.fn(), leak = "synthetic-stored-row-id", error = new Error("safe outer", { cause: new Error(leak) });
+  Object.defineProperty(error, "privateDetail", { value: { [leak]: "nested own property" } });
+  const cycle = { error, self: null as unknown }; cycle.self = cycle;
+  sink(cycle);
+  expect(JSON.stringify(error)).toBe("{}");
+  expect(disclosureStrings(sink.mock.calls).join("\n")).toContain(leak);
+  expect(disclosureStrings(new Error(leak))).toContain(leak);
+  expect(disclosureStrings(new Headers({ [leak]: "header-value" }))).toEqual([leak, "header-value"]);
+});
+
+// Source entry point, real controller startup and real CLI; only the initial
+// synthetic policy is seeded through the store's fenced write API.
+it("real legacy startup refuses all mounted operations and CLI with a consistent fence", async () => {
+  const root = mkdtempSync(join(tmpdir(), "operations-legacy-start-"));
+  const paths = resolveAppPaths(join(root, "data"), join(root, "state"));
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const seed = new SqliteStateStore(paths.databasePath);
+  seed.saveAuthenticationPolicy({ ...seed.getAuthenticationPolicy(), mode: "legacy" }, "fixture", "fixture");
+  await seed.closeAfterDrain();
+  const repository = fileURLToPath(new URL("../../../../", import.meta.url));
+  const entry = ["--import", "tsx", join(repository, "src/cli/index.ts")];
+  const directoryArgs = ["--data-dir", paths.dataDirectory, "--state-dir", paths.stateDirectory];
+  const env = { PATH: process.env.PATH, HOME: root, NODE_ENV: "test", LANG: "C.UTF-8" };
+  const cli = () => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+    execFile(process.execPath, [...entry, "session", "describe", ...directoryArgs], { cwd: repository, env, timeout: 15_000 }, (error, stdout, stderr) => {
+      if (error && typeof error.code !== "number") reject(error);
+      else resolve({ code: typeof error?.code === "number" ? error.code : 0, stdout, stderr });
+    });
+  });
+  const cliRefuses = async () => {
+    const reply = await cli(); expect(reply.code).toBe(1); expect(reply.stdout).toBe("");
+    expect(JSON.parse(reply.stderr)).toEqual(refusal("unknown_mode"));
+  };
+  await cliRefuses();
+  const port = async () => {
+    const server = netServer(); await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+    const value = (server.address() as AddressInfo).port;
+    await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); return value;
+  };
+  const apiPort = await port(), mcpPort = await port(), workerPort = await port();
+  const key = join(root, "worker.key"), cert = join(root, "worker.crt"), config = join(root, "worker.json");
+  execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", key, "-out", cert,
+    "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore", timeout: 15_000 });
+  writeFileSync(config, JSON.stringify({ version: 1, listener: { host: "127.0.0.1", port: workerPort, keyFile: key, certFile: cert } }));
+  const child = spawn(process.execPath, [...entry, "start", ...directoryArgs, "--service-mode", "--host", "127.0.0.1", "--port", String(apiPort),
+    "--mcp-port", String(mcpPort), "--remote-verification-config", config, "--no-open"], { cwd: repository, env, stdio: ["ignore", "pipe", "pipe"] });
+  let output = ""; for (const stream of [child.stdout, child.stderr]) stream.on("data", chunk => { output = (output + chunk).slice(-8192); });
+  const ended = new Promise<number | null>((done, reject) => { child.once("error", reject); child.once("exit", done); });
+  const stop = async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    try { expect(await ended, output).toBe(0); } finally { clearTimeout(timer); }
+  };
+  try {
+    await vi.waitFor(() => {
+      expect(child.exitCode, output).toBe(null);
+      expect(JSON.parse(readFileSync(paths.serviceAccessPath, "utf8"))).toMatchObject({ pid: child.pid, authenticationMode: "legacy" });
+    }, { timeout: 15_000, interval: 50 });
+    const api = await fetch(`http://127.0.0.1:${apiPort}/api/operations/session.describe`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    expect(api.status).toBe(401); expect(await api.json()).toEqual(refusal("unknown_mode"));
+    const rpc = await fetch(`http://127.0.0.1:${mcpPort}/mcp/operations`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+    expect(rpc.status).toBe(401); expect(await rpc.json()).toEqual(refusal("unknown_mode"));
+    for (const listener of ["unix", "worker"] as const) {
+      const reply = await new Promise<{ status: number | undefined; body: unknown }>((done, reject) => {
+        const call = (listener === "unix" ? request : nodeHttps.request)({ ...(listener === "unix" ? { socketPath: paths.adminSocketPath } : { hostname: "127.0.0.1", port: workerPort, ca: readFileSync(cert) }),
+          path: "/api/operations/session.describe", method: "POST", headers: { "Content-Type": "application/json" } }, response => {
+          const chunks: Buffer[] = []; response.on("data", chunk => chunks.push(chunk)); response.once("error", reject);
+          response.once("end", () => { try { done({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks).toString()) }); } catch (error) { reject(error); } });
+        });
+        call.on("error", reject); call.setTimeout(5000, () => call.destroy(new Error("legacy fixture deadline"))); call.end("{}");
+      });
+      expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal("unknown_mode"));
+    }
+    await cliRefuses();
+  } finally { await stop(); }
+  await cliRefuses();
+  // Reopen verifies witness/database consistency after both shutdown and offline use.
+  const reopened = new SqliteStateStore(paths.databasePath);
+  try { expect(reopened.getAuthenticationPolicy().mode).toBe("legacy"); } finally { await reopened.closeAfterDrain(); }
+}, 40_000);
