@@ -651,8 +651,11 @@ token; better-auth only a current agent token. Stored owner/worker tokens are
 refused as `credential_in_open_mode`, `credential_not_accepted_here` and
 `invalid_credential`, respectively. Missing credentials in token/account mode
 are `credential_required`; installation tokens in account mode are
-`installation_token_in_account_mode`. Legacy secret headers are `legacy_credential`,
-unrecognized bearers `unrecognized_credential`, mixed/duplicate bearers
+`installation_token_in_account_mode`. Both legacy secret header names are always classified as `legacy_credential`,
+even when carrying a valid installation or agent token; only Authorization
+bearers supply token authority here. Unlike the HTTP/worker classifier's default,
+MCP selects its strict legacy-header policy. Raw mixed/duplicate carriers remain
+visible to the same acceptance table. Unrecognized bearers `unrecognized_credential`, mixed/duplicate bearers
 `mixed_credentials`. A provider cookie is always `provider_cookie_not_supported`
 after the shared Origin check, without body, budget, provider or database work.
 Legacy mode is unsupported (`unknown_mode`). Session IDs alone never authenticate.
@@ -722,7 +725,7 @@ policy or shared owner. Test names identify executable assertions in
 | Legacy check, limit or owner (source:line) | Operations treatment | Named assertion or deferral |
 | --- | --- | --- |
 | Exact route, terminal methods (`mcp-http-server.ts:146`, `:164`) | Raw shared parser claims first; API namespace refused; POST only; batches refused | `raw aliases, reserved HTTP namespace, methods and batches are terminal` |
-| Legacy mode/secret, token and identity resolver (`mcp-http-server.ts:38`, `:148`) | Acceptance table only; no old authenticator or usage writer | `stored matrix in %s on every method; unchanged legacy authentication` |
+| Legacy mode/secret, token and identity resolver (`mcp-http-server.ts:38`, `:148`) | Acceptance table only; no old authenticator or usage writer | `stored matrix in %s on every method; unchanged legacy authentication`; `MCP %s legacy secret headers never promote stored tokens on any method` |
 | Provider cookie (`mcp-http-server.ts:152`) | Fixed refusal before work; no provider/budget/reserve needed | `%s mixed and duplicate raw credentials, cookie preflight and no provider/budget work`; API reserve proof remains `cookie capacity until settlement` scenarios |
 | Origin (`mcp-http-server.ts:58`, `:163`) | Shared function before adapter; additional canonical rule; differences above | `shared Origin guard and independent canonical rule; Host grants no authority`; `negative control: omitted shared Origin guard fails exactly 404 versus 403` |
 | Host/DNS/peer (no legacy guard; bootstrap `../cli/index.ts:465`) | Same listener bound to loopback; no added Host authority | `shared Origin guard and independent canonical rule; Host grants no authority` |

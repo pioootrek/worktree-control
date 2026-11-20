@@ -188,6 +188,11 @@ async function operationMcp(mode, secret) {
     assert(!result.isError); const dto = result.structuredContent;
     assert.equal(dto.mode, mode); assert.equal(dto.listener, "mcp"); assert.equal(dto.actor.kind, mode === "better-auth" ? "agent" : "installation");
   } finally { await client.close(); }
+  for (const name of ["X-Worktree-Control-Token", "X-Worktree-Switcher-Token"]) {
+    const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", [name]: secret ?? storedWorker },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
+    assert.equal(refused.status, 401); assert.equal((await refused.json()).error.reason, "legacy_credential");
+  }
   // A stored owner credential exists even before the worker fixture is provisioned.
   const stored = storedWorker ?? storedOwner;
   const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", Authorization: `Bearer ${stored}` },

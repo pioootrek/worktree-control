@@ -1677,6 +1677,9 @@ dispatch/authentication and shares the legacy Origin function, with the adapter'
 stricter canonical-Origin rule still enforced. API, unix and worker reserve it
 as refusal-only; the MCP listener refuses the HTTP operation namespace. The
 adapter owns 32 in-flight requests independently of legacy logical sessions.
+The MCP boundary never promotes either legacy secret header name, even when it
+carries a valid installation or agent token; bearer authority comes only from
+Authorization. The shared acceptance table chooses the refusal.
 MCP close and authentication-policy close drain its request owners before
 storage/lock release; policy close replaces the drained owner unless stopping.
 The linked contract contains the neighbour checklist, credential matrix and

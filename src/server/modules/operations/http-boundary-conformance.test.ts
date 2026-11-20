@@ -1882,3 +1882,18 @@ it("MCP security headers, raw singleton refusals and Node protocol ownership", a
   for (const path of ["/mcp", "/mcp/operations", "/mcp/operations/"]) await expect(f.driver.wire(path, "CONNECT")).rejects.toMatchObject({ code: "ECONNRESET" });
   const upgrade = await f.driver.wire("/mcp/operations/", "GET", true); expect(upgrade.status).toBe(404);
 });
+
+
+it.each(["open", "token", "better-auth", "legacy"])("MCP %s legacy secret headers never promote stored tokens on any method", async mode => {
+  const f = await mcpFixture(mode);
+  for (const message of [mcpInitialize, mcpNotification, mcpList, mcpCall]) {
+    for (const name of ["X-Worktree-Control-Token", "X-Worktree-Switcher-Token"]) {
+      for (const secret of [f.installation, f.agent, ...f.storedLegacy.map(row => row.secret)]) {
+        const reply = await f.driver.send({ body: JSON.stringify(message), headers: { ...mcpHeaders(), [name]: secret } }).reply;
+        expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal(mode === "legacy" ? "unknown_mode" : "legacy_credential"));
+      }
+    }
+  }
+  expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
+  expect(f.oldAuthentication.authenticateInstallation).not.toHaveBeenCalled(); expect(f.oldAuthentication.anonymousInstallation).not.toHaveBeenCalled();
+}, 30_000);

@@ -32,7 +32,7 @@ export const OPERATIONS_HTTP_LIMITS = Object.freeze({ bodyBytes: 64 * 1024, unix
   responseBytes: 256 * 1024, deadlineMs: 10_000, maxInFlight: 32, json: Object.freeze({ maxDepth: 8, maxFields: 128 }) });
 
 /** Preserve raw multiplicity, including headers Node would otherwise discard. */
-export function presentedCredentials(request: IncomingMessage): PresentedCredentials {
+export function presentedCredentials(request: IncomingMessage, legacyHeaders: "tokens" | "refuse" = "tokens"): PresentedCredentials {
   const bearers: PresentedCredentials["bearers"][number][] = [];
   let cookie = false, browserHeaders = false, legacySecret = false;
   for (let i = 0; i < request.rawHeaders.length; i += 2) {
@@ -40,8 +40,8 @@ export function presentedCredentials(request: IncomingMessage): PresentedCredent
     if (name === "authorization" || name === CONTROLLER_TOKEN_HEADER.toLowerCase() || name === LEGACY_CONTROLLER_TOKEN_HEADER.toLowerCase()) {
       const secret = name === "authorization" ? (/^Bearer\s+(.+)$/i.exec(value)?.[1] ?? "") : value;
       const credentialClass = classifyBearer(secret);
-      if (name !== "authorization" && credentialClass === "unrecognized" && !legacySecret) legacySecret = true;
-      else bearers.push({ class: credentialClass, secret });
+      if (name !== "authorization" && (legacyHeaders === "refuse" || credentialClass === "unrecognized") && !legacySecret) legacySecret = true;
+      else bearers.push({ class: name !== "authorization" && legacyHeaders === "refuse" ? "unrecognized" : credentialClass, secret });
     }
     if (name === "cookie") cookie ||= containsProviderCookie(value);
     if (name === "cookie" || name === "origin" || name.startsWith("sec-fetch-")) browserHeaders = true;
