@@ -4,6 +4,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as adminSocket from "../server/admin-socket";
 import * as backups from "../server/modules/backups";
 import * as closeOwnership from "../server/bootstrap/offline-store-ownership";
 import * as locks from "../server/controller-lock";
@@ -251,13 +252,27 @@ describe("session describe CLI mount", () => {
 
 
   it("negative control: socket fallback is detected as an unexpected store open", async () => {
-    const f = fixture(), lock = owner(f), acquire = locks.acquireControllerLock, seen = observe();
-    // Mutant drops the real owner's refusal and grants the command the existing owner.
-    seen.acquire.mockImplementation(path => { try { return acquire(path); } catch { return lock; } });
-    await f.run();
+    const f = fixture(), lock = owner(f), request = adminSocket.requestAdminSocket, seen = observe();
+    let failedSocket: string | undefined;
+    // Fault injection in the shared client: after its REAL failure, wrongly relinquish
+    // the fixture owner and re-enter offline execution in this same outer invocation.
+    vi.spyOn(adminSocket, "requestAdminSocket").mockImplementation(async (...args) => {
+      try { return await request(...args); }
+      catch (cause) {
+        failedSocket = (cause as NodeJS.ErrnoException).code;
+        lock.release(); let dto: unknown;
+        await runSessionDescribe(["describe"], f.paths, line => { dto = JSON.parse(line); });
+        return dto;
+      }
+    });
+    await f.run(); expect(failedSocket).toBe("ENOENT");
+    expect(JSON.parse(f.lines[0]).listener).toBe("offline");
     const observed = seen.opened.length, expected = 0;
     expect(observed).toBe(1);
     expect(() => expect(observed, "socket failure store opens").toBe(expected)).toThrow("expected 1 to be +0");
+    const acquisitions = seen.acquire.mock.calls.filter(([path]) => path === f.paths.controllerLockPath).length;
+    expect(acquisitions).toBe(2);
+    expect(() => expect(acquisitions, "controller lock acquisition attempts").toBe(1)).toThrow("expected 2 to be 1");
   }, 20_000);
 
   it("negative control: omitted handoff guard is detected by constructor count", async () => {
