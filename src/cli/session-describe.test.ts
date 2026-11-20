@@ -35,7 +35,7 @@ vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof imp
 const RealStore = stores.SqliteStateStore;
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const close of cleanup.splice(0).reverse()) await close(); });
-const operationError = (reason: string, category = "unavailable", retry = "none", status = 503) => ({ category, reason, retry, status, effect: null });
+const operationError = (reason: string, category = "unavailable", retry = "none", status = 503) => ({ category, status, reason, retry, effect: null });
 function fixture(mode = "token") {
   const root = mkdtempSync(join(tmpdir(), "cli-session-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
