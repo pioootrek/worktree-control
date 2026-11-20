@@ -483,7 +483,7 @@ describe("session describe real-process output", () => {
           databaseLocked: existsSync(paths.databasePath + ".owner.lock") });
         process.disconnect();
       });`;
-    const environment = { PATH: process.env.PATH, NODE_ENV: "test", HOME: f.root,
+    const environment: NodeJS.ProcessEnv = { PATH: process.env.PATH, NODE_ENV: "test", HOME: f.root,
       WORKTREE_CONTROL_DATA_DIR: f.paths.dataDirectory, WORKTREE_CONTROL_STATE_DIR: f.paths.stateDirectory };
     const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", source], {
       cwd: repository, env: environment,
