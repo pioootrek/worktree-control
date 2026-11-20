@@ -475,7 +475,6 @@ describe("real API and unix acceptance", () => {
     expectFailure(() => assertLegacyParity(broken, baseline), "legacy Upgrade parity", { reset: "ECONNRESET" }, baseline);
   });
 
-  // Hundreds of real HTTP exchanges exercise raw aliases on both listeners.
   it("refuses normalized aliases before all legacy work, with cookie refusal first", async () => {
     const f = await fixture("better-auth");
     const admission = vi.spyOn(f.store.admission, "run"), mint = vi.spyOn(f.runtime, "mint");
@@ -513,7 +512,7 @@ describe("real API and unix acceptance", () => {
     expect(f.oldAuthentication.authenticateInstallation).not.toHaveBeenCalled();
     expect(f.oldAuthentication.anonymousInstallation).not.toHaveBeenCalled(); expect(f.legacy).not.toHaveBeenCalled();
     expect(f.provider.isSessionAuthorityEligible).not.toHaveBeenCalled();
-  }, 30000);
+  });
 
   it("keeps near-prefix legacy targets identical to the unmounted listeners", async () => {
     const old = await fixture("open", undefined, "unmounted"), mounted = await fixture();
@@ -1376,10 +1375,10 @@ describe("worker HTTPS boundary conformance", () => {
       ["Host", "localhost", "Content-Type", "application/json", "Content-Length", "2", "Authorization", `Bearer ${f.installation}`, "Authorization", `Bearer ${f.installation}`],
       { ...auth(f.installation), "X-Worktree-Control-Token": f.installation },
       { ...auth(f.installation), "X-Worktree-Switcher-Token": f.installation },
-    ]) expect((await f.driver.send({ headers }).reply).body).toEqual(refusal("mixed_credentials"));
+    ]) { const reply = await f.driver.send({ headers }).reply; expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal("mixed_credentials")); }
     mint.mockClear(); const admission = vi.spyOn(f.store.admission, "run"); let reads = 0;
     f.worker.server.prependListener("request", req => req.on("newListener", name => { if (name === "data") reads++; }));
-    for (const mode of ["POST", "GET"]) expect((await f.driver.send({ method: mode, slow: true, headers: { ...auth(f.installation), Cookie: "wtc.session=x" } }).reply).body).toEqual(refusal("provider_cookie_not_supported"));
+    for (const mode of ["POST", "GET"]) { const reply = await f.driver.send({ method: mode, slow: true, headers: { ...auth(f.installation), Cookie: "wtc.session=x" } }).reply; expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal("provider_cookie_not_supported")); }
     expect(reads).toBe(0); expect(mint).not.toHaveBeenCalled(); expect(admission).not.toHaveBeenCalled(); expect(f.runtime.requestBudget.active).toBe(0); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
   });
 
@@ -1602,7 +1601,6 @@ async function mcpFixture(mode = "open", fault?: "early_release", base?: Fixture
 }
 
 describe("MCP listener boundary conformance", () => {
-  // Includes real legacy SDK startup and initialize/list exchanges.
   it.each(["open", "token", "better-auth", "legacy"])("stored matrix in %s on every method; unchanged legacy authentication", async mode => {
     const f = await mcpFixture(mode), mint = vi.spyOn(f.runtime, "mint");
     for (const message of [mcpInitialize, mcpNotification, mcpList, mcpCall]) {
@@ -1636,7 +1634,7 @@ describe("MCP listener boundary conformance", () => {
       const scopedLegacy = await f.client(true, f.storedLegacy[0].secret);
       expect((await scopedLegacy.listTools()).tools.length).toBeGreaterThan(0);
     }
-  }, 30_000);
+  });
 
   it.each(["open", "token", "better-auth"])("%s SDK sequential initialize/list/call has no session authority", async mode => {
     const f = await mcpFixture(mode), client = await f.client(false, mode === "token" ? f.installation : mode === "better-auth" ? f.agent : undefined);
@@ -2206,13 +2204,13 @@ it("mounted MCP rejects strict JSON and spoofed authority fields without changin
   expect(spoofed.status).toBe(200); expect(spoofed.body.result.structuredContent).toEqual(baseline);
 });
 
-it.each(["open", "token", "better-auth"])("API %s without a cookie boundary reports acceptance refusal after bounded body work", async mode => {
+it.each(["open", "token", "better-auth"])("API %s without a cookie boundary refuses before body and provider slots but uses mint admission", async mode => {
   const f = await fixture(mode), mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run");
   const acquire = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire"); let bodyReads = 0;
   f.controller.server.prependListener("request", req => req.on("newListener", event => { if (event === "data") bodyReads++; }));
   const reply = await f.send("api", { headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply;
   expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal(mode === "open" ? "credential_in_open_mode" : mode === "token" ? "credential_not_accepted_here" : "invalid_credential"));
-  expect(bodyReads).toBeGreaterThan(0); expect(mint).toHaveBeenCalledOnce(); expect(admission).toHaveBeenCalled();
+  expect(bodyReads).toBe(0); expect(mint).toHaveBeenCalledOnce(); expect(admission).toHaveBeenCalled();
   expect(acquire).not.toHaveBeenCalled(); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
 });
 

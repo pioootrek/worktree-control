@@ -78,22 +78,24 @@ function presetRuns(file: string, preset: string, read: Read, seen = new Set<str
       (!filters.length || filters.some(filter => file.includes(filter)));
   });
 }
-function missing(row: Evidence, read: Read): string[] {
+function missing(row: Evidence, read: Read, cache?: Map<string, Set<string>>): string[] {
   let source: string;
   try { source = read(row.file); } catch { return [`gate_audit_missing_file: ${row.file}`]; }
-  const errors = titles(row.file, source).has(row.title) ? [] : [`gate_audit_missing_title: ${row.file}: ${row.title}`];
+  const active = cache?.get(row.file) ?? titles(row.file, source);
+  cache?.set(row.file, active);
+  const errors = active.has(row.title) ? [] : [`gate_audit_missing_title: ${row.file}: ${row.title}`];
   if (!presetRuns(row.file, row.preset, read)) errors.push(`gate_audit_wrong_preset: ${row.file}: ${row.preset}`);
   return errors;
 }
 function matrixKeys(rows: Evidence[]) {
-  const surfaces: Record<string, string> = { "API bearer": "api-bearer", "unix": "unix", "worker TLS": "worker-tls", "MCP initialize/list/call": "mcp", "CLI socket": "cli-socket", "CLI offline": "cli-offline", "API cookie": "api-cookie" };
+  const surfaces: Record<string, string> = { "API bearer": "api-bearer", "unix socket": "unix", "worker TLS": "worker-tls", "MCP initialize/list/call": "mcp", "CLI socket": "cli-socket", "CLI offline": "cli-offline", "API cookie": "api-cookie" };
   return rows.filter(row => row.item.startsWith("Installed ")).map(row => {
     const match = /^Installed (.*): (.*)$/.exec(row.item);
     return match && surfaces[match[1]] ? `${surfaces[match[1]]}/${match[2]}` : "invalid-cell";
   }).sort();
 }
 function inventory(markdown: string, read: Read) {
-  const rows = evidence(markdown), errors: string[] = [];
+  const rows = evidence(markdown), errors: string[] = [], cache = new Map<string, Set<string>>();
   const totals = /Gate rows: (\d+)\. Artifact cells: (\d+)\./.exec(markdown);
   const cells = matrixKeys(rows);
   if (!totals || rows.length - cells.length !== Number(totals[1]) || cells.length !== Number(totals[2])) errors.push("gate_audit_totals");
@@ -103,7 +105,7 @@ function inventory(markdown: string, read: Read) {
   if (!expected || JSON.stringify(cells) !== JSON.stringify(JSON.parse(expected[1]).sort()) || new Set(cells).size !== cells.length) errors.push("gate_audit_matrix");
   for (const row of rows) {
     if (/^(?:defect:|partially proven:|deferral:|not applicable:)/.test(row.status)) continue;
-    errors.push(...missing(row, read));
+    errors.push(...missing(row, read, cache));
     if (!["proven before this step", "added in this step"].includes(row.status)) errors.push(`gate_audit_status: ${row.item}`);
   }
   if (new Set(rows.map(row => row.item)).size !== rows.length) errors.push("gate_audit_duplicates");

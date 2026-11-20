@@ -64,15 +64,15 @@ Gate rows: 191. Artifact cells: 21.
 | Composition: changed fingerprint after mint | `src/server/modules/operations/operations-runtime-composition.test.ts` | `refuses a changed %s after mint` | `node:check` | proven before this step |
 | Listeners API/unix: allowed matrix | `src/server/modules/operations/http-boundary-conformance.test.ts` | `full wire matrix in %s, with no old authentication or usage write` | `node:test:operations-mcp` | proven before this step |
 | Listeners API/unix: denied matrix and exact public reasons | `src/server/modules/operations/http-boundary-conformance.test.ts` | `full wire matrix in %s, with no old authentication or usage write` | `node:test:operations-mcp` | proven before this step |
-| Listeners API/unix: legacy startup and unknown_mode | `src/server/modules/operations/http-boundary-conformance.test.ts` | `full wire matrix in %s, with no old authentication or usage write` | `node:test:operations-mcp` | proven before this step |
+| Listeners API/unix: legacy startup and unknown_mode | `scripts/package-rbac.mjs` | `legacy-startup-all-mounted-operations-and-cli` | `node:test:rbac-artifact` | added in this step |
 | Listeners API/unix: unchanged legacy authentication | `src/server/modules/operations/http-boundary-conformance.test.ts` | `full wire matrix in %s, with no old authentication or usage write` | `node:test:operations-mcp` | proven before this step |
 | Listeners worker: allowed matrix | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored credential matrix in %s; protocol retains worker authentication` | `node:test:operations-mcp` | proven before this step |
 | Listeners worker: denied matrix and exact public reasons | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored credential matrix in %s; protocol retains worker authentication` | `node:test:operations-mcp` | proven before this step |
-| Listeners worker: legacy startup and unknown_mode | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored credential matrix in %s; protocol retains worker authentication` | `node:test:operations-mcp` | proven before this step |
+| Listeners worker: legacy startup and unknown_mode | `scripts/package-rbac.mjs` | `legacy-startup-all-mounted-operations-and-cli` | `node:test:rbac-artifact` | added in this step |
 | Listeners worker: unchanged legacy authentication | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored credential matrix in %s; protocol retains worker authentication` | `node:test:operations-mcp` | proven before this step |
 | Listeners MCP: allowed matrix | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored matrix in %s on every method; unchanged legacy authentication` | `node:test:operations-mcp` | proven before this step |
 | Listeners MCP: denied matrix and exact public reasons | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored matrix in %s on every method; unchanged legacy authentication` | `node:test:operations-mcp` | proven before this step |
-| Listeners MCP: legacy startup and unknown_mode | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored matrix in %s on every method; unchanged legacy authentication` | `node:test:operations-mcp` | proven before this step |
+| Listeners MCP: legacy startup and unknown_mode | `scripts/package-rbac.mjs` | `legacy-startup-all-mounted-operations-and-cli` | `node:test:rbac-artifact` | added in this step |
 | Listeners MCP: unchanged legacy authentication | `src/server/modules/operations/http-boundary-conformance.test.ts` | `stored matrix in %s on every method; unchanged legacy authentication` | `node:test:operations-mcp` | proven before this step |
 | Listeners API/unix: duplicate credentials | `src/server/modules/operations/http-boundary-conformance.test.ts` | `preserves duplicate and mixed raw credentials` | `node:test:operations-mcp` | proven before this step |
 | Listeners API/unix: mixed credentials | `src/server/modules/operations/http-boundary-conformance.test.ts` | `preserves duplicate and mixed raw credentials` | `node:test:operations-mcp` | proven before this step |
@@ -222,7 +222,7 @@ Gate rows: 191. Artifact cells: 21.
 | Release after runner completion unix: connection | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | added in this step |
 | Release after runner completion unix: provider configuration | `src/server/modules/operations/http-boundary-conformance.test.ts` | `%s release after runner completion recomputes every applicable authority fence` | `node:test:operations-mcp` | not applicable: provider-only changes do not fence agent or operator authority; the named test asserts a fresh successful DTO |
 | Release after runner completion worker: provider configuration | `src/server/modules/operations/http-boundary-conformance.test.ts` | `fresh release after runner completion rechecks %s` | `node:test:operations-mcp` | not applicable: provider-only configuration does not fence agent authority; the named configuration case retains a fresh successful DTO |
-| API no cookie boundary: open/token/better-auth after body and admission | `src/server/modules/operations/http-boundary-conformance.test.ts` | `API %s without a cookie boundary reports acceptance refusal after bounded body work` | `node:test:operations-mcp` | added in this step |
+| API no cookie boundary: open/token/better-auth before body but with mint admission | `src/server/modules/operations/http-boundary-conformance.test.ts` | `API %s without a cookie boundary refuses before body and provider slots but uses mint admission` | `node:test:operations-mcp` | added in this step |
 | Worker legacy header names: recognized token semantics | `src/server/modules/operations/http-boundary-conformance.test.ts` | `worker %s recognized tokens in legacy header names retain bearer semantics` | `node:test:operations-mcp` | added in this step |
 | Legacy real startup: API/unix/worker/MCP/CLI socket and offline | `scripts/package-rbac.mjs` | `legacy-startup-all-mounted-operations-and-cli` | `node:test:rbac-artifact` | added in this step |
 | Listing: complete serialized DTO byte bound | `src/server/modules/operations/session-describe.test.ts` | `accounts for the complete DTO when the last project puts it %i bytes over budget` | `node:check` | added in this step |
@@ -292,8 +292,6 @@ The exceptions are:
 
 - `bounds the listing, omits invalid IDs and includes archived projects`: 20 s,
   inserts 500 durable rows.
-- `refuses normalized aliases before all legacy work, with cookie refusal first`:
-  30 s, hundreds of real HTTP requests.
 - `%s completes a large real DTO under real socket backpressure`: 20 s,
   inserts 300 durable rows.
 - `uses the socket's real ten second deadline for a slow operations body`:
@@ -302,8 +300,6 @@ The exceptions are:
   15 s, production timer.
 - `deadline cancels work held after mint, retains ownership, and shutdown joins work before SQLite and lock release`:
   15 s, production timer.
-- `stored matrix in %s on every method; unchanged legacy authentication`:
-  30 s, real legacy SDK startup and exchanges.
 - `MCP deadline retains capacity until real work settles; legacy requests retain independent admission`:
   30 s, production timer.
 - `%s production timeouts remain documented; real slow headers and request expiry refuse before mint`:
@@ -343,7 +339,7 @@ admission and provider resolution. On 2026-11-20 the lead directed this audit to
 treat 5a as a historical intermediate gate. Its four rows retain explicit
 no-body/no-budget/no-admission/no-provider assertions on legacy API and the
 unix, worker and MCP mounts. In open/token API mode, and better-auth without a
-configured public origin/cookie boundary, the body is read and mint uses
+configured public origin/cookie boundary, the body is not read; mint uses
 admission before refusing `credential_in_open_mode`,
 `credential_not_accepted_here` and `invalid_credential` respectively. Those
 configurations do not use provider resolution or an initiating provider slot;
