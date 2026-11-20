@@ -165,6 +165,16 @@ tokens.
 
 ## Release delivery
 
+Before the next breaking release, which ships the authorization unification
+from `integration/auth-unification`, these recorded release blockers must be
+settled; each is described in the
+[authorization contract](authorization-contract.md) and the changelog:
+
+- Owner decision 4(b): whether `open` mode may serve the worker listener on a
+  non-loopback address, and in what form.
+- Knowledge project IDs outside the contract grammar: the hand migration,
+  prevention in create and import, and an approved repair procedure.
+
 For `0.2.0`:
 
 1. Use both artifacts from the same successful CI run and attempt on the final

@@ -74,7 +74,7 @@
     "typecheck": "tsc --noEmit",
     "test:run-directory": "vitest run src/server/test-job-run-directory.test.ts src/server/infrastructure/run-directories src/server/test-job-manager.test.ts src/server/modules/environments/profile-validation.test.ts src/architecture.test.ts",
     "test:run-directory-scale": "tsx scripts/run-directory-scale.ts",
-    "test:operations-mcp": "vitest run --maxWorkers 1 src/server/modules/operations/mcp-request-adapter.test.ts src/server/modules/operations/unmounted.test.ts src/server/modules/operations/http-boundary-conformance.test.ts",
+    "test:operations-mcp": "vitest run --maxWorkers 1 src/server/modules/operations/gate-audit.test.ts src/server/modules/operations/mcp-request-adapter.test.ts src/server/modules/operations/unmounted.test.ts src/server/modules/operations/http-boundary-conformance.test.ts",
     "test:modules": "vitest run src/server/modules src/server/infrastructure src/architecture.test.ts",
     "test:test-run-admin": "vitest run src/server/modules/verification/run-ownership.test.ts src/server/test-run-administration.test.ts src/cli/test-run-administration.test.ts src/cli/help.test.ts src/server/admin-socket.test.ts src/server/test-job-manager.test.ts",
     "test:sandbox": "vitest run src/cli/sandbox.test.ts src/cli/help.test.ts",

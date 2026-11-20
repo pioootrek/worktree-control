@@ -58,20 +58,20 @@ describe("offline real lock and real SQLite ownership", () => {
     const commit = vi.fn(() => { f.store.getAuthenticationPolicy(); expect(f.lock.held()).toBe(true); });
     expect(await f.runtime.runner.readRelease(sessionDescribe, minted.context, {}, f.releaseOptions(commit))).toEqual({ status: "committed" });
     expect(commit).toHaveBeenCalledTimes(1);
-  }, 20_000);
+  });
 
   it("refuses replacement before mint without requesting admission", async () => {
     const f = fixture(), admission = vi.spyOn(f.store, "admission", "get");
     f.replace(); expect(await f.runtime.mintOffline({})).toEqual(refused);
     expect(admission).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("rechecks the real lock inside mint after waiting for admission", async () => {
     const f = fixture(), gate = pauseAdmission(f.store);
     gate.arm(); const pending = f.build().mintOffline({});
     await gate.entered; f.replace(); gate.resume();
     expect(await pending).toEqual(refused);
-  }, 20_000);
+  });
 
   it("refuses replacement between mint and execution, after admission wait", async () => {
     const f = fixture(), gate = pauseAdmission(f.store), runtime = f.build();
@@ -80,7 +80,7 @@ describe("offline real lock and real SQLite ownership", () => {
     gate.arm(); const pending = runtime.runner.run(sessionDescribe, minted.context, {});
     await gate.entered; f.replace(); gate.resume();
     expect(await pending).toEqual(refused);
-  }, 20_000);
+  });
 
   it("refuses replacement between execution and the final admitted release, with no DTO committed", async () => {
     const f = fixture(), gate = pauseAdmission(f.store), runtime = f.build();
@@ -91,7 +91,7 @@ describe("offline real lock and real SQLite ownership", () => {
     const pending = runtime.runner.readRelease(sessionDescribe, minted.context, {}, f.releaseOptions(commit));
     await gate.entered; f.replace(); gate.resume();
     expect(await pending).toEqual({ status: "refused", error }); expect(commit).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("negative control: omitting the release-stage held check exposes the exact forbidden success", async () => {
     const f = fixture(); let omit = false;
@@ -104,7 +104,7 @@ describe("offline real lock and real SQLite ownership", () => {
     const expected = { status: "refused", error };
     expect(observed).toEqual({ status: "committed" }); expect(commit).toHaveBeenCalledTimes(1);
     expect(() => expect(observed).toEqual(expected)).toThrow(/committed/);
-  }, 20_000);
+  });
 
   it("drains real accepted work and closes SQLite before lock release", async () => {
     const f = fixture(), started = deferred(), finish = deferred(), events: string[] = [];
@@ -118,7 +118,7 @@ describe("offline real lock and real SQLite ownership", () => {
     expect(events).toEqual([]); expect(f.lock.held()).toBe(true);
     finish.resolve(); await work; await closing;
     expect(events).toEqual(["drained", "closed", "released"]); expect(f.lock.held()).toBe(false);
-  }, 20_000);
+  });
 
   it("a failing real store close leaves the controller lock held and unchanged", async () => {
     const f = fixture(), before = readFileSync(f.paths.controllerLockPath, "utf8"), failure = new Error("close unconfirmed");
@@ -126,7 +126,7 @@ describe("offline real lock and real SQLite ownership", () => {
     await expect(closeOfflineStore(f.store, f.lock)).rejects.toBe(failure);
     expect(release).not.toHaveBeenCalled(); expect(f.lock.held()).toBe(true);
     expect(readFileSync(f.paths.controllerLockPath, "utf8")).toBe(before); close.mockRestore();
-  }, 20_000);
+  });
 
   it("negative control: early lock release fails the exact close-order assertion", async () => {
     const f = fixture();
@@ -135,5 +135,5 @@ describe("offline real lock and real SQLite ownership", () => {
     expect(observed).toBe(false);
     expect(() => expect(observed, "controller lock held before SQLite close").toBe(expected)).toThrow(/expected false to be true/);
     await f.store.closeAfterDrain();
-  }, 20_000);
+  });
 });

@@ -5,6 +5,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Writable } from "node:stream";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { createBoundaryDriver } from "../server/modules/operations/http-boundary-driver";
+import { createRemoteVerificationServer } from "../server/transports/remote-verification-http";
+import type { RemoteVerificationController } from "../server/modules/remote-verification";
+import { createMcpControllerServer } from "../server/mcp-http-server";
+import { IdentityService } from "../server/modules/identity";
+import type { ControlService } from "../server/control-service";
+import type { AddressInfo } from "node:net";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +29,8 @@ import { listenAdminSocket } from "../server/admin-socket";
 import { AuthenticationService } from "../server/modules/authentication";
 import { assertBackupHandoffCompleted } from "../server/modules/backups";
 import { recordHash } from "../server/modules/backups/records";
+import { createFencedAt49 } from "../server/infrastructure/sqlite/fixtures/released-schema";
+import { OwnedSqliteDatabase } from "../server/infrastructure/sqlite/owned-database";
 import { ownedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { hash, token, presentedBearer, none } from "../server/modules/operations/adapters/credential-verifier-fixture";
 import { FRESH_LOGIN_WINDOW_MS } from "../shared/contracts/operations";
@@ -63,7 +72,7 @@ function observe() {
 }
 const options = (store: stores.SqliteStateStore, mode: string) => ({ store, activeMode: mode, now: Date.now,
   logs: { controller: vi.fn() }, requestBudget: new AuthenticationRequestBudget(16, 4), provider: null,
-  eligibility: { controllerEligible: () => true, providerSessionEligible: () => false }, listeners: { unix: () => true, api: () => true } });
+  eligibility: { controllerEligible: () => true, providerSessionEligible: () => false }, listeners: { unix: () => true, api: () => true, worker: () => true, mcp: () => true } });
 
 describe("session describe CLI mount", () => {
   it.each(["open", "token", "better-auth"])("offline %s writes the released DTO admitted, then closes before release", async mode => {
@@ -85,7 +94,7 @@ describe("session describe CLI mount", () => {
     expect(seen.acquire.mock.calls.filter(([path]) => path === f.paths.controllerLockPath)).toHaveLength(1);
     expect(seen.acquire.mock.calls.filter(([path]) => path === `${f.paths.databasePath}.owner.lock`)).toHaveLength(1);
     expect(legacy).not.toHaveBeenCalled(); expect(usage).not.toHaveBeenCalled();
-  }, 20_000);
+  });
 
   it("destroyed stdout is a failed admitted commit, then drains/closes before release", async () => {
     const f = fixture(), seen = observe(), build = offline.buildOfflineOperationsRuntime, events: string[] = [];
@@ -118,7 +127,7 @@ describe("session describe CLI mount", () => {
     expect(existsSync(f.paths.controllerLockPath)).toBe(false);
     drainSpy.mockRestore(); closeSpy.mockRestore();
     const reopened = new RealStore(f.paths.databasePath); await reopened.closeAfterDrain();
-  }, 20_000);
+  });
 
   it("a malformed lock refuses offline_lock_unavailable before socket or store construction", async () => {
     const f = fixture(), seen = observe(), request = vi.spyOn(adminSocket, "requestAdminSocket");
@@ -127,7 +136,7 @@ describe("session describe CLI mount", () => {
     await expect(f.run()).rejects.toMatchObject({ error: operationError("offline_lock_unavailable") });
     expect(request).not.toHaveBeenCalled(); expect(stores.SqliteStateStore).not.toHaveBeenCalled();
     expect(seen.opened).toEqual([]); expect(f.lines).toEqual([]);
-  }, 20_000);
+  });
 
   it("ordinary store opening keeps its fence refusal and releases the controller lock", async () => {
     const f = fixture(); rmSync(`${f.paths.databasePath}.security/witness.json`);
@@ -135,13 +144,47 @@ describe("session describe CLI mount", () => {
     await expect(f.run()).rejects.toMatchObject({ code: "security_fence_recovery_required" });
     expect(seen.opened).toEqual([]); expect(stores.SqliteStateStore).toHaveBeenCalledTimes(1);
     expect(f.lines).toEqual([]); expect(existsSync(f.paths.controllerLockPath)).toBe(false);
-  }, 20_000);
+  });
+
+  // Spawns the real CLI, including TypeScript loader startup.
+  it("upgrade-required offline command preserves the diagnostic, never enables writes, and releases both locks", async () => {
+    const f = fixture();
+    rmSync(f.paths.dataDirectory, { recursive: true });
+    createFencedAt49(f.paths.databasePath);
+    const before = readFileSync(f.paths.databasePath), witness = readFileSync(`${f.paths.databasePath}.security/witness.json`);
+    const enableWrites = vi.spyOn(OwnedSqliteDatabase.prototype, "enableWrites"), seen = observe();
+    let refusal: unknown;
+    try { await f.run(); } catch (error) { refusal = error; }
+    expect(refusal).toMatchObject({ code: "upgrade_required", nextStep: "upgrade inspect" });
+    expect(enableWrites).not.toHaveBeenCalled(); expect(seen.opened).toEqual([]); expect(f.lines).toEqual([]);
+    expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+    expect(existsSync(`${f.paths.databasePath}.owner.lock`)).toBe(false);
+    const repository = fileURLToPath(new URL("../../", import.meta.url));
+    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, ["--import", "tsx", join(repository, "src/cli/index.ts"), "session", "describe",
+        "--data-dir", f.paths.dataDirectory, "--state-dir", f.paths.stateDirectory], {
+        cwd: repository, env: { PATH: process.env.PATH, HOME: f.root, NODE_ENV: "test" }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "", stderr = "";
+      const timer = setTimeout(() => { child.kill("SIGKILL"); }, 20_000);
+      child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
+      child.once("error", reject); child.once("close", code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+    });
+    expect(result.code).toBe(1); expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr)).toEqual({ code: "upgrade_required",
+      error: "upgrade_required: This database requires an explicit offline upgrade before ordinary access. Next step: upgrade inspect.",
+      nextStep: "upgrade inspect", state: "upgrade_needed" });
+    expect(readFileSync(f.paths.databasePath)).toEqual(before);
+    expect(readFileSync(`${f.paths.databasePath}.security/witness.json`)).toEqual(witness);
+    expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+    expect(existsSync(`${f.paths.databasePath}.owner.lock`)).toBe(false);
+  }, 40_000);
 
   it("legacy is refused by the boundary without output", async () => {
     const f = fixture("legacy");
     await expect(f.run()).rejects.toMatchObject({ error: operationError("unknown_mode", "unauthenticated", "reauthenticate", 401) });
     expect(f.lines).toEqual([]); expect(existsSync(f.paths.controllerLockPath)).toBe(false);
-  }, 20_000);
+  });
 
   it.each(["open", "token", "better-auth"])("unix %s equals offline and API authority with exactly actor/listener differences", async mode => {
     const f = fixture(mode);
@@ -178,12 +221,34 @@ describe("session describe CLI mount", () => {
         installationPermissions: mode === "better-auth" ? [] : unixDto.installationPermissions,
         freshLogin: { state: mode === "better-auth" ? "unavailable" : "exempt", validUntil: null } });
     }
+    const identity = new IdentityService(store);
+    const worker = createRemoteVerificationServer({ identity, controller: {} as RemoteVerificationController,
+      admission: store.admission, allowLoopbackHttpFixture: true, operations: runtime });
+    const mcpOptions = { service: { admission: store.admission, remoteVerificationEnabled: () => false } as unknown as ControlService,
+      port: 0, accessToken: "fixture", identity, authentication: { mode: () => mode as "open", authenticateInstallation: vi.fn(), anonymousInstallation: vi.fn() }, operations: runtime };
+    const mcp = createMcpControllerServer(mcpOptions);
+    cleanup.push(() => worker.close(), () => mcp.close());
+    await new Promise<void>(resolve => worker.server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>(resolve => mcp.server.listen(0, "127.0.0.1", resolve));
+    mcpOptions.port = (mcp.server.address() as AddressInfo).port;
+    for (const listener of ["worker", "mcp"] as const) {
+      const driver = createBoundaryDriver({ kind: listener, server: listener === "worker" ? worker.server : mcp.server,
+        close: () => listener === "worker" ? worker.close() : mcp.close(), legacyPath: "/", acceptedCredentials: [] });
+      const reply = await driver.send({ headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream",
+        ...(mode === "open" ? {} : { Authorization: `Bearer ${secret}` }) } }).reply;
+      expect(reply.status).toBe(200);
+      const dto = listener === "mcp" ? reply.body.result.structuredContent : reply.body;
+      expect(dto).toEqual({ ...unixDto, listener,
+        actor: { kind: mode === "better-auth" ? "agent" : "installation", accountId: mode === "better-auth" ? "fixture-agent" : null },
+        fullAuthority: mode !== "better-auth", installationPermissions: mode === "better-auth" ? [] : unixDto.installationPermissions,
+        freshLogin: { state: mode === "better-auth" ? "unavailable" : "exempt", validUntil: null } });
+    }
     expect(seen.opened).toEqual([]); expect(seen.acquire).toHaveBeenCalledTimes(1);
     expect(readFileSync(f.paths.controllerLockPath, "utf8")).toBe(record); expect(lock.held()).toBe(true);
     expect(legacy).not.toHaveBeenCalled(); expect(usage).not.toHaveBeenCalled();
     expect(JSON.stringify([f.lines, policy.logs.controller.mock.calls])).not.toContain(credentialId);
     expect(JSON.stringify([f.lines, policy.logs.controller.mock.calls])).not.toMatch(/sessionId|credentialId|verifierHash|last_used_at/);
-  }, 20_000);
+  });
 
   it("better-auth human freshness differs exactly from the offline operator", async () => {
     const f = fixture("better-auth"), now = Date.now(), world = createProviderWorld({ now });
@@ -206,7 +271,7 @@ describe("session describe CLI mount", () => {
     if (result.ok) expect(result.value).toEqual({ ...offlineDto, actor: { kind: "human", accountId: "fixture-human" }, listener: "api", fullAuthority: false,
       freshLogin: { state: "satisfied", validUntil: new Date(now + FRESH_LOGIN_WINDOW_MS).toISOString() } });
     expect(JSON.stringify(f.lines)).not.toContain(session.sessionId);
-  }, 20_000);
+  });
 
   it("legacy on the real unix listener refuses unknown_mode without fallback", async () => {
     const f = fixture("legacy"); owner(f); const store = new RealStore(f.paths.databasePath); cleanup.push(() => store.closeAfterDrain());
@@ -214,8 +279,9 @@ describe("session describe CLI mount", () => {
     cleanup.push(() => server.close()); const seen = observe();
     await expect(f.run()).rejects.toMatchObject({ error: operationError("unknown_mode", "unauthenticated", "reauthenticate", 401) });
     expect(seen.opened).toEqual([]); expect(seen.acquire).toHaveBeenCalledTimes(1); expect(f.lines).toEqual([]);
-  }, 20_000);
+  });
 
+  // The timeout variant waits for the real admin socket client deadline.
   it.each(["missing", "stale", "reset", "timeout", "maintenance", "release_not_eligible", "garbage", "oversize", "extra-field", "duplicate-key", "invalid-utf8", "wrong-status", "invalid-outcome", "depth", "c0"])(
     "lock taken: %s fails exactly, never opens a store or acquires ownership", async kind => {
       const f = fixture(); await f.run(); const dto = JSON.parse(f.lines.pop()!);
@@ -257,22 +323,34 @@ describe("session describe CLI mount", () => {
     const f = fixture(), lock = owner(f), seen = observe();
     await expect(f.run()).rejects.toMatchObject({ error: operationError("admin_socket_missing") });
     expect(lock.held()).toBe(true); expect(seen.opened).toHaveLength(0); expect(seen.acquire).toHaveBeenCalledTimes(1);
-  }, 20_000);
+  });
 
-  it.each(["pending", "unreadable"])("%s restore handoff stops before store construction", async kind => {
+  it.each(["pending", "malformed", "unreadable"])("%s restore handoff stops before store construction", async kind => {
     const f = fixture(), directory = `${f.paths.databasePath}.backup-operations`; mkdirSync(directory, { mode: 0o700 });
     const payload = { format: 1, actor: { actorId: "local-admin", idempotencyKey: "fixture", backupId: "00000000-0000-4000-8000-000000000001" },
       operationId: "00000000-0000-4000-8000-000000000002", createdAt: "2026-01-01T00:00:00.000Z", state: "executing", authentication: null, local: true };
     const path = join(directory, "handoff.json");
-    writeFileSync(path, kind === "pending" ? JSON.stringify({ payload, sha256: recordHash(payload) }) : "private-session-row", { mode: 0o600 });
-    if (kind === "unreadable") chmodSync(path, 0o600);
+    writeFileSync(path, kind === "malformed" ? "private-session-row" : JSON.stringify({ payload, sha256: recordHash(payload) }), { mode: 0o600 });
     const seen = observe();
     if (kind === "pending") {
       expect(() => assertBackupHandoffCompleted(f.paths.databasePath)).toThrow("Start the controller to complete restore authentication recovery before offline administration.");
       await expect(f.run()).rejects.toThrow("Start the controller to complete restore authentication recovery before offline administration.");
+    } else if (kind === "unreadable") {
+      if (process.getuid?.() !== 0) {
+        chmodSync(path, 0o000);
+        await expect(f.run()).rejects.toMatchObject({ error: operationError("restore_handoff_unreadable") });
+        chmodSync(path, 0o600);
+      }
+      // Exercise the privileged-runner fallback on every host.
+      const open = fs.openSync;
+      const denied = vi.fn(() => { throw Object.assign(new Error("fixture open denied"), { code: "EACCES" }); });
+      vi.spyOn(fs, "openSync").mockImplementation((file, flags, mode) =>
+        file === path ? denied() : open(file, flags, mode));
+      await expect(f.run()).rejects.toMatchObject({ error: operationError("restore_handoff_unreadable") });
+      expect(denied).toHaveBeenCalled();
     } else await expect(f.run()).rejects.toMatchObject({ error: operationError("restore_handoff_unreadable") });
     expect(seen.opened).toEqual([]); expect(f.lines).toEqual([]); expect(existsSync(f.paths.controllerLockPath)).toBe(false);
-  }, 20_000);
+  });
 
   it.each(["before-mint", "after-mint", "before-release"])("replaced real record %s refuses without stdout", async point => {
     const f = fixture(), build = offline.buildOfflineOperationsRuntime;
@@ -291,7 +369,7 @@ describe("session describe CLI mount", () => {
     });
     await expect(f.run()).rejects.toMatchObject({ error: operationError("offline_lock_not_held", "unauthenticated", "reauthenticate", 401) });
     expect(f.lines).toEqual([]);
-  }, 20_000);
+  });
 
   it("close failure retains the owner and reports disposal_unconfirmed", async () => {
     const f = fixture(), close = vi.spyOn(RealStore.prototype, "close").mockImplementation(() => { throw new Error("private-row"); });
@@ -299,7 +377,7 @@ describe("session describe CLI mount", () => {
     await expect(f.run()).rejects.toMatchObject({ code: "disposal_unconfirmed", cleanupConfirmed: false });
     expect(retain).toHaveBeenCalledTimes(1); expect(existsSync(f.paths.controllerLockPath)).toBe(true);
     close.mockRestore(); await seen.opened[0].closeAfterDrain();
-  }, 20_000);
+  });
 
 
   it("negative control: socket fallback is detected as an unexpected store open", async () => {
@@ -324,7 +402,7 @@ describe("session describe CLI mount", () => {
     const acquisitions = seen.acquire.mock.calls.filter(([path]) => path === f.paths.controllerLockPath).length;
     expect(acquisitions).toBe(2);
     expect(() => expect(acquisitions, "controller lock acquisition attempts").toBe(1)).toThrow("expected 2 to be 1");
-  }, 20_000);
+  });
 
   it("negative control: omitted handoff guard is detected by constructor count", async () => {
     const f = fixture(), directory = `${f.paths.databasePath}.backup-operations`; mkdirSync(directory, { mode: 0o700 });
@@ -334,7 +412,7 @@ describe("session describe CLI mount", () => {
     const observed = seen.opened.length, expected = 0;
     expect(observed).toBe(1);
     expect(() => expect(observed, "handoff refusal store opens").toBe(expected)).toThrow("expected 1 to be +0");
-  }, 20_000);
+  });
 
   it("negative control: output before final admission fails the exact admitted-write assertion", async () => {
     const f = fixture(), seen = observe(), build = offline.buildOfflineOperationsRuntime;
@@ -351,7 +429,7 @@ describe("session describe CLI mount", () => {
     });
     expect(admitted).toBe(false);
     expect(() => expect(admitted, "stdout write admitted").toBe(true)).toThrow("expected false to be true");
-  }, 20_000);
+  });
 
   it("negative control: premature release fails the exact held-before-close assertion", async () => {
     const f = fixture(), close = closeOwnership.closeOfflineStore;
@@ -362,7 +440,7 @@ describe("session describe CLI mount", () => {
     });
     await f.run(); expect(held).toBe(false);
     expect(() => expect(held, "lock held before store close").toBe(true)).toThrow("expected false to be true");
-  }, 20_000);
+  });
 
   it("rejects path-selection switches before ownership", async () => {
     const f = fixture(), seen = observe();
@@ -370,7 +448,7 @@ describe("session describe CLI mount", () => {
       await expect(runSessionDescribe(args, f.paths)).rejects.toThrow("Usage: session describe");
     }
     expect(seen.acquire).not.toHaveBeenCalled(); expect(seen.opened).toEqual([]);
-  }, 20_000);
+  });
 });
 
 describe("session describe output", () => {
@@ -439,7 +517,7 @@ describe("session describe output", () => {
       expect(events).toEqual(["write-returned", "drain", "error", "closed"]);
       expect(existsSync(f.paths.controllerLockPath)).toBe(false);
     }
-  }, 20_000);
+  });
 
   it.each(["EPIPE", "EAGAIN", "EIO"])("%s stderr stays silent without retries for synchronous and late errors", code => {
     const o = output(); o.syscall.mockImplementation(() => { throw Object.assign(new Error("private"), { code }); });
@@ -454,6 +532,7 @@ describe("session describe output", () => {
 // Seeding 500 projects through packaged CLI invocations would dominate artifact acceptance.
 // Both SQLite and the socket belong to this temporary fixture; no host state is read.
 describe("session describe real-process output", () => {
+  // Spawns a real CLI after seeding 500 rows, with slow or closed pipe readers.
   it.each(["offline", "socket"].flatMap(path => ["slow", "gone", "gone-and-stderr"].map(reader => ({ path, reader }))))(
     "$path: large output with $reader reader releases ownership before pipe drain", async ({ path, reader }) => {
     const f = fixture(), seed = new RealStore(f.paths.databasePath), at = new Date().toISOString();

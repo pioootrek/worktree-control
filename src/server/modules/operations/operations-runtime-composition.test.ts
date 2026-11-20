@@ -114,7 +114,7 @@ async function fixture(mode = "better-auth", withProvider = false, admissionTime
 const providerUnavailable = { ok: false, error: { category: "unavailable", status: 503, reason: "provider_session_unavailable", retry: "retry", effect: null } };
 const unauthenticated = (reason: string) => ({ ok: false, error: { category: "unauthenticated", reason } });
 
-describe("unmounted real operations composition under strict admission", () => {
+describe("real operations composition under strict admission", () => {
   it("reports an eligibility admission that cannot run inside mint as busy, not an invalid cookie", async () => {
     const f = await fixture("better-auth", true), h = await f.human("human");
     const admission = f.store.admission;
@@ -332,8 +332,10 @@ describe("unmounted real operations composition under strict admission", () => {
     expect(lockHeld).toHaveBeenCalledTimes(2);
   });
 
+  // Inserts 500 durable rows to prove the production count bound.
   it("bounds the listing, omits invalid IDs and includes archived projects", async () => {
     const f = await fixture("open");
+    expect((await f.read(await f.context())).projects.map(project => project.projectId)).toEqual(["project-a", "project-b"]);
     await f.store.admission.run(() => { for (let n = 0; n < MAX_DESCRIBED_PROJECTS; n++) f.project(`extra-${String(n).padStart(4, "0")}`); });
     const value = await f.read(await f.context());
     expect(value.projects).toHaveLength(MAX_DESCRIBED_PROJECTS);
@@ -465,6 +467,18 @@ describe("unmounted real operations composition under strict admission", () => {
       .toMatchObject(unauthenticated("mixed_credentials"));
     expect(await f.composition!.mint("api", h.presented, null, {})).toMatchObject(unauthenticated("invalid_credential"));
     expect(await f.build({ listeners: {} }).mint("api", none(), null, {})).toMatchObject(unauthenticated("listener_closed"));
+  });
+
+  it("keeps session and credential row identifiers out of DTOs and diagnostics, including a zero-role human", async () => {
+    const f = await fixture("better-auth", true), h = await f.human("human");
+    const a = await f.store.admission.run(() => f.agent());
+    const human = await f.read(await f.context(h.presented, h.session));
+    expect(human.projects).toEqual([]); expect(human.installationPermissions).toEqual([]);
+    const agent = await f.read(await f.context(presentedBearer(a.secret)));
+    f.composition!.runtime.observer.streamDisposalFailed({ operationId: "session.describe", kind: "timed_out" });
+    const released = JSON.stringify([human, agent, f.logs.controller.mock.calls]);
+    expect(released).not.toContain(h.session.sessionId); expect(released).not.toContain(a.credentialId);
+    expect(released).not.toMatch(/sessionId|credentialId|verifierHash|last_used_at/);
   });
 
   it("pins the production registry and logs disposal failures without thrown values or credential facts", async () => {

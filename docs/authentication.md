@@ -51,6 +51,180 @@ mid-write, a consumer may receive truncated JSON on stdout; the command exits 1
 with the sanitized error on usable stderr.
 See the [error mapping](authorization-contract.md#mounted-cli-boundary-d1a-8b).
 
+## Describe authority through each listener (integration branch)
+
+These requests use an existing synthetic installation. Set `WTC_API` and
+`WTC_MCP` to its API and MCP origins, and `WTC_WORKER` to its HTTPS worker
+origin. Read the installation token in token mode, or an agent token in better-auth
+mode, without echo. Keep secrets out of shell history; do not replace the
+placeholder by typing a token into an assignment. Open mode omits the Authorization header entirely; supplying a token
+there refuses `credential_in_open_mode`.
+
+```bash
+WTC_API='http://127.0.0.1:4310'
+WTC_MCP='http://127.0.0.1:4311'
+WTC_WORKER='https://127.0.0.1:4312'
+# Press Enter in open mode. Otherwise enter the installation or agent token.
+IFS= read -r -s -p 'Bearer token (empty for open mode): ' WTC_BEARER
+printf '\n'
+WTC_HEADER_FILE=$(mktemp)
+chmod 600 "$WTC_HEADER_FILE"
+trap 'rm -f -- "$WTC_HEADER_FILE"; unset WTC_BEARER WTC_HEADER_FILE' EXIT
+if [[ -n $WTC_BEARER ]]; then
+  printf 'Authorization: Bearer %s\n' "$WTC_BEARER" > "$WTC_HEADER_FILE"
+fi
+unset WTC_BEARER
+```
+
+These Bash examples assume curl 7.76.0 or newer (`--fail-with-body`). Its
+[7.76.0 header manual](https://github.com/curl/curl/blob/curl-7_76_0/docs/cmdline-opts/header.d)
+supports `-H @file` (available since 7.55.0). The private header file keeps the
+secret out of curl's argument list and leaves stdin available for MCP JSON.
+After the last request, run `rm -f -- "$WTC_HEADER_FILE"; unset WTC_HEADER_FILE`;
+the exit trap also removes it when the shell exits.
+
+API bearer (`operations-api-${mode}` in the installed RBAC script):
+
+```bash
+curl --fail-with-body "$WTC_API/api/operations/session.describe" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' --data '{}'
+```
+
+A missing token in token/account mode refuses `credential_required` (401).
+The token-mode response has this shape; permission arrays and project IDs depend
+on the fixture. The account-mode agent has `actor.kind: "agent"`, its own
+`accountId`, `fullAuthority: false` and fresh login `unavailable`.
+
+```json
+{"actor":{"kind":"installation","accountId":null},"mode":"token","listener":"api","fullAuthority":true,"installationPermissions":["accounts:manage"],"projects":[{"projectId":"example","permissions":["project:read"]}],"projectsTruncated":false,"freshLogin":{"state":"exempt","validUntil":null}}
+```
+
+Arrays above are abbreviated examples, not the complete installation permission
+set. Refusals use a closed envelope, for example:
+
+```json
+{"error":{"category":"unauthenticated","status":401,"reason":"credential_required","retry":"reauthenticate","effect":null}}
+```
+
+For a provider cookie, sign in through the configured HTTPS browser origin in
+better-auth mode, then run this in that origin's developer console. The browser
+sends its existing secure, HttpOnly session cookie and canonical Origin. Do not
+copy a cookie into a curl command. The installed provider acceptance step
+`public-packaged-login-and-transport-denial-matrix` performs this login and POST.
+
+```javascript
+await (await fetch('/api/operations/session.describe', {
+  method: 'POST', credentials: 'same-origin',
+  headers: { 'Content-Type': 'application/json' }, body: '{}'
+})).json()
+```
+
+The DTO has `actor.kind: "human"`, the account ID, `mode: "better-auth"` and
+`listener: "api"`; fresh login reports `satisfied` with an ISO `validUntil`, or
+`stale`. An expired or signed-out cookie refuses `invalid_credential` (401).
+A wrong Origin refuses `origin_forbidden` (403), verified by the installed
+`public-packaged-login-and-transport-denial-matrix` step. Signed-out cookies are
+verified by installed `logout-and-ordinary-restart`. Expiry is verified by
+`session expired: unauthenticated at admission, before the effect and at release`
+in `provider-session-verifier.test.ts`, not by the installed script. Adding a bearer to the cookie
+refuses `mixed_credentials`, even if the cookie is invalid.
+
+The private admin socket accepts the machine operator without a credential
+(`operations-unix-${mode}`). Use the controller's actual state directory:
+
+```bash
+curl --fail-with-body --unix-socket /tmp/wtc-example/state/admin.sock \
+  http://localhost/api/operations/session.describe \
+  -H 'Content-Type: application/json' --data '{}'
+```
+
+The same DTO has `actor: {"kind":"operator","accountId":null}`, the active
+mode, `listener: "unix"`, `fullAuthority: true` and fresh login `exempt`.
+A supplied bearer refuses `credential_on_local_listener` (401). Browser headers
+refuse `browser_headers_on_unix`; a recognized provider cookie refuses
+`provider_cookie_not_supported`. All three unix refusals are verified by
+installed `operations-unix-${mode}`. Filesystem access failures occur before HTTP.
+
+The configured worker listener requires TLS. Point `--cacert` to the fixture CA
+that signed its certificate (`operations-worker-${mode}`); do not disable
+certificate verification:
+
+```bash
+curl --fail-with-body --cacert /tmp/wtc-example/worker-ca.pem \
+  "$WTC_WORKER/api/operations/session.describe" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' --data '{}'
+```
+
+The DTO has `listener: "worker"`, the active mode and installation authority in
+open/token modes, or the agent's authority in better-auth mode. Missing credentials
+refuse `credential_required` outside open mode. A stored worker protocol token
+refuses `credential_not_accepted_here` in token mode and `invalid_credential` in
+better-auth mode; provider cookies refuse `provider_cookie_not_supported`. All
+are verified by installed `operations-worker-${mode}`.
+
+> **Open mode and an exposed worker port.** In `open` mode this request needs no
+> credential, so anyone who can reach the worker port and complete TLS receives
+> the installation's authority description, including up to 500 project IDs
+> with their permissions (no names, paths, secrets or history). Until this is
+> decided before the release (a recorded release blocker), keep the worker
+> listener on `127.0.0.1` or `::1` in `open` mode, or use `token` or
+> `better-auth` mode before exposing it. Poll and report still require a worker
+> token in every mode. See the [changelog](../CHANGELOG.md) and
+> [owner decision 4(b)](authorization-contract.md#mounted-worker-boundary).
+
+MCP uses a separate port and the exact `/mcp/operations` path. Each POST is
+stateless and authenticates independently. No session ID is needed. This exchange
+is executed verbatim as JSON messages by `describe-rpc-${mode}` in the installed
+RBAC script, as well as through the installed SDK client:
+
+```bash
+curl --fail-with-body "$WTC_MCP/mcp/operations" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' --data-binary @- <<'JSON'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"authority-example","version":"1"}}}
+JSON
+curl --fail-with-body "$WTC_MCP/mcp/operations" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' --data-binary @- <<'JSON'
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+JSON
+curl --fail-with-body "$WTC_MCP/mcp/operations" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' --data-binary @- <<'JSON'
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"session_describe","arguments":{}}}
+JSON
+```
+
+Replies retain JSON-RPC `id`. Initialize returns `result.protocolVersion` and
+server capabilities; list returns only `session_describe` in `result.tools`.
+Call returns the DTO in `result.structuredContent`, plus its JSON text in
+`result.content`, with `listener: "mcp"`. Missing credentials refuse
+`credential_required` before SDK dispatch (installed `describe-rpc-${mode}`).
+Legacy secret header names always
+refuse `legacy_credential`, even when their value is a valid token. Tool argument
+refusals appear in a tool result with `isError: true`; release refusals after SDK
+construction use JSON-RPC error `-32000` with the public error in `error.data`.
+Tool-argument refusals are verified by `describe-rpc-${mode}` in the installed
+script and `returns safe tool refusals without losing operations reasons` in
+`mcp-request-adapter.test.ts`. Post-SDK release refusals are verified by
+`post-SDK-buffer release rechecks %s` in `http-boundary-conformance.test.ts`,
+not by the installed script.
+
+The [local CLI examples](#describe-local-authority-integration-branch) above run
+the same command through the socket while the fixture controller owns the lock,
+and offline once it stops. Installed steps `operations-unix-${mode}` compare the
+CLI output with the socket DTO; `operations-offline-${mode}` checks operator,
+listener and mode offline. The common socket refusal is `admin_socket_missing`
+(exit 1, no offline fallback). An older database offline reports the existing
+`upgrade_required` diagnostic and `nextStep: "upgrade inspect"`; the installed
+`upgrade-required-offline-session-describe` step verifies it on the released
+baseline. CLI accepts no token or path-selection switch.
+
+Verification mapping covers request bytes and response semantics with dynamically
+allocated fixture ports, paths and secrets. The scripts use Node HTTP/TLS clients
+and the installed CLI, so the shell's curl executable itself is not under test.
+See the complete [gate evidence and artifact matrix](authorization-gate-evidence.md).
+
 ## What this release provides
 
 Implemented in `0.2.0`:
@@ -281,7 +455,8 @@ New installations differ from earlier releases:
 ## The explicit upgrade (unreleased integration build)
 
 The integration build mounts the read-only `session.describe` operation on
-API and the private socket. In `token` mode, with the installation bearer
+API (bearer and supported better-auth cookies), the private socket, the configured
+worker listener and MCP, plus the lock-first CLI paths described above. In `token` mode, with the installation bearer
 already in `WTC_INSTALLATION_TOKEN` and the controller using its default port:
 
 ```sh
@@ -299,8 +474,9 @@ curl --fail-with-body --unix-socket "$WTC_ADMIN_SOCKET" \
   -H 'Content-Type: application/json' --data '{}'
 ```
 
-Cookies are refused on this route for now, including a cookie combined with a
-bearer. In `legacy` mode it answers `unauthenticated` / `unknown_mode`.
+The API accepts a provider cookie in better-auth mode with the configured public
+origin and cookie boundary. A cookie combined with a bearer is refused. The unix,
+worker and MCP listeners refuse provider cookies in every mode. In `legacy` mode it answers `unauthenticated` / `unknown_mode`.
 Existing routes retain their authentication. Responses describe authority as
 an informational hint; every later operation must authorize again.
 

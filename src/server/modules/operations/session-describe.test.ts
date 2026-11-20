@@ -83,7 +83,7 @@ describe("session.describe", () => {
     const alice = w.human("alice");
     const own = await new OperationRunner(w.runtime()).run(sessionDescribe, alice.context, {});
     expect(own.ok && own.value.projectsTruncated).toBe(false);
-  }, 30_000);
+  });
 
   it("keeps all 500 UUID-length projects and truncates only above 500", async () => {
     const w = createWorld(), runner = new OperationRunner(w.runtime()), context = w.installation().context;
@@ -97,7 +97,7 @@ describe("session.describe", () => {
     w.resolver.addProject(P("z-extra"));
     const over = await runner.run(sessionDescribe, context, {});
     expect(over).toMatchObject({ ok: true, value: { projects: exact.value.projects, projectsTruncated: true } });
-  }, 30_000);
+  });
 
   it.each([0, 1])("accounts for the complete DTO when the last project puts it %i bytes over budget", async over => {
     const w = createWorld(), runner = new OperationRunner(w.runtime());
@@ -141,7 +141,7 @@ describe("session.describe", () => {
     expect(truncated.value.projects).toEqual(full.projects);
     expect(truncated.value.projectsTruncated).toBe(true);
     expect(bytes(truncated.value)).toBe(MAX_DESCRIBED_BYTES + over - 1);
-  }, 30_000);
+  });
 
   it("keeps the same prefix across API, MCP and worker at a listener-width boundary", async () => {
     const w = createWorld(), runner = new OperationRunner(w.runtime());
@@ -170,7 +170,7 @@ describe("session.describe", () => {
       expect(result.value.projectsTruncated, listener).toBe(true);
       expect(bytes(result.value), listener).toBeLessThanOrEqual(MAX_DESCRIBED_BYTES);
     }
-  }, 30_000);
+  });
 
   it("is a fresh decision every time, never cached", async () => {
     const w = world();
