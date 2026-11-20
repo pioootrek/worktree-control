@@ -1,7 +1,7 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
 last_reviewed: "2026-11-20"
-source_of_truth: "authorization contract with session.describe mounted on API, unix and worker for the unreleased breaking auth unification; Knowledge task 040062b4"
+source_of_truth: "authorization contract with session.describe mounted on API, unix, worker, MCP and lock-first CLI for the unreleased breaking auth unification; Knowledge task 040062b4"
 status: "active"
 ---
 
@@ -9,7 +9,8 @@ status: "active"
 
 **Status: unreleased breaking change.** Only `session.describe` is mounted,
 through `POST /api/operations/session.describe` on the API listener, private
-unix socket and configured HTTPS worker listener. Only the exact raw operation path can succeed. Aliases entering
+unix socket and configured HTTPS worker listener, through the MCP operations
+namespace, and through lock-first `session describe` on the CLI. Only the exact raw operation path can succeed. Aliases entering
 `/api/operations` or `/mcp/operations` through dot segments, encoded path syntax,
 backslashes or duplicate slashes receive the new not-found envelope on all three
 listeners through normal request dispatch, for every method. On unix and worker the fixed
@@ -245,9 +246,9 @@ explicit deferral; these are source references, not claims of completed runs.
 | Neighbour check / rule | Preservation / difference | Named assertion or deferral |
 | --- | --- | --- |
 | `src/cli/auth-management.ts:43` parse before ownership | Only `describe`, no path selector | rejects path-selection switches before ownership |
-| `src/cli/index.ts:171` handoff before ordinary opening | Check after lock, before constructor | pending/unreadable restore handoff stops before store construction |
+| `src/cli/index.ts:172` handoff before ordinary opening | Check after lock, before constructor | pending/unreadable restore handoff stops before store construction |
 | `src/cli/auth-management.ts:47` atomic acquire, typed live-owner refusal | Same primitive, no socket probe | lock taken: missing/stale/reset/timeout fails exactly; another offline owner |
-| `src/cli/auth-management.ts:65` ordinary store fence/upgrade admission | Same constructor, one store | offline modes writes released DTO; deferral: existing fence/upgrade suites cover admission, no new pre-open check |
+| `src/cli/auth-management.ts:65` ordinary store fence/upgrade admission | Same constructor, one store | ordinary store opening keeps its fence refusal; named deferral D1a-10-upgrade-CLI: ordinary upgrade admission suite remains the upgrade oracle |
 | `src/cli/auth-management.ts:59` JSON style | Same two-space JSON; stdout explicitly selected | offline writes released DTO; installed CLI equality |
 | `src/cli/auth-management.ts:74` producer disposal then store close/release | No provider producer; closeOfflineStore unchanged | offline writes then closes before release; offline-ownership.test.ts: drains real accepted work |
 | `src/cli/auth-management.ts:75` retain on close failure | Same retain helper and disposal error | close failure retains owner and reports disposal_unconfirmed |
@@ -1167,7 +1168,7 @@ conjunctions, invalid public keys, malformed effects, transition lists,
 secret hooks, wait bounds and listener exclusions. It registers a frozen copy
 whose requirement, allowlist, effect, transition list, wait bounds and
 exclusions are frozen. The only real operation is `session.describe`, which is
-frozen and mounted only on the API, worker and private unix transports. Every other operation in the tests is a
+frozen and mounted on API, worker, private unix, MCP and the local CLI. Every other operation in the tests is a
 fixture.
 
 `OperationRunner` runs a mutation as these admitted phases, built on
@@ -1800,8 +1801,12 @@ reuses the listener driver and conformance assertions under real production
 bootstrap. It is test-only and mounts no additional operation. The adapter receives the built runtime as a
 value and creates no boundary. Approved entries must exist and really import
 the module or contract. Missing and stale entries fail, with negative controls.
-A second exact-importer guard permits only `src/cli/index.ts` to import the
-composition. It still rejects imports from inside the operations module and
+The offline bootstrap and `src/cli/session-describe.ts` are also approved
+module/contract importers. The CLI test is an explicitly approved test consumer
+of the credential and provider fixtures. A second exact-importer guard permits
+only controller start and the offline composition to import the shared
+composition. A third permits only `src/cli/session-describe.ts` to import the
+offline composition. It still rejects imports from inside the operations module and
 computed composition imports in allowlisted production files.
 
 Within the inventory, the guard does three things:
@@ -1842,7 +1847,8 @@ outside decision U and listed as notes for slice 4.
 These obligations remain for later families and mounts. The API, worker and unix
 `session.describe` mounts already use strict bounded JSON, cancellation, the
 shared composition and admitted read-release. The API cookie path also shares
-the browser boundary and budget. MCP and CLI mounts remain for later steps.
+the browser boundary and budget. MCP owns bounded per-request SDK lifetimes;
+the CLI owns lock-first socket/offline selection and offline drain before release.
 
 - **Transport handling of streams.** A transport must call `return()` when its
   consumer goes away or stops reading (abandonment). The runner provides no

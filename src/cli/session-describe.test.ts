@@ -79,6 +79,14 @@ describe("session describe CLI mount", () => {
     expect(legacy).not.toHaveBeenCalled(); expect(usage).not.toHaveBeenCalled();
   }, 20_000);
 
+  it("ordinary store opening keeps its fence refusal and releases the controller lock", async () => {
+    const f = fixture(); rmSync(`${f.paths.databasePath}.security/witness.json`);
+    const seen = observe();
+    await expect(f.run()).rejects.toMatchObject({ code: "security_fence_recovery_required" });
+    expect(seen.opened).toEqual([]); expect(stores.SqliteStateStore).toHaveBeenCalledTimes(1);
+    expect(f.lines).toEqual([]); expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+  }, 20_000);
+
   it("legacy is refused by the boundary without output", async () => {
     const f = fixture("legacy");
     await expect(f.run()).rejects.toMatchObject({ error: operationError("unknown_mode", "unauthenticated", "reauthenticate", 401) });

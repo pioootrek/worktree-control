@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-11-15"
+last_reviewed: "2026-11-20"
 source_of_truth: "authentication modes, identities, optional account mode and protected recovery for the 0.2.0 release candidate"
 status: "active"
 ---
