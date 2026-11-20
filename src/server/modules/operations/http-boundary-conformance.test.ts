@@ -2382,12 +2382,13 @@ it("real legacy startup refuses all mounted operations and CLI with a consistent
     await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); return value;
   };
   const apiPort = await port(), mcpPort = await port(), workerPort = await port();
+  const webRoot = join(root, "out"); mkdirSync(webRoot); writeFileSync(join(webRoot, "index.html"), "fixture");
   const key = join(root, "worker.key"), cert = join(root, "worker.crt"), config = join(root, "worker.json");
   execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", key, "-out", cert,
     "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore", timeout: 15_000 });
   writeFileSync(config, JSON.stringify({ version: 1, listener: { host: "127.0.0.1", port: workerPort, keyFile: key, certFile: cert } }));
   const child = spawn(process.execPath, [...entry, "start", ...directoryArgs, "--service-mode", "--host", "127.0.0.1", "--port", String(apiPort),
-    "--mcp-port", String(mcpPort), "--remote-verification-config", config, "--no-open"], { cwd: repository, env, stdio: ["ignore", "pipe", "pipe"] });
+    "--mcp-port", String(mcpPort), "--remote-verification-config", config, "--web-root", webRoot, "--no-open"], { cwd: repository, env, stdio: ["ignore", "pipe", "pipe"] });
   let output = ""; for (const stream of [child.stdout, child.stderr]) stream.on("data", chunk => { output = (output + chunk).slice(-8192); });
   const ended = new Promise<number | null>((done, reject) => { child.once("error", reject); child.once("exit", done); });
   const stop = async () => {

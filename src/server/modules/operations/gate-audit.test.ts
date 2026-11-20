@@ -36,6 +36,15 @@ function titles(file: string, text: string, expectedFailure = false): Set<string
   const visit = (node: ts.Node) => {
     // Enter only known registration callbacks or directly called script helpers.
     if (ts.isFunctionLike(node)) return;
+    if (ts.isSourceFile(node) || ts.isBlock(node)) {
+      for (const statement of node.statements) {
+        visit(statement);
+        if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement) || ts.isBreakStatement(statement) || ts.isContinueStatement(statement)) break;
+      }
+      return;
+    }
+    if (ts.isConditionalExpression(node) || (ts.isBinaryExpression(node) &&
+      [ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(node.operatorToken.kind))) return;
     if (ts.isIfStatement(node)) {
       if (node.expression.kind === ts.SyntaxKind.TrueKeyword) visit(node.thenStatement);
       if (node.expression.kind === ts.SyntaxKind.FalseKeyword && node.elseStatement) visit(node.elseStatement);
@@ -53,7 +62,7 @@ function titles(file: string, text: string, expectedFailure = false): Set<string
     }
     if (ts.isForOfStatement(node)) {
       const array = unwrap(node.expression);
-      if (ts.isArrayLiteralExpression(array) && array.elements.length) visit(node.statement);
+      if (ts.isArrayLiteralExpression(array) && array.elements.length && !array.elements.some(ts.isSpreadElement)) visit(node.statement);
       return;
     }
     // Index-based for loops have more ways to be empty; fail closed.
@@ -62,6 +71,8 @@ function titles(file: string, text: string, expectedFailure = false): Set<string
       const expression = node.expression.getText(source);
       const registration = /^(?:it|test|describe|suite|step)(?:$|[.(])/.test(expression);
       if (registration) {
+        const callee = ts.isCallExpression(node.expression) ? node.expression.expression.getText(source) : expression;
+        if (!/^(?:(?:it|test|describe|suite)(?:\.fails)?(?:\.each)?|step)$/.test(callee)) return;
         if (/\.(?:skip|todo|only)(?:\b|\()/.test(expression)) return;
         const fails = /\.fails(?:\b|\()/.test(expression);
         if (fails && !expectedFailure) return;
@@ -213,6 +224,10 @@ describe("D1a gate audit drift guard", () => {
       'function unused() { it("expected title", () => {}); }',
       'describe("outer", () => { () => it("expected title", () => {}); });',
       'try { it("expected title", () => {}); } catch {}',
+      'false && it("expected title", () => {});',
+      'runtimeFlag ? it("expected title", () => {}) : undefined;',
+      'describe("outer", () => { return; it("expected title", () => {}); });',
+      'it.skipIf(runtimeFlag)("expected title", () => {});',
     ]) {
       put(row.file, source); expect(missing(row, read), source).toContain(`gate_audit_missing_title: ${row.file}: ${row.title}`);
     }

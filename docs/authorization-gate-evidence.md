@@ -17,7 +17,8 @@ table directly. It accepts registration at module level or in active
 `describe`/`suite` callbacks (including `each`), literal-true branches and
 nonempty literal-array `for...of` loops there. It rejects skipped, todo,
 expected-failure proof, empty literal tables, dynamic/false branches, uncalled
-functions, arbitrary nested callbacks, index-based loops and try/catch registration.
+functions, arbitrary nested callbacks, conditional expressions, short-circuit calls,
+registration after an unconditional return/throw, index-based loops and try/catch registration.
 Script steps additionally follow direct calls to named module-level helpers and
 step callbacks; only the outer reporting try whose catch unconditionally sets
 `process.exitCode = 1` is allowed. Other try paths are rejected. Presets resolve
