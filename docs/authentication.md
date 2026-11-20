@@ -108,9 +108,11 @@ await (await fetch('/api/operations/session.describe', {
 The DTO has `actor.kind: "human"`, the account ID, `mode: "better-auth"` and
 `listener: "api"`; fresh login reports `satisfied` with an ISO `validUntil`, or
 `stale`. An expired or signed-out cookie refuses `invalid_credential` (401).
-A wrong Origin refuses `origin_forbidden` (403), verified by
-`cookie Host and Origin rules: %s` in the listener conformance suite, not by
-the installed script. Adding a bearer to the cookie
+A wrong Origin refuses `origin_forbidden` (403), verified by the installed
+`public-packaged-login-and-transport-denial-matrix` step. Signed-out cookies are
+verified by installed `logout-and-ordinary-restart`. Expiry is verified by
+`session expired: unauthenticated at admission, before the effect and at release`
+in `provider-session-verifier.test.ts`, not by the installed script. Adding a bearer to the cookie
 refuses `mixed_credentials`, even if the cookie is invalid.
 
 The private admin socket accepts the machine operator without a credential
@@ -126,7 +128,8 @@ The same DTO has `actor: {"kind":"operator","accountId":null}`, the active
 mode, `listener: "unix"`, `fullAuthority: true` and fresh login `exempt`.
 A supplied bearer refuses `credential_on_local_listener` (401). Browser headers
 refuse `browser_headers_on_unix`; a recognized provider cookie refuses
-`provider_cookie_not_supported`. Filesystem access failures occur before HTTP.
+`provider_cookie_not_supported`. All three unix refusals are verified by
+installed `operations-unix-${mode}`. Filesystem access failures occur before HTTP.
 
 The configured worker listener requires TLS. Point `--cacert` to the fixture CA
 that signed its certificate (`operations-worker-${mode}`); do not disable
@@ -142,7 +145,8 @@ The DTO has `listener: "worker"`, the active mode and installation authority in
 open/token modes, or the agent's authority in better-auth mode. Missing credentials
 refuse `credential_required` outside open mode. A stored worker protocol token
 refuses `credential_not_accepted_here` in token mode and `invalid_credential` in
-better-auth mode; provider cookies refuse `provider_cookie_not_supported`.
+better-auth mode; provider cookies refuse `provider_cookie_not_supported`. All
+are verified by installed `operations-worker-${mode}`.
 
 MCP uses a separate port and the exact `/mcp/operations` path. Each POST is
 stateless and authenticates independently. No session ID is needed. This exchange
@@ -171,7 +175,8 @@ Replies retain JSON-RPC `id`. Initialize returns `result.protocolVersion` and
 server capabilities; list returns only `session_describe` in `result.tools`.
 Call returns the DTO in `result.structuredContent`, plus its JSON text in
 `result.content`, with `listener: "mcp"`. Missing credentials refuse
-`credential_required` before SDK dispatch. Legacy secret header names always
+`credential_required` before SDK dispatch (installed `describe-rpc-${mode}`).
+Legacy secret header names always
 refuse `legacy_credential`, even when their value is a valid token. Tool argument
 refusals appear in a tool result with `isError: true`; release refusals after SDK
 construction use JSON-RPC error `-32000` with the public error in `error.data`.

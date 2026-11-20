@@ -264,9 +264,9 @@ async function operationOffline(mode) {
 }
 async function operationWorker(mode, secret) {
   return step(`operations-worker-${mode}`, async () => {
-    const call = secret => new Promise((accept, reject) => {
+    const call = (secret, headers = {}) => new Promise((accept, reject) => {
       const request = httpsRequest({ hostname: "127.0.0.1", port: workerPort, ca: workerCa, path: "/api/operations/session.describe", method: "POST",
-        headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) } }, response => {
+        headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}), ...headers } }, response => {
         const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
         response.on("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
       });
@@ -279,6 +279,8 @@ async function operationWorker(mode, secret) {
       assert.deepEqual(refused.body, { error: { category: "unauthenticated", status: 401, reason: mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", retry: "reauthenticate", effect: null } });
     }
     if (mode !== "open") { const missing = await call(); assert.equal(missing.status, 401); assert.deepEqual(missing.body, operationRefusal("credential_required")); }
+    const cookie = await call(undefined, { Cookie: "__Secure-wtc.session_token=invalid" });
+    assert.equal(cookie.status, 401); assert.deepEqual(cookie.body, operationRefusal("provider_cookie_not_supported"));
     matrixCell("worker-tls", mode, mode === "better-auth" ? "agent" : "installation", "worker", mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", `operations-worker-${mode}`);
   });
 }
@@ -311,6 +313,11 @@ async function operationMcp(mode, secret) {
       const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", [name]: secret ?? storedWorker },
         body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
       assert.equal(refused.status, 401); assert.equal((await refused.json()).error.reason, "legacy_credential");
+    }
+    if (mode !== "open") {
+      const missing = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+      assert.equal(missing.status, 401); assert.deepEqual(await missing.json(), operationRefusal("credential_required"));
     }
     // A stored owner credential exists even before the worker fixture is provisioned.
     const stored = storedWorker ?? storedOwner;
