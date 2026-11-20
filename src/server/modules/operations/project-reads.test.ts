@@ -335,7 +335,7 @@ describe("CoalescingWorktreeDiscovery (D2a)", () => {
   const fact = (path: string) => ({ path, branch: "main", head: "c".repeat(40), shortHead: "cccccccc", detached: false, locked: false, prunable: false });
   function git() {
     const signals = new Map<string, AbortSignal>();
-    const listTrees = vi.fn(async (path: string, options: { signal: AbortSignal }) => { signals.set(`list ${path}`, options.signal); return [fact(`${path}/main`), fact(`${path}/b`)]; });
+    const listTrees = vi.fn(async (path: string, options: { signal: AbortSignal }): Promise<unknown[]> => { signals.set(`list ${path}`, options.signal); return [fact(`${path}/main`), fact(`${path}/b`)]; });
     const worktreeDirty = vi.fn(async (path: string, options: { signal: AbortSignal }) => { signals.set(`status ${path}`, options.signal); return path.endsWith("/b"); });
     return { listTrees, worktreeDirty, signals } satisfies WorktreeGit & { signals: Map<string, AbortSignal> };
   }

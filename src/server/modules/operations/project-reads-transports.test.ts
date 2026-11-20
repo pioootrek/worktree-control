@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request as httpRequest, type Server as HttpServer } from "node:http";
@@ -10,6 +11,8 @@ import { buildOperationsRuntime } from "@/server/bootstrap/operations-runtime";
 import { createControllerOperationEligibility } from "@/server/bootstrap/authentication-provider-lifetime";
 import { AuthenticationRequestBudget } from "@/server/bootstrap/authentication-request-budget";
 import { SqliteStateStore } from "@/server/sqlite-store";
+import { SystemGitWorktreeReader } from "@/server/git-worktrees";
+import type { WorktreeGit } from "./adapters/worktree-discovery";
 import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
 import { resolveAppPaths } from "@/server/paths";
 import { createOperationsMcp } from "@/server/transports/operations-mcp";
@@ -29,7 +32,8 @@ const deferred = <T>() => { let resolve!: (value: T) => void; const promise = ne
 let ports = 0;
 const tree = (path: string) => ({ path, branch: "main", head: "b".repeat(40), shortHead: "bbbbbbbb", detached: false, locked: false, prunable: false, dirty: false, statusError: "private" });
 
-async function fixture(mode: "open" | "token" | "better-auth" | "legacy") {
+/** `repository` maps a registration name to its repository path; `git` replaces the fixture listing with a real reader. */
+async function fixture(mode: "open" | "token" | "better-auth" | "legacy", setup: { repository?: (name: string) => string; git?: WorktreeGit } = {}) {
   const root = mkdtempSync(join(tmpdir(), "project-reads-transports-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const store = new SqliteStateStore(resolveAppPaths(join(root, "data")).databasePath, undefined, { admission: "strict" });
@@ -44,7 +48,7 @@ async function fixture(mode: "open" | "token" | "better-auth" | "legacy") {
     store.saveCredential({ id: agent.slice(4, 40), principalId: "agent", kind: "agent_token", label: "fixture", tokenPrefix: agent.slice(0, 40), verifierHash: hash(agent), status: "active", expiresAt: null, createdAt: iso(NOW), revokedAt: null, lastUsedAt: null }, "fixture");
     for (const id of ["project-a", "project-b"]) store.saveKnowledgeProject({ id, name: id, status: "active", revision: 1, createdAt: iso(NOW), updatedAt: iso(NOW) }, "fixture");
     const register = (name: string, parent: string | null) => {
-      const id = store.addProject({ name, repositoryPath: `/repo/${name}`, port: 7300 + ports++, executable: "node", args: ["server.js"] }).id;
+      const id = store.addProject({ name, repositoryPath: setup.repository?.(name) ?? `/repo/${name}`, port: 7300 + ports++, executable: "node", args: ["server.js"] }).id;
       db.prepare("UPDATE project_mapping_clock SET value=value+1 WHERE singleton=1").run();
       db.prepare("UPDATE projects SET parent_project_id=?,mapping_version=(SELECT value FROM project_mapping_clock WHERE singleton=1) WHERE id=?").run(parent, id);
       return id;
@@ -52,7 +56,11 @@ async function fixture(mode: "open" | "token" | "better-auth" | "legacy") {
     return { a: register("alpha", "project-a"), b: register("beta-repo", "project-b"), loose: register("loose", null) };
   });
   const gates = new Map<string, ReturnType<typeof deferred<unknown[]>>>();
-  const git = { listTrees: vi.fn((path: string) => gates.get(path)?.promise ?? Promise.resolve([tree(path)])), worktreeDirty: vi.fn(async () => false) };
+  const git = {
+    listTrees: vi.fn((path: string, options: { signal: AbortSignal }): Promise<readonly unknown[]> =>
+      setup.git ? setup.git.listTrees(path, options) : gates.get(path)?.promise ?? Promise.resolve([tree(path)])),
+    worktreeDirty: vi.fn(async (path: string, options: { signal: AbortSignal }) => setup.git ? setup.git.worktreeDirty(path, options) : false),
+  };
   // Called inside every admitted read phase of project.list and project.status; a test may write the store there.
   const placement = { hook: undefined as (() => void) | undefined, statusSummary: vi.fn(() => { placement.hook?.(); return { phase: "stopped", worktreePath: null, startedAt: null }; }) };
   const eligibility = createControllerOperationEligibility({ maintenance: () => false, stopping: () => false, configurationRestartRequired: () => false, runtime: () => undefined });
@@ -240,5 +248,56 @@ describe("project reads over every transport (D2a)", () => {
       }
     }
     expect(f.git.listTrees).not.toHaveBeenCalled(); expect(f.placement.statusSummary).not.toHaveBeenCalled();
+  });
+
+  it("better-auth: a reader sees its project's real Git worktrees, and a hidden neighbour is indistinguishable from a missing project, on API, unix and MCP", async () => {
+    const base = mkdtempSync(join(tmpdir(), "project-reads-git-"));
+    cleanups.push(() => rmSync(base, { recursive: true, force: true }));
+    const repository = (name: string) => {
+      const directory = join(base, name);
+      execFileSync("git", ["init", "-q", "-b", "main", directory]);
+      for (const [key, value] of [["user.email", "test@example.invalid"], ["user.name", "Test"]]) execFileSync("git", ["-C", directory, "config", key, value]);
+      writeFileSync(join(directory, "tracked.txt"), "one\n");
+      execFileSync("git", ["-C", directory, "add", "tracked.txt"]); execFileSync("git", ["-C", directory, "commit", "-qm", "fixture"]);
+      return realpathSync(directory);
+    };
+    const alpha = repository("alpha"), beta = repository("beta");
+    execFileSync("git", ["-C", alpha, "worktree", "add", "-q", "-b", "feature", join(base, "alpha-feature")]);
+    const feature = realpathSync(join(base, "alpha-feature"));
+    writeFileSync(join(feature, "tracked.txt"), "changed\n");
+    const head = execFileSync("git", ["-C", alpha, "rev-parse", "HEAD"]).toString().trim();
+    const reader = new SystemGitWorktreeReader(); cleanups.push(() => reader.close());
+    const f = await fixture("better-auth", { repository: name => name === "alpha" ? alpha : name === "beta-repo" ? beta : `/repo/${name}`, git: reader }), c = await f.client();
+    await f.grant("reader", "project-a");
+
+    const expected = { projectId: "project-a", registrationsTruncated: false, registrations: [{ registrationId: f.ids.a, discovery: "complete", worktreesTruncated: false, worktrees: [
+      { path: alpha, branch: "main", head, shortHead: head.slice(0, 8), detached: false, locked: false, prunable: false, dirty: false },
+      { path: feature, branch: "feature", head, shortHead: head.slice(0, 8), detached: false, locked: false, prunable: false, dirty: true },
+    ] }] };
+    const viaApi = await f.post("api", "project.worktrees", { projectId: "project-a" });
+    expect(viaApi).toEqual({ status: 200, body: expected });
+    // Unix is the local operator: full authority, the same real discovery.
+    expect(await f.post("unix", "project.worktrees", { projectId: "project-a" })).toEqual(viaApi);
+    const viaMcp = await c.callTool({ name: "project_worktrees", arguments: { projectId: "project-a" } });
+    expect(viaMcp.isError).toBeFalsy(); expect(viaMcp.structuredContent).toEqual(expected);
+
+    const listed = await f.post("api", "project.list", {});
+    expect(listed).toEqual({ status: 200, body: { nextCursor: null, items: [{ projectId: "project-a", name: "project-a", status: "active", registrationsTruncated: false,
+      registrations: [{ registrationId: f.ids.a, name: "alpha", port: expect.any(Number), phase: "stopped", worktreePath: null, claim: "none" }] }] } });
+    expect((await c.callTool({ name: "project_list", arguments: {} })).structuredContent).toEqual(listed.body);
+    const status = await f.post("api", "project.status", { projectId: "project-a" });
+    expect(status).toMatchObject({ status: 200, body: { projectId: "project-a", writable: false, registrations: [{ registrationId: f.ids.a, launch: { executable: "node", args: ["server.js"] } }] } });
+    expect((await c.callTool({ name: "project_status", arguments: { projectId: "project-a" } })).structuredContent).toEqual(status.body);
+
+    // The neighbour has a real repository too; it is refused exactly like a missing project, and never discovered.
+    for (const operation of ["project.status", "project.worktrees"] as const) {
+      const hidden = await f.post("api", operation, { projectId: "project-b" }), missing = await f.post("api", operation, { projectId: "missing-project" });
+      expect(hidden).toEqual({ status: 404, body: refusal("not_found", 404, "resource_not_found") }); expect(missing).toEqual(hidden);
+      for (const projectId of ["project-b", "missing-project"]) {
+        const viaTool = await c.callTool({ name: tools[operation], arguments: { projectId } });
+        expect(viaTool, `${operation} ${projectId}`).toMatchObject({ isError: true, structuredContent: hidden.body });
+      }
+    }
+    expect(f.git.listTrees.mock.calls.map(([path]) => path)).toEqual([alpha, alpha, alpha]);
   });
 });
