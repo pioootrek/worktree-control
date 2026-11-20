@@ -142,7 +142,7 @@ better-auth mode; provider cookies refuse `provider_cookie_not_supported`.
 
 MCP uses a separate port and the exact `/mcp/operations` path. Each POST is
 stateless and authenticates independently. No session ID is needed. This exchange
-is executed verbatim as JSON messages by `operations-mcp-${mode}` in the installed
+is executed verbatim as JSON messages by `describe-rpc-${mode}` in the installed
 RBAC script, as well as through the installed SDK client:
 
 ```bash

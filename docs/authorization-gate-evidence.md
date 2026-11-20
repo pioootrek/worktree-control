@@ -87,9 +87,17 @@ instead refuses a changed buffered witness. Neither writes a stale DTO.
 | Listeners worker: spoofed actor | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
 | Listeners worker: spoofed session | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
 | Listeners worker: strict JSON | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
-| Listeners worker: traversal/encoding/trailing slash/query/method variants | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
+| Listeners worker: path traversal | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
+| Listeners worker: encoding | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
+| Listeners worker: trailing slash | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
+| Listeners worker: query variants | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
+| Listeners worker: method variants | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, methods, JSON and byte limits terminate before poll/report` | `node:test:operations-mcp` | added in this step |
 | Listeners MCP: strict JSON | `src/server/modules/operations/mcp-request-adapter.test.ts` | `rejects batches, methods, aliases, bad Origin and strict-body/header violations` | `node:test:operations-mcp` | proven before this step |
-| Listeners MCP: traversal/encoding/trailing slash/query/method variants | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, reserved HTTP namespace, methods and batches are terminal` | `node:test:operations-mcp` | proven before this step |
+| Listeners MCP: path traversal | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, reserved HTTP namespace, methods and batches are terminal` | `node:test:operations-mcp` | proven before this step |
+| Listeners MCP: encoding | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, reserved HTTP namespace, methods and batches are terminal` | `node:test:operations-mcp` | proven before this step |
+| Listeners MCP: trailing slash | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, reserved HTTP namespace, methods and batches are terminal` | `node:test:operations-mcp` | proven before this step |
+| Listeners MCP: query variants | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, reserved HTTP namespace, methods and batches are terminal` | `node:test:operations-mcp` | proven before this step |
+| Listeners MCP: method variants | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, reserved HTTP namespace, methods and batches are terminal` | `node:test:operations-mcp` | proven before this step |
 | Listeners MCP: legacy routes unreached | `src/server/modules/operations/http-boundary-conformance.test.ts` | `raw aliases, reserved HTTP namespace, methods and batches are terminal` | `node:test:operations-mcp` | proven before this step |
 | Listeners API/unix: legacy routes unreached | `src/server/modules/operations/http-boundary-conformance.test.ts` | `refuses normalized aliases before all legacy work, with cookie refusal first` | `node:test:operations-mcp` | proven before this step |
 | Boundary: Host | `src/server/modules/operations/http-boundary-conformance.test.ts` | `cookie boundary rejects %s before body, budget and provider` | `node:test:operations-mcp` | proven before this step |
@@ -118,7 +126,11 @@ instead refuses a changed buffered witness. Neither writes a stale DTO.
 | Release HTTP: disconnect | `src/server/modules/operations/http-boundary-conformance.test.ts` | `cookie release recomputes after runner completion: %s` | `node:test:operations-mcp` | proven before this step |
 | Release HTTP: no stale DTO | `src/server/modules/operations/http-boundary-conformance.test.ts` | `cookie release recomputes after runner completion: %s` | `node:test:operations-mcp` | proven before this step |
 | Release worker: pause after runner before real write | `src/server/modules/operations/http-boundary-conformance.test.ts` | `fresh release after runner completion rechecks %s` | `node:test:operations-mcp` | proven before this step |
-| Release worker: maintenance/credential/grant/deadline/connection | `src/server/modules/operations/http-boundary-conformance.test.ts` | `fresh release after runner completion rechecks %s` | `node:test:operations-mcp` | proven before this step |
+| Release worker: maintenance | `src/server/modules/operations/http-boundary-conformance.test.ts` | `fresh release after runner completion rechecks %s` | `node:test:operations-mcp` | proven before this step |
+| Release worker: credential | `src/server/modules/operations/http-boundary-conformance.test.ts` | `fresh release after runner completion rechecks %s` | `node:test:operations-mcp` | proven before this step |
+| Release worker: grant | `src/server/modules/operations/http-boundary-conformance.test.ts` | `fresh release after runner completion rechecks %s` | `node:test:operations-mcp` | proven before this step |
+| Release worker: deadline | `src/server/modules/operations/http-boundary-conformance.test.ts` | `fresh release after runner completion rechecks %s` | `node:test:operations-mcp` | proven before this step |
+| Release worker: connection | `src/server/modules/operations/http-boundary-conformance.test.ts` | `fresh release after runner completion rechecks %s` | `node:test:operations-mcp` | proven before this step |
 | Release MCP: pause after SDK before real write | `src/server/modules/operations/http-boundary-conformance.test.ts` | `post-SDK-buffer release rechecks %s` | `node:test:operations-mcp` | proven before this step |
 | Release MCP: maintenance | `src/server/modules/operations/http-boundary-conformance.test.ts` | `post-SDK-buffer release rechecks %s` | `node:test:operations-mcp` | proven before this step |
 | Release MCP: credentials | `src/server/modules/operations/http-boundary-conformance.test.ts` | `post-SDK-buffer release rechecks %s` | `node:test:operations-mcp` | proven before this step |
@@ -142,10 +154,10 @@ instead refuses a changed buffered witness. Neither writes a stale DTO.
 | Conformance: negative control: premature SDK success fails exactly with stale result true versus false | `src/server/modules/operations/http-boundary-conformance.test.ts` | `negative control: premature SDK success fails exactly with stale result true versus false` | `node:test:operations-mcp` | proven before this step |
 | Reserve: sign-out under initiating saturation | `packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts` | `closes D1a-5a reserve deferral: sign-out and an accepted login completion succeed with operations initiating cap saturated` | `node:test:auth-provider-cli` | proven before this step |
 | Reserve: accepted completion under initiating saturation | `packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts` | `closes D1a-5a reserve deferral: sign-out and an accepted login completion succeed with operations initiating cap saturated` | `node:test:auth-provider-cli` | proven before this step |
-| 5a: cookie refused with no body | `src/server/modules/operations/http-boundary-conformance.test.ts` | `cookie refusal precedes body, admission and even saturated unix capacity` | `node:test:operations-mcp` | proven before this step |
-| 5a: cookie refused with no slot | `src/server/modules/operations/http-boundary-conformance.test.ts` | `cookie refusal precedes body, admission and even saturated unix capacity` | `node:test:operations-mcp` | proven before this step |
-| 5a: cookie refused with no admission | `src/server/modules/operations/http-boundary-conformance.test.ts` | `cookie refusal precedes body, admission and even saturated unix capacity` | `node:test:operations-mcp` | proven before this step |
-| 5a: cookie refused with no provider work | `src/server/modules/operations/http-boundary-conformance.test.ts` | `cookie refusal precedes body, admission and even saturated unix capacity` | `node:test:operations-mcp` | proven before this step |
+| Historical 5a: cookie refused with no body | `src/server/modules/operations/http-boundary-conformance.test.ts` | `historical 5a refusal-only cookie ordering on %s performs no application work` | `node:test:operations-mcp` | added in this step |
+| Historical 5a: cookie refused with no slot | `src/server/modules/operations/http-boundary-conformance.test.ts` | `historical 5a refusal-only cookie ordering on %s performs no application work` | `node:test:operations-mcp` | added in this step |
+| Historical 5a: cookie refused with no admission | `src/server/modules/operations/http-boundary-conformance.test.ts` | `historical 5a refusal-only cookie ordering on %s performs no application work` | `node:test:operations-mcp` | added in this step |
+| Historical 5a: cookie refused with no provider work | `src/server/modules/operations/http-boundary-conformance.test.ts` | `historical 5a refusal-only cookie ordering on %s performs no application work` | `node:test:operations-mcp` | added in this step |
 | Offline pre-open: pending handoff | `src/cli/session-describe.test.ts` | `%s restore handoff stops before store construction` | `node:test:session-describe` | proven before this step |
 | Offline pre-open: unreadable handoff | `src/cli/session-describe.test.ts` | `%s restore handoff stops before store construction` | `node:test:session-describe` | proven before this step |
 | Lifetime: mixed old/new shared budget saturation | `src/server/modules/operations/http-boundary-conformance.test.ts` | `shares the real unix ceiling and drain with a stubbed /auth executor after disconnect` | `node:test:operations-mcp` | proven before this step |
@@ -210,9 +222,9 @@ listener, refusal and timed step. The provider proof also runs separately.
 | Installed worker TLS: open | `scripts/package-rbac.mjs` | `operations-worker-${mode}` | `node:test:rbac-artifact` | added in this step |
 | Installed worker TLS: token | `scripts/package-rbac.mjs` | `operations-worker-${mode}` | `node:test:rbac-artifact` | added in this step |
 | Installed worker TLS: better-auth | `scripts/package-rbac.mjs` | `operations-worker-${mode}` | `node:test:rbac-artifact` | added in this step |
-| Installed MCP initialize/list/call: open | `scripts/package-rbac.mjs` | `operations-mcp-${mode}` | `node:test:rbac-artifact` | added in this step |
-| Installed MCP initialize/list/call: token | `scripts/package-rbac.mjs` | `operations-mcp-${mode}` | `node:test:rbac-artifact` | added in this step |
-| Installed MCP initialize/list/call: better-auth | `scripts/package-rbac.mjs` | `operations-mcp-${mode}` | `node:test:rbac-artifact` | added in this step |
+| Installed MCP initialize/list/call: open | `scripts/package-rbac.mjs` | `describe-rpc-${mode}` | `node:test:rbac-artifact` | added in this step |
+| Installed MCP initialize/list/call: token | `scripts/package-rbac.mjs` | `describe-rpc-${mode}` | `node:test:rbac-artifact` | added in this step |
+| Installed MCP initialize/list/call: better-auth | `scripts/package-rbac.mjs` | `describe-rpc-${mode}` | `node:test:rbac-artifact` | added in this step |
 | Installed CLI socket: open | `scripts/package-rbac.mjs` | `operations-unix-${mode}` | `node:test:rbac-artifact` | added in this step |
 | Installed CLI socket: token | `scripts/package-rbac.mjs` | `operations-unix-${mode}` | `node:test:rbac-artifact` | added in this step |
 | Installed CLI socket: better-auth | `scripts/package-rbac.mjs` | `operations-unix-${mode}` | `node:test:rbac-artifact` | added in this step |
@@ -247,3 +259,14 @@ outside D1a, owned by a separate client hardening/interface decision; no new
 client peer verifier has been built. D1c still owns cross-request cancellation
 and coordination-session binding, which this stateless read does not implement.
 No accepted D1a gate clause is deferred to those future workflows.
+
+## Plan conflict resolved by the lead
+
+The final Gate quotes the D1a-5a refusal-only API cookie ordering, but D1a-5b
+subsequently mounted supported API cookies with a shared initiating slot,
+admission and provider resolution. On 2026-11-20 the lead directed this audit to
+treat 5a as a historical intermediate gate. Its four rows retain explicit
+no-body/no-budget/no-admission/no-provider assertions on unsupported API modes
+and the unix, worker and MCP mounts. Supported API cookie behavior is proved by
+the later cookie conformance and real-provider tests. This is a documented plan
+clarification, not a production defect or an expected-failure test.

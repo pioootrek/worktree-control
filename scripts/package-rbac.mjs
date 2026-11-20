@@ -204,23 +204,23 @@ async function operationSocket(mode) {
         response.on("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
       });
       call.setTimeout(10_000, () => call.destroy(new Error("Operations socket deadline"))); call.on("error", reject); call.end("{}");
-  });
-  const denied = await callSocket({ Authorization: `Bearer ${storedOwner}` });
-  assert.equal(denied.status, 401); assert.equal(denied.body.error.reason, "credential_on_local_listener");
-  const reply = await callSocket({});
-  assert.equal(reply.status, 200); assert.equal(reply.body.actor.kind, "operator"); assert.equal(reply.body.listener, "unix"); assert.equal(reply.body.mode, mode);
-  const success = await command(currentCli, ["session", "describe"]);
-  assert.equal(success.code, 0); assert.equal(success.stdout, `${JSON.stringify(reply.body, null, 2)}\n`);
-  for (const closedStderr of [false, true]) await step(`session-describe-unix-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
-    () => closedSessionOutput("socket", closedStderr));
-  const socket = join(directoryArgs[3], "admin.sock"), hidden = socket + ".hidden";
-  await rename(socket, hidden);
-  try {
-    const refused = await refusal(currentCli, ["session", "describe"]);
-    assert.deepEqual(refused, { error: { category: "unavailable", status: 503, reason: "admin_socket_missing", retry: "none", effect: null } });
-  } finally { await rename(hidden, socket); }
-  matrixCell("unix", mode, "operator", "unix", "credential_on_local_listener", `operations-unix-${mode}`);
-  matrixCell("cli-socket", mode, "operator", "unix", "admin_socket_missing (CLI has no credential input)", `operations-unix-${mode}`);
+    });
+    const denied = await callSocket({ Authorization: `Bearer ${storedOwner}` });
+    assert.equal(denied.status, 401); assert.equal(denied.body.error.reason, "credential_on_local_listener");
+    const reply = await callSocket({});
+    assert.equal(reply.status, 200); assert.equal(reply.body.actor.kind, "operator"); assert.equal(reply.body.listener, "unix"); assert.equal(reply.body.mode, mode);
+    const success = await command(currentCli, ["session", "describe"]);
+    assert.equal(success.code, 0); assert.equal(success.stdout, `${JSON.stringify(reply.body, null, 2)}\n`);
+    for (const closedStderr of [false, true]) await step(`session-describe-unix-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
+      () => closedSessionOutput("socket", closedStderr));
+    const socket = join(directoryArgs[3], "admin.sock"), hidden = socket + ".hidden";
+    await rename(socket, hidden);
+    try {
+      const refused = await refusal(currentCli, ["session", "describe"]);
+      assert.deepEqual(refused, { error: { category: "unavailable", status: 503, reason: "admin_socket_missing", retry: "none", effect: null } });
+    } finally { await rename(hidden, socket); }
+    matrixCell("unix", mode, "operator", "unix", "credential_on_local_listener", `operations-unix-${mode}`);
+    matrixCell("cli-socket", mode, "operator", "unix", "admin_socket_missing (CLI has no credential input)", `operations-unix-${mode}`);
   });
 }
 async function operationOffline(mode) {
@@ -244,18 +244,18 @@ async function operationWorker(mode, secret) {
         response.on("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
       });
       request.setTimeout(10000, () => request.destroy(new Error("Worker operations deadline"))); request.on("error", reject); request.end("{}");
-  });
-  const reply = await call(secret); assert.equal(reply.status, 200); assert.equal(reply.body.mode, mode); assert.equal(reply.body.listener, "worker");
-  assert.equal(reply.body.actor.kind, mode === "better-auth" ? "agent" : "installation");
-  {
-    const refused = await call(storedWorker ?? storedOwner); assert.equal(refused.status, 401);
-    assert.deepEqual(refused.body, { error: { category: "unauthenticated", status: 401, reason: mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", retry: "reauthenticate", effect: null } });
-  }
-  matrixCell("worker-tls", mode, mode === "better-auth" ? "agent" : "installation", "worker", mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", `operations-worker-${mode}`);
+    });
+    const reply = await call(secret); assert.equal(reply.status, 200); assert.equal(reply.body.mode, mode); assert.equal(reply.body.listener, "worker");
+    assert.equal(reply.body.actor.kind, mode === "better-auth" ? "agent" : "installation");
+    {
+      const refused = await call(storedWorker ?? storedOwner); assert.equal(refused.status, 401);
+      assert.deepEqual(refused.body, { error: { category: "unauthenticated", status: 401, reason: mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", retry: "reauthenticate", effect: null } });
+    }
+    matrixCell("worker-tls", mode, mode === "better-auth" ? "agent" : "installation", "worker", mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", `operations-worker-${mode}`);
   });
 }
 async function operationMcp(mode, secret) {
-  return step(`operations-mcp-${mode}`, async () => {
+  return step(`describe-rpc-${mode}`, async () => {
     // Same stateless JSON-RPC requests as the authentication guide; also keep the real SDK client below.
     for (const message of [
       { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "authority-example", version: "1" } } },
@@ -288,7 +288,7 @@ async function operationMcp(mode, secret) {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "refusal", version: "1" } } }) });
     assert.equal(refused.status, 401);
     assert.deepEqual(await refused.json(), { error: { category: "unauthenticated", status: 401, reason: mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", retry: "reauthenticate", effect: null } });
-    matrixCell("mcp", mode, mode === "better-auth" ? "agent" : "installation", "mcp", mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", `operations-mcp-${mode}`);
+    matrixCell("mcp", mode, mode === "better-auth" ? "agent" : "installation", "mcp", mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", `describe-rpc-${mode}`);
   });
 }
 async function operationApi(mode, secret) {

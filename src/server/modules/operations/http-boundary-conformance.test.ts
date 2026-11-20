@@ -2061,11 +2061,12 @@ describe("D1a-10 real Node listener expiry", () => {
       const started = performance.now();
       await new Promise<void>((resolve, reject) => {
         socket.setTimeout(5000, () => { socket.destroy(); reject(new Error("Node timeout fixture did not expire")); });
-        socket.on("data", chunk => { bytes += chunk.toString(); }); socket.on("error", reject); socket.once("close", () => resolve());
+        socket.on("data", chunk => { bytes += chunk.toString(); }); socket.on("error", reject); socket.once("end", () => resolve());
         socket.once(listener === "worker" ? "secureConnect" : "connect", () => {
           socket.write(`POST ${listener === "worker" ? operationRoute : "/mcp/operations"} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 100\r\n${phase === "body" ? "\r\n{" : "X-Slow: "}`);
         });
       });
+      socket.destroy();
       expect(bytes).toMatch(/^HTTP\/1\.1 408 Request Timeout\r\n/);
       expect(bytes).not.toContain('"actor"'); expect(mint).not.toHaveBeenCalled();
       expect(performance.now() - started).toBeGreaterThanOrEqual(phase === "headers" ? 200 : 400);
@@ -2073,3 +2074,20 @@ describe("D1a-10 real Node listener expiry", () => {
     expect((await f.driver.send().reply).status).toBe(200);
   }, 20_000);
 });
+
+
+it.each(["api", "unix", "worker", "mcp"] as const)("historical 5a refusal-only cookie ordering on %s performs no application work", async listener => {
+  // 5b intentionally supersedes supported API cookie refusal. The unsupported
+  // API mode and the three cookie-free mounts retain the original preflight.
+  const f = listener === "worker" ? await workerFixture() : listener === "mcp" ? await mcpFixture() : await fixture(listener === "api" ? "legacy" : "open");
+  const driver = "driver" in f ? f.driver : f.drivers[listener === "api" ? "api" : "unix"];
+  const mint = vi.spyOn(f.runtime, "mint"), admission = vi.spyOn(f.store.admission, "run");
+  const acquire = vi.spyOn(AuthenticationRequestBudget.prototype, "acquire");
+  let bodyReads = 0;
+  driver.server.prependListener("request", req => req.on("newListener", event => { if (event === "data") bodyReads++; }));
+  const reply = await driver.send({ slow: true, headers: { "Content-Type": "application/json", Cookie: "wtc.session=x" } }).reply;
+  expect(reply.body).toEqual(refusal("provider_cookie_not_supported"));
+  expect(bodyReads).toBe(0); expect(acquire).not.toHaveBeenCalled(); expect(admission).not.toHaveBeenCalled();
+  expect(mint).not.toHaveBeenCalled(); expect(f.provider.resolveRequest).not.toHaveBeenCalled();
+  expect(f.provider.isSessionAuthorityEligible).not.toHaveBeenCalled();
+}, 20_000);
