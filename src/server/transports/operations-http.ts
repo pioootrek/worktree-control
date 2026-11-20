@@ -24,7 +24,7 @@ export type OperationsHttpRuntime = { supported: false; mint: Mint } | {
   providerSessionEligibility(): ProviderSessionEligibility;
   runtime: Pick<OperationRuntime, "now">;
   registry: Pick<OperationRegistry, "get" | "idsOn">;
-  runner: Pick<OperationRunner, "readRelease">;
+  runner: Pick<OperationRunner, "readRelease" | "queryRelease">;
 };
 
 /** API's existing 64 KiB ceiling; unix's ordinary-command ceiling is stricter. */
@@ -190,9 +190,9 @@ export function createOperationsHttp(options: {
       if (!minted.ok) { operationsFailure(response, minted.error); return; }
       const operation = runtime.registry.get(parsed.operation);
       if (!operation) { operationsFailure(response, failure("not_found", "operation_not_found")); return; }
-      const result = await runtime.runner.readRelease(operation, minted.context, body, {
+      const releaseOptions = {
         eligible: () => !closing && runtime.eligible(), connected, deadline, signal: abort.signal,
-        commit(value) {
+        commit(value: object) {
           const serialized = JSON.stringify(value);
           if (Buffer.byteLength(serialized) > limits.responseBytes) {
             // This refusal is itself committed inside admission. Returning normally
@@ -201,7 +201,11 @@ export function createOperationsHttp(options: {
           }
           writeOperationsResponse(response, 200, serialized);
         },
-      });
+      };
+      // Reads and queries both release inside an admitted phase; the registry holds no other kind yet.
+      const result = operation.kind === "query"
+        ? await runtime.runner.queryRelease(operation, minted.context, body, releaseOptions)
+        : await runtime.runner.readRelease(operation, minted.context, body, releaseOptions);
       if (result.status !== "committed") operationsFailure(response, result.error);
     } catch (error) {
       operationsFailure(response, operationsRequestFailure(error, abort.signal, timedOut));

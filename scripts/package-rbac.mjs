@@ -247,6 +247,13 @@ async function operationSocket(mode) {
     assert.equal(reply.status, 200); assert.equal(reply.body.actor.kind, "operator"); assert.equal(reply.body.listener, "unix"); assert.equal(reply.body.mode, mode);
     const success = await command(currentCli, ["session", "describe"]);
     assert.equal(success.code, 0); assert.equal(success.stdout, `${JSON.stringify(reply.body, null, 2)}\n`);
+    // D2a through the private socket: the operator lists every project; the CLI prints the same released DTO.
+    const ids = observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id").all().map(row => row.id));
+    const projects = await json(currentCli, ["projects", "list", "--limit", "100"]);
+    assert.deepEqual(projects.items.filter(item => item.projectId !== null).map(item => item.projectId), ids);
+    const projectStatus = await json(currentCli, ["projects", "status", ids[0]]); assert.equal(projectStatus.projectId, ids[0]); assert.equal(projectStatus.writable, true);
+    const projectWorktrees = await json(currentCli, ["projects", "worktrees", ids[0]]); assert.equal(projectWorktrees.projectId, ids[0]);
+    assert.deepEqual(await refusal(currentCli, ["projects", "status", "missing-project"]), operationRefusal("resource_not_found", "not_found", 404, "none"));
     for (const closedStderr of [false, true]) await step(`session-describe-unix-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
       () => closedSessionOutput("socket", closedStderr));
     const socket = join(directoryArgs[3], "admin.sock"), hidden = socket + ".hidden";
@@ -266,6 +273,11 @@ async function operationOffline(mode) {
     assert.equal(dto.listener, "offline"); assert.equal(dto.mode, mode);
     assert.equal(dto.freshLogin.state, "exempt");
     assert(!JSON.stringify(dto).match(/sessionId|credentialId|verifierHash/));
+    // D2a offline: the same operator reads under the controller lock; no managed server runs offline.
+    const projects = await json(currentCli, ["projects", "list"]);
+    for (const item of projects.items) for (const registration of item.registrations) assert.equal(registration.phase, "stopped");
+    assert.deepEqual(projects.items.filter(item => item.projectId !== null).map(item => item.projectId),
+      observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id").all().map(row => row.id)).slice(0, 50));
     for (const closedStderr of [false, true]) await step(`session-describe-offline-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
       () => closedSessionOutput("offline", closedStderr));
     matrixCell("cli-offline", mode, "operator", "offline", "not applicable: no credential input; mode-independent upgrade-required-offline-session-describe step covers the released-baseline refusal once", `operations-offline-${mode}`);
@@ -304,19 +316,27 @@ async function operationMcp(mode, secret) {
       const response = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: JSON.stringify(message) });
       assert.equal(response.status, 200); const reply = await response.json(); assert.equal(reply.id, message.id); assert.equal(reply.error, undefined);
       if (message.method === "initialize") assert.equal(reply.result.protocolVersion, "2025-03-26");
-      if (message.method === "tools/list") assert.deepEqual(reply.result.tools.map(tool => tool.name), ["session_describe"]);
+      if (message.method === "tools/list") assert.deepEqual(reply.result.tools.map(tool => tool.name), ["project_list", "project_status", "project_worktrees", "session_describe"]);
       if (message.method === "tools/call") { assert.equal(reply.result.structuredContent.listener, "mcp"); assert.equal(reply.result.structuredContent.mode, mode); assert.equal(reply.result.structuredContent.actor.kind, mode === "better-auth" ? "agent" : "installation"); }
     }
     const { Client, StreamableHTTPClientTransport } = operationsSdk;
     const client = new Client({ name: "installed-operations", version: "1" }); clients.push(client);
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL + "/operations"), { requestInit: { headers: secret ? { Authorization: `Bearer ${secret}` } : {} } }));
-      assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ["session_describe"]);
+      assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ["project_list", "project_status", "project_worktrees", "session_describe"]);
       const result = await client.callTool({ name: "session_describe", arguments: {} });
       const denied = await client.callTool({ name: "session_describe", arguments: { actor: "operator" } });
       assert.equal(denied.isError, true); assert.deepEqual(denied.structuredContent, operationRefusal("unexpected_input", "invalid_request", 400, "none"));
       assert(!result.isError); const dto = result.structuredContent;
       assert.equal(dto.mode, mode); assert.equal(dto.listener, "mcp"); assert.equal(dto.actor.kind, mode === "better-auth" ? "agent" : "installation");
+      // D2a: the agent of the installed fixture holds no role after the authority reset; installation authority lists every project.
+      const listed = await client.callTool({ name: "project_list", arguments: {} });
+      assert(!listed.isError); assert.deepEqual(listed.structuredContent, await projectReadsExpected(mode, secret));
+      const hidden = await client.callTool({ name: "project_status", arguments: { projectId: firstProjectId() } });
+      if (mode === "better-auth") { assert.equal(hidden.isError, true); assert.deepEqual(hidden.structuredContent, operationRefusal("resource_not_found", "not_found", 404, "none")); }
+      else { assert(!hidden.isError); assert.equal(hidden.structuredContent.projectId, firstProjectId()); }
+      const worktrees = await client.callTool({ name: "project_worktrees", arguments: { projectId: "missing-project" } });
+      assert.equal(worktrees.isError, true); assert.deepEqual(worktrees.structuredContent, operationRefusal("resource_not_found", "not_found", 404, "none"));
     } finally { await client.close(); }
     for (const name of ["X-Worktree-Control-Token", "X-Worktree-Switcher-Token"]) {
       const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", [name]: secret ?? storedWorker },
@@ -340,6 +360,7 @@ async function operationMcp(mode, secret) {
 async function operationApi(mode, secret) {
   await operationWorker(mode, secret);
   await operationMcp(mode, secret);
+  await operationProjectReads(mode, secret);
   await step(`operations-api-${mode}`, async () => {
     const denied = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${storedOwner}` }, body: "{}" });
     assert.equal(denied.status, 401); const reason = mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here";
@@ -351,6 +372,49 @@ async function operationApi(mode, secret) {
     const reply = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: "{}" });
     assert.equal(reply.status, 200); const body = await reply.json(); assert.equal(body.mode, mode); assert.equal(body.listener, "api"); assert.equal(body.actor.kind, mode === "better-auth" ? "agent" : "installation");
     matrixCell("api-bearer", mode, mode === "better-auth" ? "agent" : "installation", "api", reason, `operations-api-${mode}`);
+  });
+}
+/** The first stored Knowledge project, read from the installed database. */
+const firstProjectId = () => observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id LIMIT 1").get().id);
+/** What project.list releases on this fixture: nothing to a zero-role agent, every project (sorted) to installation authority. */
+async function projectReadsExpected(mode, secret) {
+  if (mode === "better-auth") return { items: [], nextCursor: null };
+  const ids = observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id").all().map(row => row.id));
+  const reply = await fetch(endpoint + "/api/operations/project.list", { method: "POST", headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: "{}" });
+  const body = await reply.json(); assert.deepEqual(body.items.filter(item => item.projectId !== null).map(item => item.projectId), ids);
+  return body;
+}
+async function operationProjectReads(mode, secret) {
+  return step(`project-reads-${mode}`, async () => {
+    const call = async (id, body, base = endpoint, extra = {}) => {
+      const reply = await fetch(base + `/api/operations/${id}`, { method: "POST", headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: JSON.stringify(body), ...extra });
+      return { status: reply.status, body: await reply.json() };
+    };
+    const projectId = firstProjectId();
+    const listed = await call("project.list", {});
+    assert.equal(listed.status, 200); assert.deepEqual(listed.body, await projectReadsExpected(mode, secret));
+    const status = await call("project.status", { projectId }), worktrees = await call("project.worktrees", { projectId });
+    const missingStatus = await call("project.status", { projectId: "missing-project" }), missingWorktrees = await call("project.worktrees", { projectId: "missing-project" });
+    for (const missing of [missingStatus, missingWorktrees]) { assert.equal(missing.status, 404); assert.deepEqual(missing.body, operationRefusal("resource_not_found", "not_found", 404, "none")); }
+    if (mode === "better-auth") {
+      // A zero-role agent cannot tell an existing project from a missing one.
+      assert.deepEqual(status, missingStatus); assert.deepEqual(worktrees, missingWorktrees);
+    } else {
+      assert.equal(status.status, 200); assert.equal(status.body.projectId, projectId); assert.equal(typeof status.body.revision, "number");
+      assert.equal(worktrees.status, 200); assert.deepEqual(Object.keys(worktrees.body).sort(), ["projectId", "registrations", "registrationsTruncated"]);
+    }
+    const invalid = await call("project.list", { limit: 0 });
+    assert.equal(invalid.status, 400); assert.deepEqual(invalid.body, operationRefusal("invalid_limit", "invalid_request", 400, "none"));
+    // Project reads are not served on the worker listener in any mode.
+    const worker = await new Promise((accept, reject) => {
+      const request = httpsRequest({ hostname: "127.0.0.1", port: workerPort, ca: workerCa, path: "/api/operations/project.list", method: "POST",
+        headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) } }, response => {
+        const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
+        response.on("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
+      });
+      request.setTimeout(10000, () => request.destroy(new Error("Worker operations deadline"))); request.on("error", reject); request.end("{}");
+    });
+    assert.equal(worker.status, 404); assert.deepEqual(worker.body, operationRefusal("operation_not_found", "not_found", 404, "none"));
   });
 }
 const cookieJar = () => {

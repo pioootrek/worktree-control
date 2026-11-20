@@ -37,7 +37,8 @@ import { FRESH_LOGIN_WINDOW_MS } from "../shared/contracts/operations";
 import { createProviderWorld } from "../server/modules/operations/adapters/provider-session-fixture";
 import { sessionDescribe } from "../server/modules/operations";
 import { resolveAppPaths } from "../server/paths";
-import { createSessionDescribeOutput, runSessionDescribe } from "./session-describe";
+import { SystemGitWorktreeReader } from "../server/git-worktrees";
+import { createSessionDescribeOutput, parseProjectsCommand, runProjectsCommand, runSessionDescribe } from "./session-describe";
 
 vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>() }));
 
@@ -71,7 +72,7 @@ function observe() {
   return { opened, acquire };
 }
 const options = (store: stores.SqliteStateStore, mode: string) => ({ store, activeMode: mode, now: Date.now,
-  logs: { controller: vi.fn() }, requestBudget: new AuthenticationRequestBudget(16, 4), provider: null,
+  logs: { controller: vi.fn() }, projectReads: { placement: { placement: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { list: async () => [] } }, requestBudget: new AuthenticationRequestBudget(16, 4), provider: null,
   eligibility: { controllerEligible: () => true, providerSessionEligible: () => false }, listeners: { unix: () => true, api: () => true, worker: () => true, mcp: () => true } });
 
 describe("session describe CLI mount", () => {
@@ -621,4 +622,51 @@ describe("session describe real-process output", () => {
       }
     }
   }, 40_000);
+});
+
+describe("projects CLI mount (D2a)", () => {
+  it("parses only the documented forms", () => {
+    expect(parseProjectsCommand(["list"])).toEqual({ operation: "project.list", input: {} });
+    expect(parseProjectsCommand(["list", "--limit", "5", "--cursor", "abc"])).toEqual({ operation: "project.list", input: { limit: 5, cursor: "abc" } });
+    expect(parseProjectsCommand(["status", "project-a"])).toEqual({ operation: "project.status", input: { projectId: "project-a" } });
+    expect(parseProjectsCommand(["status", "project-a", "--compact"])).toEqual({ operation: "project.status", input: { projectId: "project-a", compact: true } });
+    expect(parseProjectsCommand(["worktrees", "project-a"])).toEqual({ operation: "project.worktrees", input: { projectId: "project-a" } });
+    for (const args of [[], ["list", "--limit"], ["list", "--limit", "x"], ["list", "--limit", "1", "--limit", "2"], ["list", "--other", "1"], ["status"],
+      ["status", "--compact"], ["status", "a", "--other"], ["worktrees", "a", "--compact"], ["remove", "a"]]) {
+      expect(() => parseProjectsCommand(args), args.join(" ")).toThrow(/Usage: projects/);
+    }
+  });
+
+  it.each(["open", "token", "better-auth"])("%s: offline and through the private socket release the same operator DTOs", async mode => {
+    const f = fixture(mode), seeded = new stores.SqliteStateStore(f.paths.databasePath);
+    seeded.saveKnowledgeProject({ id: "project-a", name: "Alpha", status: "active", revision: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, "fixture");
+    const registration = seeded.addProject({ name: "alpha", repositoryPath: join(f.root, "missing-repository"), port: 7411, executable: "node", args: ["server.js"] }).id;
+    const db = ownedFixtureDatabase(seeded);
+    db.prepare("UPDATE project_mapping_clock SET value=value+1 WHERE singleton=1").run();
+    db.prepare("UPDATE projects SET parent_project_id='project-a',mapping_version=(SELECT value FROM project_mapping_clock WHERE singleton=1) WHERE id=?").run(registration);
+    seeded.close();
+    const run = async (args: string[]) => { await runProjectsCommand(args, f.paths, f.write); return JSON.parse(f.lines.pop()!); };
+    const offlineList = await run(["list"]), offlineStatus = await run(["status", "project-a"]), offlineWorktrees = await run(["worktrees", "project-a"]);
+    expect(offlineList).toEqual({ nextCursor: null, items: [{ projectId: "project-a", name: "Alpha", status: "active", registrationsTruncated: false,
+      registrations: [{ registrationId: registration, name: "alpha", port: 7411, phase: "stopped", worktreePath: null, claim: "none" }] }] });
+    expect(offlineStatus).toMatchObject({ projectId: "project-a", revision: 1, writable: true, compact: false,
+      registrations: [{ registrationId: registration, launch: { executable: "node", args: ["server.js"] }, managedServer: true }] });
+    // A path that is no Git repository: discovery is unavailable, and nothing about why is released.
+    expect(offlineWorktrees).toEqual({ projectId: "project-a", registrationsTruncated: false,
+      registrations: [{ registrationId: registration, discovery: "unavailable", worktrees: [], worktreesTruncated: false }] });
+    await expect(runProjectsCommand(["status", "missing"], f.paths, f.write)).rejects.toMatchObject({ error: operationError("resource_not_found", "not_found", "none", 404) });
+    expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+
+    owner(f);
+    const store = new stores.SqliteStateStore(f.paths.databasePath);
+    cleanup.push(() => store.closeAfterDrain());
+    // The controller's own Git reader, so discovery matches the offline command's.
+    const git = new SystemGitWorktreeReader(); cleanup.push(() => git.close());
+    const server = await listenAdminSocket(f.paths.adminSocketPath, vi.fn(), buildOperationsRuntime({ ...options(store, mode), projectReads: { ...options(store, mode).projectReads, git } }));
+    cleanup.push(() => server.close());
+    expect(await run(["list"])).toEqual(offlineList);
+    expect(await run(["status", "project-a"])).toEqual(offlineStatus);
+    expect(await run(["worktrees", "project-a"])).toEqual(offlineWorktrees);
+    await expect(runProjectsCommand(["status", "missing"], f.paths, f.write)).rejects.toMatchObject({ error: operationError("resource_not_found", "not_found", "none", 404) });
+  });
 });

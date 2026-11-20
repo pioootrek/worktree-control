@@ -342,7 +342,7 @@ const OPENINGS: ReadonlyArray<Opening & { class: OpeningClass; why: string }> = 
   { file: "src/cli/remote-verification.ts", kind: "SqliteStateStore", context: "body of runRemoteVerificationCommand", args: "paths.databasePath", class: "ordinary", why: "remote reconcile" },
   { file: "src/cli/remote-verification.ts", kind: "SqliteStateStore", context: "body of runRemoteVerificationCommand", args: "paths.databasePath", class: "ordinary", why: "remote provision and revoke-token" },
   { file: "src/cli/sandbox.ts", kind: "SqliteStateStore", context: "body of prepareSandboxInstallation", args: "paths.databasePath", class: "ordinary", why: "the sandbox's fresh store" },
-  { file: "src/cli/session-describe.ts", kind: "SqliteStateStore", context: "body of runSessionDescribe", args: "paths.databasePath", class: "ordinary", why: "lock-first offline session description after restore-handoff admission" },
+  { file: "src/cli/session-describe.ts", kind: "SqliteStateStore", context: "body of runLockFirstRead", args: "paths.databasePath", class: "ordinary", why: "lock-first offline session description and project reads after restore-handoff admission" },
   { file: "src/server/controller-backup.ts", kind: "better-sqlite3", context: "body of createControllerBackup", args: "databaseFile,{fileMustExist:true}", class: "maintenance", why: "the backup's own snapshot copy" },
   { file: "src/server/controller-backup.ts", kind: "acquireDatabaseOwnership", context: "body of restoreControllerBackup", args: "databasePath", class: "maintenance", why: "offline restore" },
   { file: "src/server/controller-storage.ts", kind: "SqliteStateStore", context: "body of openControllerStore", args: "databasePath", class: "ordinary", why: "controller start" },

@@ -9,11 +9,53 @@ import { OPERATIONS_HTTP_LIMITS, operationsFailure, operationsRequestFailure, pr
   writeOperationsResponse, type OperationsHttpRuntime } from "./operations-http";
 import { parseOperationsPath } from "./operations-path";
 
-/** Explicit descriptors, checked against registry.idsOn("mcp") in conformance. */
-export const OPERATIONS_MCP_TOOLS = Object.freeze([Object.freeze({
-  name: "session_describe", operation: "session.describe", description: "Describe your current authority.",
-  inputSchema: Object.freeze({ type: "object" as const, properties: Object.freeze({}), additionalProperties: false }),
-})]);
+const PROJECT_ID_SCHEMA = Object.freeze({ type: "string" as const, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$" });
+/**
+ * Explicit descriptors, sorted by operation ID and checked against
+ * registry.idsOn("mcp") in conformance. The schema only advertises the input;
+ * the registered operation's parse is the one validation on every transport.
+ */
+export const OPERATIONS_MCP_TOOLS = Object.freeze([
+  Object.freeze({
+    name: "project_list", operation: "project.list",
+    description: "List the projects you can read, with their registrations' port, runtime phase, worktree and claim relation. Paginated.",
+    inputSchema: Object.freeze({ type: "object" as const, additionalProperties: false, properties: Object.freeze({
+      limit: Object.freeze({ type: "integer" as const, minimum: 1, maximum: 100 }),
+      cursor: Object.freeze({ type: "string" as const, minLength: 1, maxLength: 512 }),
+    }) }),
+  }),
+  Object.freeze({
+    name: "project_status", operation: "project.status",
+    description: "Read one project's status: Knowledge revision, writability and each registration's placement and claim. compact omits the detail.",
+    inputSchema: Object.freeze({ type: "object" as const, additionalProperties: false, required: Object.freeze(["projectId"]),
+      properties: Object.freeze({ projectId: PROJECT_ID_SCHEMA, compact: Object.freeze({ type: "boolean" as const }) }) }),
+  }),
+  Object.freeze({
+    name: "project_worktrees", operation: "project.worktrees",
+    description: "Discover the Git worktrees of each registration of one project. Every call discovers.",
+    inputSchema: Object.freeze({ type: "object" as const, additionalProperties: false, required: Object.freeze(["projectId"]),
+      properties: Object.freeze({ projectId: PROJECT_ID_SCHEMA }) }),
+  }),
+  Object.freeze({
+    name: "session_describe", operation: "session.describe", description: "Describe your current authority.",
+    inputSchema: Object.freeze({ type: "object" as const, properties: Object.freeze({}), additionalProperties: false }),
+  }),
+]);
+type ToolDescriptor = typeof OPERATIONS_MCP_TOOLS[number];
+type ToolResult = { readonly ok: true; readonly serialized: string; readonly canonical: string } | { readonly ok: false; readonly error: PublicOperationError };
+
+/** The tool a JSON-RPC body calls, when it is a call of a project tool. Session describe keeps its own path. */
+function projectToolCall(body: Record<string, unknown>): { tool: ToolDescriptor; arguments: unknown } | null {
+  const own = (value: unknown, key: string): unknown => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  };
+  if (own(body, "method") !== "tools/call") return null;
+  const params = own(body, "params"), name = own(params, "name");
+  const tool = OPERATIONS_MCP_TOOLS.find(each => each.name === name && each.operation !== "session.describe");
+  return tool ? { tool, arguments: own(params, "arguments") } : null;
+}
 
 /**
  * SDK Protocol adds { result, jsonrpc, id }; JSON response mode serializes that
@@ -120,64 +162,115 @@ export function createOperationsMcp(options: {
       if (initial.status !== "committed") { refuse(initial.error); return; }
       if (!snapshot) return;
       const context = Object.freeze({ authentication: minted.context, ...snapshot });
-      const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-      server = new Server({ name: "worktree-control-operations", version: "1" }, { capabilities: { tools: {} } });
-      server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: OPERATIONS_MCP_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) }));
-      server.setRequestHandler(CallToolRequestSchema, async call => {
-        try {
-          if (call.params.name !== "session_describe") throw new OperationError("not_found", "operation_not_found");
-          // Delegate input validation to the registered operation, not a transport schema.
-          operation.parse(call.params.arguments);
-          return { content: [{ type: "text", text: context.serialized }], structuredContent: JSON.parse(context.serialized) };
-        } catch (error) {
-          const payload = { error: publicError(error) };
-          return { isError: true, content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
-        }
-      });
-      // Bound messages sent via send before Response allocation. SDK protocol
-      // errors bypass send, so also bound the buffered Response. This is NOT release.
-      let rejectOutput!: (error: unknown) => void;
-      const outputFailure = new Promise<never>((_, reject) => { rejectOutput = reject; });
-      void outputFailure.catch(() => undefined);
-      const send = transport.send.bind(transport);
-      transport.send = async (...args) => {
-        if (Buffer.byteLength(JSON.stringify(args[0])) > envelopeBytes) {
-          const error = new OperationError("payload_too_large", "response_too_large"); rejectOutput(error); throw error;
-        }
-        return send(...args);
+      // A project tool's own result: released DTO text, or its public refusal as a tool error.
+      const target = projectToolCall(body as Record<string, unknown>);
+      // A holder, not a local: closures set it, and control-flow narrowing must not assume null.
+      const tool$: { result: ToolResult | null } = { result: null };
+      const toolValue = (dto: object) => {
+        const serialized = JSON.stringify(dto);
+        // The DTO alone may not exceed the response ceiling; the envelope bound applies after the SDK.
+        tool$.result = Buffer.byteLength(serialized) > limits.responseBytes
+          ? Object.freeze({ ok: false as const, error: failure("payload_too_large", "response_too_large") })
+          : Object.freeze({ ok: true as const, serialized, canonical: canonicalJson(dto) });
       };
-      await Promise.race([server.connect(transport), cancelled]);
-      const message = body as Record<string, unknown>;
-      rpcId = typeof message.id === "string" || typeof message.id === "number" ? message.id : undefined;
-      engaged = true;
-      // Do not forward identity/session/resumption headers to the SDK. Version and
-      // media negotiation are the only request headers it needs in stateless mode.
-      const headers = new Headers({ "content-type": "application/json", accept: request.headers.accept ?? "" });
-      if (request.headers["mcp-protocol-version"]) headers.set("mcp-protocol-version", String(request.headers["mcp-protocol-version"]));
-      const sdk = await Promise.race([transport.handleRequest(new Request("http://operations.invalid/mcp/operations", { method: "POST", headers, signal: abort.signal }), { parsedBody: body }), outputFailure, cancelled]);
-      const chunks: Uint8Array[] = [];
-      let bytes = 0;
-      const reader = sdk.body?.getReader();
-      if (reader) {
-        try {
-          for (;;) {
-            const chunk = await Promise.race([reader.read(), cancelled]);
-            if (chunk.done) break;
-            bytes += chunk.value.byteLength;
-            if (bytes > envelopeBytes) { await reader.cancel(); throw new OperationError("payload_too_large", "response_too_large"); }
-            chunks.push(chunk.value);
+      let dispatched = false;
+      const dispatch = async (): Promise<{ status: number; buffer: Buffer }> => {
+        if (dispatched) throw new OperationError("internal", "invalid_operation");
+        dispatched = true;
+        const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+        server = new Server({ name: "worktree-control-operations", version: "1" }, { capabilities: { tools: {} } });
+        server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: OPERATIONS_MCP_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) }));
+        server.setRequestHandler(CallToolRequestSchema, async call => {
+          try {
+            if (call.params.name === "session_describe") {
+              // Delegate input validation to the registered operation, not a transport schema.
+              operation.parse(call.params.arguments);
+              return { content: [{ type: "text", text: context.serialized }], structuredContent: JSON.parse(context.serialized) };
+            }
+            // Only the tool this body names was run, and only its own released result is returned.
+            const result = tool$.result;
+            if (!target || call.params.name !== target.tool.name || result === null) throw new OperationError("not_found", "operation_not_found");
+            if (!result.ok) {
+              const payload = { error: result.error };
+              return { isError: true, content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
+            }
+            return { content: [{ type: "text", text: result.serialized }], structuredContent: JSON.parse(result.serialized) };
+          } catch (error) {
+            const payload = { error: publicError(error) };
+            return { isError: true, content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
           }
-        } finally { reader.releaseLock(); }
+        });
+        // Bound messages sent via send before Response allocation. SDK protocol
+        // errors bypass send, so also bound the buffered Response. This is NOT release.
+        let rejectOutput!: (error: unknown) => void;
+        const outputFailure = new Promise<never>((_, reject) => { rejectOutput = reject; });
+        void outputFailure.catch(() => undefined);
+        const send = transport.send.bind(transport);
+        transport.send = async (...args) => {
+          if (Buffer.byteLength(JSON.stringify(args[0])) > envelopeBytes) {
+            const error = new OperationError("payload_too_large", "response_too_large"); rejectOutput(error); throw error;
+          }
+          return send(...args);
+        };
+        await Promise.race([server.connect(transport), cancelled]);
+        const message = body as Record<string, unknown>;
+        rpcId = typeof message.id === "string" || typeof message.id === "number" ? message.id : undefined;
+        engaged = true;
+        // Do not forward identity/session/resumption headers to the SDK. Version and
+        // media negotiation are the only request headers it needs in stateless mode.
+        const headers = new Headers({ "content-type": "application/json", accept: request.headers.accept ?? "" });
+        if (request.headers["mcp-protocol-version"]) headers.set("mcp-protocol-version", String(request.headers["mcp-protocol-version"]));
+        const sdk = await Promise.race([transport.handleRequest(new Request("http://operations.invalid/mcp/operations", { method: "POST", headers, signal: abort.signal }), { parsedBody: body }), outputFailure, cancelled]);
+        const chunks: Uint8Array[] = [];
+        let bytes = 0;
+        const reader = sdk.body?.getReader();
+        if (reader) {
+          try {
+            for (;;) {
+              const chunk = await Promise.race([reader.read(), cancelled]);
+              if (chunk.done) break;
+              bytes += chunk.value.byteLength;
+              if (bytes > envelopeBytes) { await reader.cancel(); throw new OperationError("payload_too_large", "response_too_large"); }
+              chunks.push(chunk.value);
+            }
+          } finally { reader.releaseLock(); }
+        }
+        return { status: sdk.status, buffer: Buffer.concat(chunks) };
+      };
+      // No await, SDK send, or network drain inside admission. SDK security or
+      // session headers cannot replace this boundary's response headers.
+      const write = (output: { status: number; buffer: Buffer }) => () => { writeOperationsResponse(response, output.status, output.buffer.toString("utf8")); };
+      // The final write of everything but a project tool's own success is gated by the describe witness.
+      const describedRelease = async () => {
+        const output = await dispatch();
+        const released = await runtime.runner.readRelease(operation, context.authentication, {}, {
+          ...releaseOptions, expectedCanonical: context.canonical, commit: write(output) });
+        if (released.status !== "committed") refuse(released.error);
+      };
+      const tool = target ? runtime.registry.get(target.tool.operation) : undefined;
+      if (!target || !tool) { await describedRelease(); return; }
+      if (tool.kind === "query") {
+        // Discovery runs once. The SDK envelope is built from the value of a fresh
+        // decision, and written only after another fresh decision re-projects it unchanged.
+        let output: { status: number; buffer: Buffer } | undefined;
+        const released = await runtime.runner.queryRelease(tool, context.authentication, target.arguments, {
+          ...releaseOptions,
+          async stage(value: object) { toolValue(value); output = await dispatch(); },
+          commit() { if (output) write(output)(); },
+        });
+        if (released.status === "committed") return;
+        if (dispatched) { refuse(released.error); return; }
+        tool$.result = Object.freeze({ ok: false as const, error: released.error });
+        await describedRelease(); return;
       }
-      const buffer = Buffer.concat(chunks);
-      const released = await runtime.runner.readRelease(operation, context.authentication, {}, {
-        ...releaseOptions, expectedCanonical: context.canonical,
-        commit() {
-          // No await, SDK send, or network drain inside admission. SDK security or
-          // session headers cannot replace this boundary's response headers.
-          writeOperationsResponse(response, sdk.status, buffer.toString("utf8"));
-        },
-      });
+      const first = await runtime.runner.readRelease(tool, context.authentication, target.arguments, { ...releaseOptions, commit: toolValue });
+      if (first.status !== "committed") tool$.result = Object.freeze({ ok: false as const, error: first.error });
+      const succeeded = tool$.result;
+      if (!succeeded?.ok) { await describedRelease(); return; }
+      const output = await dispatch();
+      // A fresh read of the same tool must project exactly the value the envelope carries.
+      const released = await runtime.runner.readRelease(tool, context.authentication, target.arguments, {
+        ...releaseOptions, expectedCanonical: succeeded.canonical, commit: write(output) });
       if (released.status !== "committed") refuse(released.error);
     } catch (error) {
       refuse(operationsRequestFailure(error, abort.signal, timedOut));

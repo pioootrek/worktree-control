@@ -139,7 +139,7 @@ export class AdminRequestError extends Error {
 
 /** Optional wire decoder for the operations mount; legacy /auth callers keep their envelope. */
 export interface AdminSocketReply {
-  path: "/api/operations/session.describe";
+  path: "/api/operations/session.describe" | "/api/operations/project.list" | "/api/operations/project.status" | "/api/operations/project.worktrees";
   decode(status: number | undefined, value: unknown): unknown;
 }
 

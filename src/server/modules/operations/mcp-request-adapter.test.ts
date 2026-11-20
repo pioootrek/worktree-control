@@ -55,7 +55,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   const state = { maintenance: false, stopping: false, configChanged: false, offset: 0 };
   const eligibility = createControllerOperationEligibility({ maintenance: () => state.maintenance, stopping: () => state.stopping, configurationRestartRequired: () => state.configChanged, runtime: () => undefined });
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + state.offset, logs: { controller() {} }, provider: null,
-    eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), listeners: { mcp: () => true, api: () => true } });
+    eligibility, projectReads: { placement: { placement: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { list: async () => [] } }, requestBudget: new AuthenticationRequestBudget(16, 4), listeners: { mcp: () => true, api: () => true } });
   if (!built.supported) throw new Error("fixture mode unsupported");
   const handles: Promise<void>[] = [];
   const hooks: { beforeHandle?: (request: IncomingMessage, response: ServerResponse) => void; beforeFinal?: (response: ServerResponse) => void | Promise<void>; beforeMint?: (signal?: AbortSignal) => void | Promise<void> } = {};
@@ -72,7 +72,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
     }
     return built.runner.readRelease(operation, context, input, options);
   };
-  const runtime = { ...built, mint: minted, runner: { readRelease } } satisfies OperationsHttpRuntime;
+  const runtime = { ...built, mint: minted, runner: { readRelease, queryRelease: built.runner.queryRelease.bind(built.runner) } } satisfies OperationsHttpRuntime;
   const adapter = createOperationsMcp({ runtime, limits });
   const httpAdapter = createOperationsHttp({ runtime, listener: "api", limits });
   // Fault owners are deliberate negative controls; the actual adapter is unchanged.
@@ -116,7 +116,7 @@ async function exactNegative(assertion: string, observed: unknown, expected: unk
 describe("request-scoped MCP adapter", () => {
   it.each(["open", "token", "better-auth"])("%s: real SDK sequential initialize, notification, list and call, with no usage writer", async mode => {
     const f = await fixture(mode), client = await f.client(f.credential);
-    expect((await client.listTools()).tools.map(t => t.name)).toEqual(["session_describe"]);
+    expect((await client.listTools()).tools.map(t => t.name)).toEqual(["project_list", "project_status", "project_worktrees", "session_describe"]);
     const result = await client.callTool({ name: "session_describe", arguments: {} });
     expect(result.structuredContent).toMatchObject({ mode, listener: "mcp", actor: { kind: mode === "better-auth" ? "agent" : "installation", accountId: mode === "better-auth" ? "agent" : null } });
     expect(f.minted).toHaveBeenCalledTimes(4);
@@ -221,7 +221,7 @@ describe("request-scoped MCP adapter", () => {
     expect(Buffer.byteLength(JSON.stringify(http.body))).toBeLessThanOrEqual(MAX_DESCRIBED_BYTES);
     // initialize and notification use the same release witness as tools/call.
     const client = await f.client();
-    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["session_describe"]);
+    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["project_list", "project_status", "project_worktrees", "session_describe"]);
     const sent = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
     const result = await client.callTool({ name: "session_describe", arguments: {} });
     expect(result.structuredContent).toEqual(dto);

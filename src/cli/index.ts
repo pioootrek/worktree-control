@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createSessionDescribeOutput, runSessionDescribe, SessionDescribeError } from "./session-describe";
+import { createSessionDescribeOutput, runProjectsCommand, runSessionDescribe, SessionDescribeError } from "./session-describe";
 import { buildOperationsRuntime } from "../server/bootstrap/operations-runtime";
 import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
 import { createProtectedIdentityAdministration } from "../server/bootstrap/identity-administration";
@@ -115,7 +115,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   }
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
-  if (command === "session") sessionOutput = createSessionDescribeOutput();
+  if (command === "session" || command === "projects") sessionOutput = createSessionDescribeOutput();
   if (command === "upgrade") {
     // Offline maintenance before the generic start parsing, which would reject --backup-dir here.
     // It does not pass the ordinary admission check: it is how a database becomes current.
@@ -193,6 +193,10 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   }
   if (command === "session") {
     await runSessionDescribe(withoutPathOptions(process.argv.slice(3)), paths, sessionOutput!.write);
+    return;
+  }
+  if (command === "projects") {
+    await runProjectsCommand(withoutPathOptions(process.argv.slice(3)), paths, sessionOutput!.write);
     return;
   }
   if (command === "auth") {
@@ -437,6 +441,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const operationListeners: { api?: import("node:http").Server; unix?: import("node:http").Server } = {};
   const operations = buildOperationsRuntime({ store, activeMode: authentication.mode(), now: Date.now, logs,
     eligibility: providerAdministration, provider: providerAdministration.operationSessionAuthority(), requestBudget: providerAdministration.requestBudget,
+    projectReads: { placement: { placement: registrationId => processes.snapshot(registrationId) }, git },
     listeners: { mcp: () => mcp?.server.listening === true, worker: () => remoteVerification?.listenerOpen() === true, api: () => operationListeners.api?.listening === true, unix: () => operationListeners.unix?.listening === true } });
   mcp?.mountOperations(operations);
   const controller = createControllerServer({
