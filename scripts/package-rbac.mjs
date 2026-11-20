@@ -1,8 +1,9 @@
 // Finite installed-artifact acceptance. All writable state and listeners belong to this fixture.
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
-import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
@@ -152,6 +153,48 @@ async function start(cli = currentCli, assets = currentRoot) {
   await wait(async () => { assert.equal(child.exitCode, null, "Packaged controller exited before readiness."); try { const access = JSON.parse(await readFile(join(directoryArgs[3], "service-access.json"), "utf8")); return access.pid === child.pid; } catch { return false; } });
   for (const value of secretValues) assert(!output.includes(value), "No fixture credentials in controller output.");
 }
+/** Gate module evaluation on stdin EOF so the parent closes the pipe before the CLI can write.
+ * The real packaged entry point and native descriptors are used, with a 15s process deadline.
+ */
+async function closedSessionOutput(path, closedStderr) {
+  const gate = "data:text/javascript," + encodeURIComponent("await new Promise(resolve => { process.stdin.once('end', resolve); process.stdin.resume(); });");
+  const child = spawn(process.execPath, ["--import", gate, currentCli, "session", "describe", ...directoryArgs], {
+    cwd: root, env, stdio: ["pipe", "pipe", "pipe"],
+  });
+  children.add(child);
+  let stderr = "", forced = false;
+  const timer = setTimeout(() => { forced = true; child.kill("SIGKILL"); }, 15_000);
+  const result = new Promise((accept, reject) => {
+    child.once("error", reject); child.once("close", (code, signal) => accept({ code, signal }));
+  });
+  try {
+    if (!closedStderr) child.stderr.on("data", chunk => {
+      stderr += chunk;
+      if (stderr.length > 65536) { forced = true; child.kill("SIGKILL"); }
+    });
+    const close = stream => new Promise(accept => { stream.once("close", accept); stream.destroy(); });
+    await close(child.stdout);
+    if (closedStderr) await close(child.stderr);
+    child.stdin.on("error", () => {}); child.stdin.end();
+    const { code, signal } = await result;
+    assert(!forced, `${path}: closed output must finish within 15s`); assert.equal(signal, null);
+    assert.equal(code, 1, `${path}: closed output must exit 1`);
+    assert(!/(?:^|\n)\s+at |node:internal|Unhandled ['"]error['"] event/.test(stderr), `${path}: no unhandled-error stack`);
+    if (closedStderr) assert.equal(stderr, "");
+    else assert.deepEqual(JSON.parse(stderr.trim().split("\n").at(-1)), {
+      error: { category: "unavailable", status: 503, reason: "output_unavailable", retry: "none", effect: null },
+    });
+    if (path === "offline") {
+      assert(!existsSync(join(directoryArgs[3], "controller.lock")), "Offline cleanup removes the controller lock before process close");
+      assert(!existsSync(join(directoryArgs[1], "state.sqlite3.owner.lock")), "Offline cleanup removes the database owner lock");
+      const database = new native.Database(join(directoryArgs[1], "state.sqlite3"));
+      try { database.prepare("BEGIN IMMEDIATE").run(); database.prepare("ROLLBACK").run(); } finally { database.close(); }
+      // A second ordinary CLI opening also verifies store/fence admission after the failed write.
+      const reopened = await json(currentCli, ["session", "describe"]); assert.equal(reopened.listener, "offline");
+    }
+  } finally { clearTimeout(timer); children.delete(child); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
+}
+
 async function operationSocket(mode) {
   const reply = await new Promise((accept, reject) => {
     const call = httpRequest({ socketPath: join(directoryArgs[3], "admin.sock"), path: "/api/operations/session.describe", method: "POST", headers: { "Content-Type": "application/json" } }, response => {
@@ -161,6 +204,25 @@ async function operationSocket(mode) {
     call.setTimeout(10_000, () => call.destroy(new Error("Operations socket deadline"))); call.on("error", reject); call.end("{}");
   });
   assert.equal(reply.status, 200); assert.equal(reply.body.actor.kind, "operator"); assert.equal(reply.body.listener, "unix"); assert.equal(reply.body.mode, mode);
+  const success = await command(currentCli, ["session", "describe"]);
+  assert.equal(success.code, 0); assert.equal(success.stdout, `${JSON.stringify(reply.body, null, 2)}\n`);
+  for (const closedStderr of [false, true]) await step(`session-describe-unix-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
+    () => closedSessionOutput("socket", closedStderr));
+  const socket = join(directoryArgs[3], "admin.sock"), hidden = socket + ".hidden";
+  await rename(socket, hidden);
+  try {
+    const refused = await refusal(currentCli, ["session", "describe"]);
+    assert.deepEqual(refused, { error: { category: "unavailable", status: 503, reason: "admin_socket_missing", retry: "none", effect: null } });
+  } finally { await rename(hidden, socket); }
+}
+async function operationOffline(mode) {
+  const dto = await json(currentCli, ["session", "describe"]);
+  assert.equal(dto.actor.kind, "operator"); assert.equal(dto.actor.accountId, null);
+  assert.equal(dto.listener, "offline"); assert.equal(dto.mode, mode);
+  assert.equal(dto.freshLogin.state, "exempt");
+  assert(!JSON.stringify(dto).match(/sessionId|credentialId|verifierHash/));
+  for (const closedStderr of [false, true]) await step(`session-describe-offline-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
+    () => closedSessionOutput("offline", closedStderr));
 }
 async function operationWorker(mode, secret) {
   const call = secret => new Promise((accept, reject) => {
@@ -425,7 +487,7 @@ try {
   await step("community-token-mode-without-provider", async () => {
     // The installation token and the mode are kept by the upgrade.
     assert.equal((await json(currentCli, ["auth", "status"])).mode, "token");
-    await start();
+    await operationOffline("token"); await start();
     storedOwner = oldOwner.token;
     await operationApi("token", installation.token); await operationSocket("token");
     assert.equal((await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" })).body.error.reason, "credential_not_accepted_here");
@@ -485,7 +547,7 @@ try {
     await start(); await operationWorker("token", installation.token); await stop();
   });
   await step("community-open-mode-without-provider", async () => {
-    await json(currentCli, ["auth", "mode", "set", "open"]); await start();
+    await json(currentCli, ["auth", "mode", "set", "open"]); await operationOffline("open"); await start();
     await operationApi("open"); await operationSocket("open");
     assert.equal((await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" })).body.error.reason, "credential_in_open_mode");
     const anonymous = await fetch(endpoint + "/api/dashboard"); await anonymous.arrayBuffer(); assert.equal(anonymous.status, 200);
@@ -514,7 +576,7 @@ try {
   await json(currentCli, ["auth", "provider", "runtime-access", "set", "--input-stdin"], {}, { principalId: oldOwner.principalId,
     scope: { kind: "runtime-project", id: project.id }, role: "operator", permissions: ["projects:read", "tests:run", "profiles:select", "config:write"], expectedRevision: 0 });
   await step("protected-rbac-selection-and-real-restart", async () => {
-    await json(currentCli, ["auth", "mode", "set", "better-auth"]); await start();
+    await json(currentCli, ["auth", "mode", "set", "better-auth"]); await operationOffline("better-auth"); await start();
     assert.equal((await json(currentCli, ["auth", "status"])).activeMode, "better-auth");
   });
   const browser = cookieJar();

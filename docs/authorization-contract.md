@@ -1,7 +1,7 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
 last_reviewed: "2026-11-20"
-source_of_truth: "authorization contract with session.describe mounted on API, unix and worker for the unreleased breaking auth unification; Knowledge task 040062b4"
+source_of_truth: "authorization contract with session.describe mounted on API, unix, worker, MCP and lock-first CLI for the unreleased breaking auth unification; Knowledge task 040062b4"
 status: "active"
 ---
 
@@ -9,7 +9,8 @@ status: "active"
 
 **Status: unreleased breaking change.** Only `session.describe` is mounted,
 through `POST /api/operations/session.describe` on the API listener, private
-unix socket and configured HTTPS worker listener. Only the exact raw operation path can succeed. Aliases entering
+unix socket and configured HTTPS worker listener, through the MCP operations
+namespace, and through lock-first `session describe` on the CLI. Only the exact raw operation path can succeed. Aliases entering
 `/api/operations` or `/mcp/operations` through dot segments, encoded path syntax,
 backslashes or duplicate slashes receive the new not-found envelope on all three
 listeners through normal request dispatch, for every method. On unix and worker the fixed
@@ -134,12 +135,11 @@ Test fixtures mint through the same boundaries. The context is frozen and its
 
 ### Offline ownership (D1a-8a)
 
-Built, unmounted: `buildOfflineOperationsRuntime` binds the real
+`buildOfflineOperationsRuntime` binds the real
 `ControllerLock.held()` to offline mint and retained-context revalidation.
 It checks before mint admission, inside mint, and inside execution and final
 read-release admission. Loss refuses `unauthenticated` / `offline_lock_not_held`
-without returning a DTO. No listener or CLI command is added; `session describe`
-and its lock-first socket/offline choice remain D1a-8b.
+without returning a DTO. D1a-8b mounts `session describe` through this boundary.
 
 The record identity is its PID and random token plus filesystem device/inode.
 `held()` synchronously refuses missing, malformed, foreign-owned, aliased,
@@ -159,8 +159,149 @@ hostile same-UID process remain outside this accidental-loss check.
 
 Offline callers dispose producers, then drain and close their store before
 releasing the controller lock. `closeOfflineStore` extracts the existing auth
-CLI sequence; its callers retain ownership if cleanup is unconfirmed. The new
-offline composition is import-guarded against production callers until D1a-8b.
+CLI sequence; its callers retain ownership if cleanup is unconfirmed. The offline
+composition has exactly one approved production importer: `src/cli/session-describe.ts`.
+
+### Mounted CLI boundary (D1a-8b)
+
+`worktree-control session describe [--data-dir PATH] [--state-dir PATH]`
+returns the released DTO as two-space JSON and one trailing newline on stdout.
+Exit status is 0 on success and 1 on refusal. The command accepts no credential,
+`--offline` or `--socket` selection. It calls `acquireControllerLock` first;
+only `ControllerAlreadyRunningError` selects the private unix socket. A taken
+lock may belong to a controller or another offline command. In either case
+there is exactly one socket attempt and no fallback or later lock retry.
+
+With the lock acquired, `assertBackupHandoffCompleted` runs before constructing
+one ordinary `SqliteStateStore`. This preserves ordinary fence and upgrade
+admission; there is no additional pre-open database check. The mode is read
+admitted from this store. `mintOffline` binds the real `held()` and
+`readRelease` commits the JSON write in its final admitted phase. A read has
+no earlier buffered response. Cleanup drains and closes that store through
+`closeOfflineStore` before releasing the lock. Unconfirmed disposal retains
+the store, lock and a referenced owner timer and reports the existing
+`disposal_unconfirmed` failure. A successful DTO may already have been written
+when cleanup fails; exit status still reports failure, with no second DTO.
+
+With the lock taken, the existing `requestAdminSocket` client sends `{}` to
+`POST /api/operations/session.describe`. Its optional route/decoder parameter
+preserves all existing `/auth` callers. This invocation uses the existing
+15-second inactivity and total deadlines and a 262144-byte response ceiling.
+Strict UTF-8 and duplicate-key JSON parsing plus operator/unix DTO validation rejects additional fields without echoing
+them. The unix listener still owns authentication, admission and release.
+The client does not use a legacy authenticator or update credential usage.
+
+This command installs stdout/stderr error listeners before writing and keeps
+them until process termination. Offline output is committed to the process's
+stdout stream inside the admitted phase, then drains asynchronously; socket
+output is committed after reply validation. Failed synchronous writes fail the
+admitted commit; late stream errors set exit status 1 without interrupting store
+drain, close or lock release. See the output error mapping below for delivery
+failures and slow-reader behaviour.
+
+Observed source distinction: the existing client has no socket-path ownership,
+permission or peer verification. The server publishes a 0600 socket in a 0700
+directory. This step reuses that implementation without claiming a new peer
+check. Adding client-side checks is a separate hardening/interface decision.
+
+The schema-entry guard classifies this one `SqliteStateStore(paths.databasePath)`
+opening as ordinary, retaining its single-argument/default-admission checks and
+negative controls. The focused `test:session-describe` preset includes that
+inventory as well as the operations importer guard.
+
+The mode matrix follows the shared acceptance table, without CLI mode branches:
+
+| Path | open | token | better-auth | legacy |
+| --- | --- | --- | --- | --- |
+| Lock acquired | operator, offline | operator, offline | operator, offline | unauthenticated / unknown_mode |
+| Lock taken, controller available | operator, unix | operator, unix | operator, unix | unauthenticated / unknown_mode |
+
+Operator descriptions are full authority with freshLogin `exempt` and null
+accountId. API installation descriptions agree except for actor and listener;
+API account descriptions also reflect the caller's grants and freshness.
+No session row ID, credential ID, secret or diagnostic record is projected.
+
+All operations errors print the closed `{error:{category,status,reason,retry,effect}}`
+envelope on stderr, with machine fields untranslated, like existing JSON CLI
+families. Local connection failures below use category `unavailable`, status
+503, retry `none`, effect null. There is no automatic retry in this command.
+
+| Source | Public reason or existing diagnostic | Exit |
+| --- | --- | --- |
+| Missing socket, ENOENT | admin_socket_missing | 1 |
+| Stale socket or refused connect, ECONNREFUSED | admin_socket_refused | 1 |
+| Reset, denied access, other socket I/O | admin_socket_failed | 1 |
+| Inactivity or total deadline | admin_timeout | 1 |
+| Response above ceiling | admin_response_limit | 1 |
+| Invalid JSON/UTF-8, wrong shape/status, extra fields | admin_invalid_response | 1 |
+| Valid operations error, including maintenance/release refusal | Exact public category, reason and retry retained | 1 |
+| Other acquisition refusal | offline_lock_unavailable | 1 |
+| Stdout unavailable before commit, or stream error during asynchronous drain | output_unavailable; silent if stderr is also closed | 1 |
+| Unexpected offline initialization/read failure | offline_unavailable; details suppressed | 1 |
+| Pending restore handoff | Existing `Start the controller to complete restore authentication recovery before offline administration.` | 1 |
+| Unreadable/malformed restore handoff | restore_handoff_unreadable; record contents suppressed | 1 |
+| Ordinary upgrade refusal | Existing upgrade JSON body | 1 |
+| Ordinary fence refusal | Existing security-fence diagnostic | 1 |
+| Ownership lost | unauthenticated / offline_lock_not_held / reauthenticate | 1 |
+| Unconfirmed cleanup | Existing provider disposal_unconfirmed body, cleanupConfirmed false | 1, owner retained |
+| Unsupported args | Usage text | 1 |
+
+The CLI commits bytes to Node's stdout stream, not delivery to the reader: a
+successful write return followed by an asynchronous error is a committed release
+with failed delivery, reported as `output_unavailable` on usable stderr and exit 1,
+possibly with truncated stdout. Slow or late readers have no stdout drain deadline
+and receive complete JSON with exit 0. Pending writes keep the process alive;
+handlers set `process.exitCode` and never call `process.exit()` (see
+[Node process I/O](https://nodejs.org/download/release/v24.19.0/docs/api/process.html#a-note-on-process-io)
+and [graceful exit](https://nodejs.org/download/release/v24.19.0/docs/api/process.html#processexitcode)).
+Offline cleanup drains and closes the store, then releases the lock in `finally`,
+without waiting for stdout. A destroyed, ended or non-writable stdout, or a thrown
+write, fails the admitted commit. Stderr uses one small synchronous descriptor
+write without retries; if stderr is also unavailable, failure exits 1 silently.
+
+The unreadable-handoff wrapper deliberately differs from neighbours that may
+print a raw parser error: preserving its refusal and pre-open position while
+suppressing file contents takes precedence over verbatim unsafe diagnostics.
+
+#### CLI neighbour checklist
+
+Paths below are relative to the repository; line references identify the
+neighbour implementation. Assertions are in `src/cli/session-describe.test.ts`
+unless a different file is named. Every row has executable evidence or an
+explicit deferral; these are source references, not claims of completed runs.
+
+| Neighbour check / rule | Preservation / difference | Named assertion or deferral |
+| --- | --- | --- |
+| `src/cli/auth-management.ts:43` parse before ownership | Only `describe`, no path selector | rejects path-selection switches before ownership |
+| `src/cli/index.ts:172` handoff before ordinary opening | Check after lock, before constructor | pending/unreadable restore handoff stops before store construction |
+| `src/cli/auth-management.ts:47` atomic acquire, typed live-owner refusal | Same primitive, no socket probe | lock taken: missing/stale/reset/timeout fails exactly; another offline owner |
+| `src/cli/auth-management.ts:65` ordinary store fence/upgrade admission | Same constructor, one store | ordinary store opening keeps its fence refusal; named deferral D1a-10-upgrade-CLI: ordinary upgrade admission suite remains the upgrade oracle |
+| `src/cli/auth-management.ts:59` JSON style / output | Same two-space JSON plus newline; commit to the process stream inside admission, then asynchronous drain; slow readers receive complete output; scoped late-error handling | destroyed stdout is a failed admitted commit; session describe output suite; package-rbac.mjs closedSessionOutput on both paths |
+| `src/cli/auth-management.ts:74` producer disposal then store close/release | No provider producer; closeOfflineStore unchanged | offline writes then closes before release; offline-ownership.test.ts: drains real accepted work |
+| `src/cli/auth-management.ts:75` retain on close failure | Same retain helper and disposal error | close failure retains owner and reports disposal_unconfirmed |
+| `src/cli/auth-management.ts:98` opening failure releases lock | finally calls closeOfflineStore(null, lock) | pending/unreadable restore handoff stops before construction |
+| `src/cli/auth-management.ts:80` bounded provider stdin before lock | Not applicable: command has no stdin payload | rejects path-selection switches before ownership |
+| `src/cli/auth-management.ts:110` provider disposal | Not applicable: no provider constructed offline | no legacy authenticator assertions; runtime provider null |
+| `src/server/admin-socket.ts:147` shared client | Optional exact route/decoder; existing callers unchanged | unix modes equals offline/API; existing admin-socket.test.ts |
+| `src/server/admin-socket.ts:154` fixed POST JSON and length | Empty JSON object, no cookies/bearers | unix modes through real listenAdminSocket |
+| `src/server/admin-socket.ts:159` response/connection errors | Sanitized deterministic codes; no fallback | lock taken: reset/missing/stale fails exactly |
+| `src/server/admin-socket.ts:162` bounded response | 256 KiB ceiling, same accumulator | lock taken: oversize fails exactly |
+| `src/server/admin-socket.ts:171` parse and HTTP envelope | Strict UTF-8 and operator DTO; public error status checked | lock taken: garbage/extra-field/maintenance/release_not_eligible fails exactly |
+| `src/server/admin-socket.ts:183` timeout and request destruction | Same total/inactivity timeout, timer cleared on close | lock taken: timeout fails exactly (explicit 30s test timeout) |
+| `src/server/admin-socket.ts:29` server OS boundary | Existing 0700 directory/0600 socket; no client peer check exists | existing admin-socket.test.ts; deferral: new client peer verification |
+| `src/server/admin-socket.ts:40` 32 accepted-work slots, synchronous stop/drain | Existing unix handler owns these; no new listener | http-boundary-conformance.test.ts unix capacity/shutdown assertions |
+| `src/cli/index.ts` failure exit | Operations JSON or existing typed refusal, exit 1 | installed operationSocket unavailable-socket probe |
+| `src/server/modules/operations/runner.ts:635` admitted release | Direct write in readRelease commit | offline writes released DTO admitted; replaced real record before-release |
+| `src/server/controller-lock.ts:74` held revalidation | Real lock at mint and read release | replaced real record before-mint/after-mint/before-release |
+
+Negative controls assert both the exact forbidden observation and the exact
+assertion failure: unexpected store opens (expected 0, observed 1) after a
+socket refusal or omitted handoff check; unadmitted stdout (expected true,
+observed false); released-before-close (expected held true, observed false).
+The previous offline ownership suite also exercises a lost final lock guard
+and actual drain before close. Installed scripts exercise both paths in all
+three supported modes; the RBAC script hides/restores the controller's synthetic
+socket to prove an installed failure without touching host state.
 
 ### Credential revalidation
 
@@ -1054,7 +1195,7 @@ conjunctions, invalid public keys, malformed effects, transition lists,
 secret hooks, wait bounds and listener exclusions. It registers a frozen copy
 whose requirement, allowlist, effect, transition list, wait bounds and
 exclusions are frozen. The only real operation is `session.describe`, which is
-frozen and mounted only on the API, worker and private unix transports. Every other operation in the tests is a
+frozen and mounted on API, worker, private unix, MCP and the local CLI. Every other operation in the tests is a
 fixture.
 
 `OperationRunner` runs a mutation as these admitted phases, built on
@@ -1687,8 +1828,12 @@ reuses the listener driver and conformance assertions under real production
 bootstrap. It is test-only and mounts no additional operation. The adapter receives the built runtime as a
 value and creates no boundary. Approved entries must exist and really import
 the module or contract. Missing and stale entries fail, with negative controls.
-A second exact-importer guard permits only `src/cli/index.ts` to import the
-composition. It still rejects imports from inside the operations module and
+The offline bootstrap and `src/cli/session-describe.ts` are also approved
+module/contract importers. The CLI test is an explicitly approved test consumer
+of the credential and provider fixtures. A second exact-importer guard permits
+only controller start and the offline composition to import the shared
+composition. A third permits only `src/cli/session-describe.ts` to import the
+offline composition. It still rejects imports from inside the operations module and
 computed composition imports in allowlisted production files.
 
 Within the inventory, the guard does three things:
@@ -1729,7 +1874,8 @@ outside decision U and listed as notes for slice 4.
 These obligations remain for later families and mounts. The API, worker and unix
 `session.describe` mounts already use strict bounded JSON, cancellation, the
 shared composition and admitted read-release. The API cookie path also shares
-the browser boundary and budget. MCP and CLI mounts remain for later steps.
+the browser boundary and budget. MCP owns bounded per-request SDK lifetimes;
+the CLI owns lock-first socket/offline selection and offline drain before release.
 
 - **Transport handling of streams.** A transport must call `return()` when its
   consumer goes away or stops reading (abandonment). The runner provides no
@@ -1870,8 +2016,7 @@ the browser boundary and budget. MCP and CLI mounts remain for later steps.
   retry disposition is `retry`. Method refusals use 400 /
   `invalid_request` / `method_not_allowed`; malformed and unknown operation
   targets use 404 / `not_found` / `operation_not_found`. All replies are no-store.
-  MCP and offline CLI mounts, credential usage recording and
-  principal-incarnation detection remain unimplemented.
+  Credential usage recording and principal-incarnation detection remain unimplemented.
 - Enforcement of the project ID grammar. A project ID in the contract matches
   `^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$` (`src/shared/contracts/operations.ts`),
   and the owner decided on 2026-11-17 that Knowledge project IDs must follow it

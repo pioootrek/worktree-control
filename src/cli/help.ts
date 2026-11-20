@@ -12,6 +12,7 @@ export const CLI_HELP = [
   "                     runtime-access list --principal-id ID [--limit N --after ID]; set|revoke --input-stdin|--input-file PATH",
   "                     knowledge-access list --principal-id ID [--limit N --after ID]; set|revoke --input-stdin|--input-file PATH",
   "                     configure/enroll/recover require --input-stdin or --input-file ABSOLUTE_PATH (strict private JSON; no secret arguments)",
+  "  session describe   Describe local operator authority as JSON (lock selects private socket or offline; --data-dir, --state-dir)",
   "  backup             Installation backups: create, restore, now, list, status, monitor, remote, export-project, import-project, user-cleanup",
   "  project            Registered projects: add <path>, list, remove <id>",
   "  doctor             Check Node.js, Git and the application state",
