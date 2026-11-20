@@ -37,9 +37,13 @@ flag. A taken lock with an unavailable socket fails with exit 1 and never opens
 the database offline. All three supported modes report operator authority;
 legacy installations refuse `unknown_mode`. Success exits 0. Operations
 failures print public category, reason and retry fields as JSON on stderr.
-A closed or failing stdout (including exhausted bounded output retries)
-exits 1 with `unavailable / output_unavailable` in that error envelope, without
-a stack trace; if stderr is also closed, exit 1 is silent. If a pipe closes
+Offline output is committed to the process's stdout stream inside the admitted
+phase and drains asynchronously; the socket path writes after validating the reply.
+Slow or late readers receive the complete JSON and exit 0, with no drain deadline.
+The process stays alive for pending writes; offline cleanup drains and closes the
+store, then releases the lock without waiting for stdout to flush.
+A closed or failing stdout exits 1 with `unavailable / output_unavailable` in
+that error envelope, without a stack trace; if stderr is also closed, exit 1 is silent. If a pipe closes
 mid-write, a consumer may receive truncated JSON on stdout; the command exits 1
 with the sanitized error on usable stderr.
 See the [error mapping](authorization-contract.md#mounted-cli-boundary-d1a-8b).

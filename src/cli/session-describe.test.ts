@@ -1,4 +1,6 @@
 import * as fs from "node:fs";
+import { spawn } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Writable } from "node:stream";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -84,7 +86,7 @@ describe("session describe CLI mount", () => {
     expect(legacy).not.toHaveBeenCalled(); expect(usage).not.toHaveBeenCalled();
   }, 20_000);
 
-  it("synchronous output failure is a failed admitted commit, then drains/closes before release", async () => {
+  it("destroyed stdout is a failed admitted commit, then drains/closes before release", async () => {
     const f = fixture(), seen = observe(), build = offline.buildOfflineOperationsRuntime, events: string[] = [];
     let outcome: unknown;
     vi.spyOn(offline, "buildOfflineOperationsRuntime").mockImplementation(config => {
@@ -104,8 +106,11 @@ describe("session describe CLI mount", () => {
     const closeSpy = vi.spyOn(RealStore.prototype, "close").mockImplementation(function (this: stores.SqliteStateStore) {
       expect(existsSync(f.paths.controllerLockPath)).toBe(true); events.push("close"); close.call(this);
     });
-    await expect(runSessionDescribe(["describe"], f.paths, () => {
-      seen.opened[0].getAuthenticationPolicy(); events.push("write"); throw new Error("private EPIPE stack");
+    const stdout = new Writable({ write(_chunk, _encoding, done) { done(); } });
+    stdout.destroy();
+    const io = createSessionDescribeOutput(stdout, new Writable({ write(_chunk, _encoding, done) { done(); } }), vi.fn());
+    await expect(runSessionDescribe(["describe"], f.paths, line => {
+      seen.opened[0].getAuthenticationPolicy(); events.push("write"); io.write(line);
     })).rejects.toMatchObject({ error: operationError("output_unavailable") });
     expect(outcome).toMatchObject({ status: "commit_failed", error: { reason: "release_commit_failed" } });
     expect(events).toEqual(["write", "drain", "close"]); expect(f.lines).toEqual([]);
@@ -369,46 +374,43 @@ describe("session describe CLI mount", () => {
 
 describe("session describe output", () => {
   function output() {
-    const stdout = new Writable({ write(_chunk, _encoding, done) { done(); } });
+    const chunks: Buffer[] = [], diagnostics: string[] = [];
+    const stdout = new Writable({ write(chunk, _encoding, done) { chunks.push(Buffer.from(chunk)); done(); } });
     const stderr = new Writable({ write(_chunk, _encoding, done) { done(); } });
-    const fail = vi.fn(), bytes: { fd: number; bytes: Buffer }[] = [];
-    const syscall = vi.fn<(fd: number, buffer: Buffer, offset: number, length: number) => number>((fd, buffer, offset, length) => {
-      bytes.push({ fd, bytes: Buffer.from(buffer.subarray(offset, offset + length)) });
-      return length;
+    let exitCode = 0;
+    const fail = vi.fn(() => { exitCode = 1; });
+    const syscall = vi.spyOn(fs, "writeSync").mockImplementation((fd, line: unknown) => {
+      expect(fd).toBe(2); expect(typeof line).toBe("string");
+      diagnostics.push(line as string); return Buffer.byteLength(line as string);
     });
-    vi.spyOn(fs, "writeSync").mockImplementation((fd, buffer: unknown, offset?: unknown, length?: unknown) => {
-      if (!Buffer.isBuffer(buffer) || typeof offset !== "number" || typeof length !== "number") {
-        throw new Error("Expected the buffer descriptor-write overload.");
-      }
-      return syscall(fd, buffer, offset, length);
-    });
-    return { stdout, stderr, fail, bytes, syscall, io: createSessionDescribeOutput(stdout, stderr, fail) };
+    return { stdout, stderr, fail, chunks, diagnostics, syscall, get exitCode() { return exitCode; },
+      io: createSessionDescribeOutput(stdout, stderr, fail) };
   }
 
-  it("preserves UTF-8 pretty JSON and exactly one newline across partial writes and EAGAIN", () => {
+  it("commits complete UTF-8 pretty JSON plus one newline to the stream despite backpressure", () => {
     const o = output(), expected = JSON.stringify({ example: "é", projects: Array(500).fill("x".repeat(500)) }, null, 2);
-    let attempts = 0; const written: Buffer[] = [];
-    vi.spyOn(Atomics, "wait").mockReturnValue("timed-out");
-    o.syscall.mockImplementation((_fd, buffer, offset, length) => {
-      if (attempts++ === 1) throw Object.assign(new Error("private"), { code: "EAGAIN" });
-      const count = Math.min(length, 8192);
-      written.push(Buffer.from(buffer.subarray(offset, offset + count))); return count;
-    });
+    let finish: (() => void) | undefined;
+    o.stdout._write = (chunk, _encoding, done) => { o.chunks.push(Buffer.from(chunk)); finish = done; };
+    const write = vi.spyOn(o.stdout, "write");
     o.io.write(expected);
-    expect(Buffer.concat(written).toString()).toBe(`${expected}\n`); expect(o.fail).not.toHaveBeenCalled();
+    expect(write).toHaveReturnedWith(false);
+    expect(Buffer.concat(o.chunks).toString()).toBe(`${expected}\n`);
+    expect(o.syscall).not.toHaveBeenCalled(); expect(o.fail).not.toHaveBeenCalled();
+    finish!();
   });
 
-  it.each(["EPIPE", "EIO", "zero", "EAGAIN"])("%s produces only the fixed public error, including exhausted retries", code => {
-    const o = output(); vi.spyOn(Atomics, "wait").mockReturnValue("timed-out");
-    o.syscall.mockImplementation(() => {
-      if (code === "zero") return 0;
-      throw Object.assign(new Error("private bytes and stack"), { code });
-    });
+  it.each(["destroyed", "ended", "not-writable", "throws"])("%s stdout fails synchronously with only the public reason", state => {
+    const o = output(), write = vi.spyOn(o.stdout, "write");
+    if (state === "destroyed") o.stdout.destroy();
+    if (state === "ended") o.stdout.end();
+    if (state === "not-writable") Object.defineProperty(o.stdout, "writable", { value: false });
+    if (state === "throws") write.mockImplementation(() => { throw new Error("private bytes and stack"); });
     expect(() => o.io.write("{}")).toThrow(expect.objectContaining({ error: operationError("output_unavailable") }));
-    expect(o.syscall.mock.calls.length).toBeLessThanOrEqual(4096); expect(o.fail).not.toHaveBeenCalled();
+    expect(o.chunks).toEqual([]); expect(o.syscall).not.toHaveBeenCalled();
+    if (state !== "throws") expect(write).not.toHaveBeenCalled();
   });
 
-  it.each(["offline", "socket"])("%s handles an error emitted after write returns, including during offline drain", async path => {
+  it.each(["offline", "socket"])("%s handles a late stream error once after write returns, including during offline drain", async path => {
     const f = fixture(), o = output(), events: string[] = [];
     if (path === "socket") {
       owner(f); const server = createServer((_request, response) => response.end(JSON.stringify({
@@ -420,43 +422,118 @@ describe("session describe output", () => {
     }
     const error = new Promise<void>(resolve => o.stdout.once("error", () => { events.push("error"); resolve(); }));
     o.stdout._write = (_chunk, _encoding, done) => { process.nextTick(() => done(new Error("late private EPIPE"))); };
-    o.syscall.mockImplementation((fd, buffer, offset, length) => {
-      if (fd === 1) { expect(o.stdout.write("fixture")).toBe(true); events.push("write-returned"); }
-      else o.bytes.push({ fd, bytes: Buffer.from(buffer.subarray(offset, offset + length)) });
-      return length;
-    });
+    const write = (line: string) => { o.io.write(line); events.push("write-returned"); };
     const drain = RealStore.prototype.closeAfterDrain;
     if (path === "offline") vi.spyOn(RealStore.prototype, "closeAfterDrain").mockImplementation(async function (this: stores.SqliteStateStore) {
       events.push("drain"); expect(existsSync(f.paths.controllerLockPath)).toBe(true);
       await error; expect(existsSync(f.paths.controllerLockPath)).toBe(true);
       await drain.call(this); events.push("closed");
     });
-    await runSessionDescribe(["describe"], f.paths, o.io.write); await error;
-    expect(o.fail).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(Buffer.concat(o.bytes.map(x => x.bytes)).toString())).toEqual({ error: operationError("output_unavailable") });
-    o.io.reportError("duplicate"); expect(o.bytes).toHaveLength(1);
+    await runSessionDescribe(["describe"], f.paths, write); await error;
+    o.stdout.emit("error", new Error("duplicate private error")); o.io.reportError("duplicate");
+    expect(o.fail).toHaveBeenCalledTimes(1); expect(o.exitCode).toBe(1);
+    expect(o.diagnostics).toEqual([`${JSON.stringify({ error: operationError("output_unavailable") })}\n`]);
     if (path === "offline") {
       expect(events).toEqual(["write-returned", "drain", "error", "closed"]);
       expect(existsSync(f.paths.controllerLockPath)).toBe(false);
     }
   }, 20_000);
 
-  it("a pipe closing mid-write leaves only the prefix and reports failure without retrying it", () => {
-    const o = output(), prefix: Buffer[] = [];
-    o.syscall.mockImplementation((fd, buffer, offset) => {
-      if (fd === 1 && prefix.length === 0) { prefix.push(Buffer.from(buffer.subarray(offset, offset + 3))); return 3; }
-      if (fd === 1) throw Object.assign(new Error("private"), { code: "EPIPE" });
-      return buffer.length;
-    });
-    expect(() => o.io.write('{"projects":[]}')).toThrow(expect.objectContaining({ error: operationError("output_unavailable") }));
-    expect(Buffer.concat(prefix).toString()).toBe('{"p'); expect(o.syscall).toHaveBeenCalledTimes(2);
-  });
-
-  it("closed stderr stays silent for synchronous and late errors", () => {
-    const o = output(); o.syscall.mockImplementation(() => { throw Object.assign(new Error("private"), { code: "EPIPE" }); });
+  it.each(["EPIPE", "EAGAIN", "EIO"])("%s stderr stays silent without retries for synchronous and late errors", code => {
+    const o = output(); o.syscall.mockImplementation(() => { throw Object.assign(new Error("private"), { code }); });
     expect(() => o.io.reportError(JSON.stringify({ error: operationError("output_unavailable") }))).not.toThrow();
     expect(() => o.stderr.emit("error", new Error("late stderr failure"))).not.toThrow();
     expect(() => o.stdout.emit("error", new Error("late stdout failure"))).not.toThrow();
-    expect(o.fail).toHaveBeenCalled(); expect(o.bytes).toEqual([]); expect(o.syscall).toHaveBeenCalledTimes(1);
+    expect(o.exitCode).toBe(1); expect(o.diagnostics).toEqual([]); expect(o.syscall).toHaveBeenCalledTimes(1);
   });
+});
+
+// Exercise the production writer and runner in a child without a build prerequisite.
+// Seeding 500 projects through packaged CLI invocations would dominate artifact acceptance.
+// Both SQLite and the socket belong to this temporary fixture; no host state is read.
+describe("session describe real-process output", () => {
+  it.each(["offline", "socket"].flatMap(path => ["slow", "gone", "gone-and-stderr"].map(reader => ({ path, reader }))))(
+    "$path: large output with $reader reader releases ownership before pipe drain", async ({ path, reader }) => {
+    const f = fixture(), seed = new RealStore(f.paths.databasePath), at = new Date().toISOString();
+    for (let i = 0; i < 500; i++) seed.saveKnowledgeProject({ id: `p-${String(i).padStart(4, "0")}`, name: "Synthetic", status: "active",
+      revision: 1, createdAt: at, updatedAt: at }, "fixture");
+    await seed.closeAfterDrain();
+    await f.run();
+    const dto = JSON.parse(f.lines[0]);
+    expect(dto.projects).toHaveLength(500); expect(dto.projectsTruncated).toBe(false);
+    if (path === "socket") {
+      owner(f); dto.listener = "unix";
+      const server = createServer((_request, response) => response.end(JSON.stringify(dto)));
+      await new Promise<void>(resolve => server.listen(f.paths.adminSocketPath, resolve));
+      cleanup.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    }
+    const expected = `${JSON.stringify(dto, null, 2)}\n`;
+    expect(Buffer.byteLength(expected)).toBeGreaterThan(300 * 1024);
+    const repository = fileURLToPath(new URL("../../", import.meta.url));
+    const source = `
+      import { existsSync } from "node:fs";
+      import { createSessionDescribeOutput, runSessionDescribe } from ${JSON.stringify(pathToFileURL(join(repository, "src/cli/session-describe.ts")).href)};
+      const paths = ${JSON.stringify(f.paths)}, output = createSessionDescribeOutput();
+      runSessionDescribe(["describe"], paths, output.write).catch(error => {
+        output.reportError(JSON.stringify({ error: error.error }));
+      }).finally(() => {
+        process.send({ pending: process.stdout.writableLength, locked: existsSync(paths.controllerLockPath),
+          databaseLocked: existsSync(paths.databasePath + ".owner.lock") });
+        process.disconnect();
+      });`;
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", source], {
+      cwd: repository, env: { PATH: process.env.PATH, NODE_ENV: "test", HOME: f.root,
+        WORKTREE_CONTROL_DATA_DIR: f.paths.dataDirectory, WORKTREE_CONTROL_STATE_DIR: f.paths.stateDirectory },
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    let stderr = "", stdout = "", forced = false;
+    child.stderr!.on("data", chunk => { stderr += chunk; });
+    const timer = setTimeout(() => { forced = true; child.kill("SIGKILL"); }, 20_000);
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal }));
+    });
+    try {
+      type CleanupEvidence = { pending: number; locked: boolean; databaseLocked: boolean };
+      const completed = await new Promise<CleanupEvidence>((resolve, reject) => {
+        child.once("message", message => resolve(message as CleanupEvidence)); child.once("error", reject);
+        child.once("exit", () => reject(new Error("Child exited before cleanup evidence")));
+      });
+      // Disconnect removes the child IPC handle: only pending stdout keeps it alive.
+      if (child.connected) await new Promise<void>(resolve => child.once("disconnect", resolve));
+      expect(completed.pending).toBeGreaterThan(0);
+      if (path === "offline") {
+        expect(completed.locked).toBe(false); expect(completed.databaseLocked).toBe(false);
+        expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+        // Another real invocation acquires, reads, closes, and releases while the first pipe is unread.
+        await f.run(); expect(f.lines).toHaveLength(2);
+        expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+      }
+      if (reader === "slow") {
+        await new Promise(resolve => setTimeout(resolve, 2_000));
+        expect(child.exitCode).toBeNull(); expect(child.signalCode).toBeNull();
+        child.stdout!.on("data", chunk => { stdout += chunk; });
+      } else {
+        if (reader === "gone-and-stderr") await new Promise<void>(resolve => {
+          child.stderr!.once("close", resolve); child.stderr!.destroy();
+        });
+        // Consume one prefix, then close while the large accepted write is still pending.
+        child.stdout!.once("data", chunk => { stdout += chunk; child.stdout!.destroy(); });
+      }
+      const result = await closed;
+      expect(forced).toBe(false); expect(result).toEqual({ code: reader === "slow" ? 0 : 1, signal: null });
+      if (reader === "slow") {
+        expect(stderr).toBe(""); expect(stdout).toBe(expected); expect(JSON.parse(stdout)).toEqual(dto);
+      } else {
+        expect(stdout.length).toBeGreaterThan(0); expect(stdout.length).toBeLessThan(expected.length);
+        expect(expected.startsWith(stdout)).toBe(true);
+        if (reader === "gone-and-stderr") expect(stderr).toBe("");
+        else expect(stderr).toBe(`${JSON.stringify({ error: operationError("output_unavailable") })}\n`);
+      }
+    } finally {
+      clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL"); await closed;
+      }
+    }
+  }, 40_000);
 });

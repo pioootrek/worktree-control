@@ -241,7 +241,7 @@ families. Local connection failures below use category `unavailable`, status
 | Invalid JSON/UTF-8, wrong shape/status, extra fields | admin_invalid_response | 1 |
 | Valid operations error, including maintenance/release refusal | Exact public category, reason and retry retained | 1 |
 | Other acquisition refusal | offline_lock_unavailable | 1 |
-| Stdout write failure, closed pipe or exhausted backpressure bound | output_unavailable; silent if stderr is also closed | 1 |
+| Stdout unavailable before commit, or stream error during asynchronous drain | output_unavailable; silent if stderr is also closed | 1 |
 | Unexpected offline initialization/read failure | offline_unavailable; details suppressed | 1 |
 | Pending restore handoff | Existing `Start the controller to complete restore authentication recovery before offline administration.` | 1 |
 | Unreadable/malformed restore handoff | restore_handoff_unreadable; record contents suppressed | 1 |
@@ -250,6 +250,19 @@ families. Local connection failures below use category `unavailable`, status
 | Ownership lost | unauthenticated / offline_lock_not_held / reauthenticate | 1 |
 | Unconfirmed cleanup | Existing provider disposal_unconfirmed body, cleanupConfirmed false | 1, owner retained |
 | Unsupported args | Usage text | 1 |
+
+The CLI commits bytes to Node's stdout stream, not delivery to the reader: a
+successful write return followed by an asynchronous error is a committed release
+with failed delivery, reported as `output_unavailable` on usable stderr and exit 1,
+possibly with truncated stdout. Slow or late readers have no stdout drain deadline
+and receive complete JSON with exit 0. Pending writes keep the process alive;
+handlers set `process.exitCode` and never call `process.exit()` (see
+[Node process I/O](https://nodejs.org/download/release/v24.19.0/docs/api/process.html#a-note-on-process-io)
+and [graceful exit](https://nodejs.org/download/release/v24.19.0/docs/api/process.html#processexitcode)).
+Offline cleanup drains and closes the store, then releases the lock in `finally`,
+without waiting for stdout. A destroyed, ended or non-writable stdout, or a thrown
+write, fails the admitted commit. Stderr uses one small synchronous descriptor
+write without retries; if stderr is also unavailable, failure exits 1 silently.
 
 The unreadable-handoff wrapper deliberately differs from neighbours that may
 print a raw parser error: preserving its refusal and pre-open position while
@@ -268,7 +281,7 @@ explicit deferral; these are source references, not claims of completed runs.
 | `src/cli/index.ts:172` handoff before ordinary opening | Check after lock, before constructor | pending/unreadable restore handoff stops before store construction |
 | `src/cli/auth-management.ts:47` atomic acquire, typed live-owner refusal | Same primitive, no socket probe | lock taken: missing/stale/reset/timeout fails exactly; another offline owner |
 | `src/cli/auth-management.ts:65` ordinary store fence/upgrade admission | Same constructor, one store | ordinary store opening keeps its fence refusal; named deferral D1a-10-upgrade-CLI: ordinary upgrade admission suite remains the upgrade oracle |
-| `src/cli/auth-management.ts:59` JSON style / output | Same two-space JSON plus newline; synchronous descriptor write; scoped late-error handling | synchronous output failure is a failed admitted commit; session describe output suite; package-rbac.mjs closedSessionOutput on both paths |
+| `src/cli/auth-management.ts:59` JSON style / output | Same two-space JSON plus newline; commit to the process stream inside admission, then asynchronous drain; slow readers receive complete output; scoped late-error handling | destroyed stdout is a failed admitted commit; session describe output suite; package-rbac.mjs closedSessionOutput on both paths |
 | `src/cli/auth-management.ts:74` producer disposal then store close/release | No provider producer; closeOfflineStore unchanged | offline writes then closes before release; offline-ownership.test.ts: drains real accepted work |
 | `src/cli/auth-management.ts:75` retain on close failure | Same retain helper and disposal error | close failure retains owner and reports disposal_unconfirmed |
 | `src/cli/auth-management.ts:98` opening failure releases lock | finally calls closeOfflineStore(null, lock) | pending/unreadable restore handoff stops before construction |

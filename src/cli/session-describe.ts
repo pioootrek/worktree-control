@@ -32,33 +32,11 @@ export class SessionDescribeError extends Error {
 }
 const localFailure = (reason: string) => new SessionDescribeError(publicError(new OperationError("unavailable", reason)));
 
-/** Descriptor writes keep a failed output commit inside readRelease's admitted phase.
- * POSIX stdout pipes are asynchronous streams, unlike files/TTYs:
- * https://nodejs.org/docs/latest-v22.x/api/process.html#a-note-on-process-io
- * writeSync returns a byte count, not a promise of a complete buffer:
- * https://nodejs.org/docs/latest-v22.x/api/fs.html#fswritesyncfd-buffer-offset-length-position
- */
-function writeDescriptor(fd: number, line: string): void {
-  const bytes = Buffer.from(`${line}\n`), deadline = performance.now() + 1_000;
-  const pause = new Int32Array(new SharedArrayBuffer(4));
-  let offset = 0;
-  // Bound both partial writes and EAGAIN retries; never spin on a full pipe.
-  for (let attempts = 0; offset < bytes.length; attempts++) {
-    if (attempts >= 4096 || performance.now() >= deadline) throw localFailure("output_unavailable");
-    try {
-      const written = writeSync(fd, bytes, offset, bytes.length - offset);
-      if (written <= 0) throw localFailure("output_unavailable");
-      offset += written;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EAGAIN" && code !== "EWOULDBLOCK" && code !== "EINTR") throw error;
-      Atomics.wait(pause, 0, 0, 5);
-    }
-  }
-}
-
 type OutputStream = {
   readonly destroyed: boolean;
+  readonly writableEnded: boolean;
+  readonly writable: boolean;
+  write(chunk: string): boolean;
   on(event: "error", listener: () => void): unknown;
 };
 
@@ -70,11 +48,12 @@ export function createSessionDescribeOutput(stdout: OutputStream = process.stdou
   fail: () => void = () => { process.exitCode = 1; }) {
   let outputFailed = false, stderrFailed = false, reported = false;
   const reportError = (line: string) => {
-    fail();
     if (reported) return;
     reported = true;
+    fail();
     if (stderrFailed || stderr.destroyed) return;
-    try { writeDescriptor(2, line); } catch { stderrFailed = true; }
+    // One small diagnostic, well below a pipe buffer. Never retry a full/closed stderr.
+    try { writeSync(2, `${line}\n`); } catch { stderrFailed = true; }
   };
   stdout.on("error", () => {
     outputFailed = true;
@@ -85,8 +64,13 @@ export function createSessionDescribeOutput(stdout: OutputStream = process.stdou
     reportError,
     write(line: string) {
       try {
-        if (outputFailed || stdout.destroyed) throw localFailure("output_unavailable");
-        writeDescriptor(1, line);
+        if (outputFailed || stdout.destroyed || stdout.writableEnded || !stdout.writable) throw localFailure("output_unavailable");
+        // A false return is backpressure: the complete payload is committed to Node.
+        // A later error means failed delivery after that commit, handled by the listener.
+        // Pending pipe writes keep the process alive without delaying offline cleanup:
+        // https://nodejs.org/download/release/v24.19.0/docs/api/process.html#processexitcode
+        stdout.write(`${line}\n`);
+        if (outputFailed) throw localFailure("output_unavailable");
       } catch {
         outputFailed = true;
         throw localFailure("output_unavailable");
@@ -151,7 +135,8 @@ export async function runSessionDescribe(args: string[], paths: AppPaths, write:
     if (!minted.ok) throw new SessionDescribeError(minted.error);
     if (!runtime.supported) throw localFailure("unknown_mode");
     const released = await runtime.runner.readRelease(sessionDescribe, minted.context, {}, {
-      eligible: runtime.eligible, connected: () => !process.stdout.destroyed, deadline: Date.now() + 15_000,
+      // Output availability is checked by the synchronous commit, within admission.
+      eligible: runtime.eligible, connected: () => true, deadline: Date.now() + 15_000,
       commit(value) { emit(value); },
     });
     if (released.status !== "committed") {
