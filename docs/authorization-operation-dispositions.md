@@ -1708,8 +1708,11 @@ authority; token mode accepts the installation token with that authority;
 account mode accepts an agent token and returns its account permissions and
 projects where it has a role. The description contains actor kind, mode,
 listener, fullAuthority, installation permissions, up to 500 project IDs and
-permission sets, projectsTruncated and freshLogin, with no names, paths, secrets
-or history. Stored owner/worker machine tokens answer `invalid_credential` in
+permission sets (fewer when the whole DTO reaches its 248 KiB UTF-8 JSON budget),
+projectsTruncated and freshLogin, with no names, paths, secrets or history.
+Projects remain in deterministic ID order; projectsTruncated is true when either
+bound omits a visible project. The byte budget leaves 8 KiB below the transports'
+256 KiB ceiling. Stored owner/worker machine tokens answer `invalid_credential` in
 account mode, `credential_not_accepted_here` in token mode and
 `credential_in_open_mode` in open mode. Cookies always answer
 `provider_cookie_not_supported`; mixed/duplicate bearers answer

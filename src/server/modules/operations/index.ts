@@ -41,7 +41,7 @@ export {
   type IdempotencyKey, type IdempotencyRecord, type IdempotencyState, type IdempotencyStore, type OperationObserver, type OperationRuntime, type RunOptions, type RunResult,
   type ReadReleaseOptions, type ReadReleaseResult, type StreamItem,
 } from "./runner";
-export { MAX_DESCRIBED_PROJECTS, sessionDescribe } from "./session-describe";
+export { MAX_DESCRIBED_BYTES, MAX_DESCRIBED_PROJECTS, sessionDescribe } from "./session-describe";
 export { InstallationVerifier, type InstallationPolicy, type InstallationPolicyReader, type InstallationVerifierOptions } from "./adapters/installation-verifier";
 export { AgentTokenVerifier, type AgentCredentialReader, type AgentCredentialRecord, type AgentTokenVerifierOptions } from "./adapters/agent-token-verifier";
 export { CompositeCredentialVerifier, type CompositeCredentialVerifierOptions } from "./adapters/composite-credential-verifier";

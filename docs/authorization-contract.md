@@ -476,7 +476,8 @@ to authenticate poll and report through the existing handler.
 This changes what callers can learn through the worker port. Open mode now
 gives a reachable anonymous caller the actor kind, mode, listener,
 `fullAuthority: true`, installation permissions, up to 500 project IDs with
-permissions, `projectsTruncated` and `freshLogin`. Token mode gives the same
+permissions (fewer when the 248 KiB serialized-DTO budget is reached),
+`projectsTruncated` and `freshLogin`. Token mode gives the same
 fields to the installation token. Account mode accepts any current agent token
 and returns that account's installation permissions and projects where it has
 a role. No names, paths, secrets or history are included. The old worker protocol
@@ -565,6 +566,12 @@ grants, directory and clock and refuses a changed projection. Successful SDK
 output is written only by the final synchronous commit to the real Node response. This can
 conservatively refuse metadata responses when grants change too. Admission spans
 neither SDK work nor response drain.
+
+The operation lists a deterministic prefix of at most 500 visible projects,
+within a 248 KiB UTF-8 `JSON.stringify` budget for the whole DTO, including its
+fixed fields. `projectsTruncated` is true when either bound omits a visible
+project. The operation owns this budget independently of transports, leaving
+8 KiB below their default ceiling.
 
 Limits share HTTP's 256 KiB serialized-DTO bound, checked at the initial
 witness commit; an oversized DTO receives the same pre-dispatch HTTP 413
