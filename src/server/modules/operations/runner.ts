@@ -7,7 +7,7 @@ import { admissionFailureOf, classify, classifyBeforeCommit, OperationError, pub
 import { effectivePermissions, type EffectivePermissions, type GrantsSnapshot } from "./grants";
 import {
   listenerAllowed, MAX_WAIT_TIMEOUT_MS,
-  type EffectOutcome, type EffectScope, type IdleEffectScope, type Lease, type MutationOperation, type Operation, type PhaseScope, type QueryOperation,
+  type AnyOperation, type EffectOutcome, type EffectScope, type IdleEffectScope, type Lease, type MutationOperation, type Operation, type PhaseScope, type QueryOperation,
   type ReadOperation, type Receipt, type StreamOperation, type TransitionResult,
 } from "./operation";
 import { decideForPrincipal } from "./principal";
@@ -168,6 +168,29 @@ interface Gate { requirement: OperationRequirement; excluded: readonly ListenerK
 
 function gateOf(operation: { requirement: OperationRequirement; excludedListeners?: readonly ListenerKind[] }): Gate {
   return { requirement: operation.requirement, excluded: operation.excludedListeners };
+}
+
+/** What steps 1 and 2 of a query leave for its release. The work result never leaves the runner unprojected. */
+interface QueryWorked<R> {
+  gate: Gate;
+  refs: Readonly<Record<string, ResourceRef>>;
+  resources: ResolvedResources;
+  outcome: { ok: true; value: R } | { ok: false; error: unknown };
+}
+
+/** The release policy of a request, checked at the start of an admitted phase (decision Y). */
+function releaseCheck(options: object, eligible: () => boolean, connected: () => boolean, deadline: number, signal: AbortSignal | undefined) {
+  return (now: number) => {
+    // Throwing predicates, like thenables and non-booleans, give no answer (decision W).
+    let allowed = false;
+    try { allowed = holds(Reflect.apply(eligible, options, [])); } catch { /* no answer */ }
+    if (!allowed) throw new OperationError("unavailable", "release_not_eligible");
+    if (!Number.isFinite(now)) throw new OperationError("internal", "invalid_input");
+    if (now >= deadline) throw new OperationError("unavailable", "release_timed_out", { retry: "retry" });
+    let open = false;
+    try { open = holds(Reflect.apply(connected, options, [])); } catch { /* no answer */ }
+    if (!open || signal?.aborted) throw cancelled();
+  };
 }
 
 /** Whether an admitted phase is still running synchronously; `authorizePrincipal` works only then. */
@@ -642,33 +665,14 @@ export class OperationRunner {
         || !Number.isFinite(deadline) || (expectedCanonical !== undefined && typeof expectedCanonical !== "string")) {
         throw new OperationError("invalid_request", "invalid_input");
       }
-      const check = (now: number) => {
-        // Throwing predicates, like thenables and non-booleans, give no answer (decision W).
-        let allowed = false;
-        try { allowed = holds(Reflect.apply(eligible, options, [])); } catch { /* no answer */ }
-        if (!allowed) throw new OperationError("unavailable", "release_not_eligible");
-        if (!Number.isFinite(now)) throw new OperationError("internal", "invalid_input");
-        if (now >= deadline) throw new OperationError("unavailable", "release_timed_out", { retry: "retry" });
-        let open = false;
-        try { open = holds(Reflect.apply(connected, options, [])); } catch { /* no answer */ }
-        if (!open || signal?.aborted) throw cancelled();
-      };
+      const check = releaseCheck(options, eligible, connected, deadline, signal);
       const result = await this.readWith(operation, context, raw, { signal, idempotencyKey }, value => {
         // canonicalJson runs the strict serializer and sorts object keys;
         // serializeRelease alone returns data, not canonical comparison text.
         if (expectedCanonical !== undefined && canonicalJson(value) !== expectedCanonical) {
           throw new OperationError("conflict", "release_payload_changed");
         }
-        const now = this.runtime.now();
-        if (isThenable(now)) absorb(now);
-        if (!Number.isFinite(now) || now >= deadline) throw new OperationError("unavailable", "release_timed_out", { retry: "retry" });
-        try {
-          synchronous(Reflect.apply(commit, options, [value]), "release_commit_failed");
-          return { status: "committed" } as const;
-        } catch {
-          // The write may have partially happened. Never retry or expose its thrown value.
-          return { status: "commit_failed", error: failure(new OperationError("internal", "release_commit_failed"), null, undefined) } as const;
-        }
+        return this.commitRelease(options, commit, value, deadline);
       }, check);
       return result.ok ? result.value : { status: "refused", error: result.error };
     } catch (error) {
@@ -713,64 +717,137 @@ export class OperationRunner {
    * decision, so a caller who lost access learns nothing from it.
    */
   private async query<I, R, P extends object>(operation: QueryOperation<I, R, P>, context: AuthenticationContext, raw: unknown, options: RunOptions): Promise<RunResult<P>> {
-    const { admission } = this.runtime;
     const { signal } = options;
     try {
       this.idempotency(false, options.idempotencyKey);
-      const work: unknown = operation.work, timeout: unknown = operation.timeoutMs;
-      if (typeof work !== "function" || typeof operation.plan !== "function" || (timeout !== undefined && (!Number.isSafeInteger(timeout) || (timeout as number) < 1))) {
-        throw new OperationError("internal", "invalid_operation");
-      }
-      const input = this.parse(operation.parse, raw);
-      const refs = this.references(operation, input);
-      const gate = gateOf(operation);
-      const first = await admission.run(() => {
-        const phase = this.admit(context, gate, refs);
-        const live: Liveness = { open: true };
-        try { return { phase, plan: synchronous(operation.plan(input, this.scope(phase, signal, live)), "plan_not_synchronous") }; } finally { live.open = false; }
-      }, { signal });
-      if (signal?.aborted) throw cancelled();
-
-      // 2. The asynchronous work, outside admission, bounded and cancellable. A caller that
-      //    already holds admission (`run` joins it) is suspended through `idle`, so other
-      //    admissions, provider borrows included, proceed while the work waits.
-      const outcome = await admission.idle(async (): Promise<{ ok: true; value: R } | { ok: false; error: unknown }> => {
-        const controller = new AbortController();
-        const limit = Math.min((timeout as number | undefined) ?? Number.POSITIVE_INFINITY, this.runtime.queryDeadlineMs ?? 30_000);
-        let timedOut = false;
-        const onAbort = () => controller.abort();
-        signal?.addEventListener("abort", onAbort, { once: true });
-        const timer = setTimeout(() => { timedOut = true; controller.abort(); }, limit);
-        timer.unref?.();
-        try {
-          let pending: Promise<R>;
-          try { pending = Promise.resolve((work as (plan: unknown, signal: AbortSignal) => Promise<R>).call(operation, first.plan, controller.signal)); }
-          catch (error) { pending = Promise.reject(error); }
-          try {
-            const settled = await untilAbort(pending, controller.signal);
-            if (!settled) throw timedOut && !signal?.aborted ? new OperationError("unavailable", "query_timed_out", { retry: "retry" }) : cancelled();
-            return { ok: true, value: settled.value };
-          } catch (error) {
-            if (controller.signal.aborted) throw timedOut && !signal?.aborted ? new OperationError("unavailable", "query_timed_out", { retry: "retry" }) : cancelled();
-            return { ok: false, error };
-          }
-        } finally {
-          clearTimeout(timer);
-          signal?.removeEventListener("abort", onAbort);
-        }
-      });
-
+      const worked = await this.queryWork(operation, context, raw, signal);
       // 3. A fresh decision on an unchanged resolution before anything is released.
-      const value = await admission.run(() => {
-        const phase = this.admit(context, gate, refs);
-        if (!sameResolution(first.phase.resources, phase.resources)) throw new OperationError("conflict", "resource_changed");
-        if (signal?.aborted) throw cancelled();
-        if (!outcome.ok) throw outcome.error;
-        return releaseValue<P>(synchronous(operation.project(outcome.value, phase.release), "projection_not_synchronous"), operation.publicKeys);
-      }, { signal });
+      const value = await this.runtime.admission.run(() => this.queryPhase(operation, context, worked, signal), { signal });
       return { ok: true, value, replayed: false };
     } catch (error) {
       return { ok: false, error: failure(error, null, signal) };
+    }
+  }
+
+  /** Steps 1 and 2 of a query: the admitted authorization and plan, then the bounded work outside admission. */
+  private async queryWork<I, R, P extends object>(operation: QueryOperation<I, R, P>, context: AuthenticationContext, raw: unknown,
+    signal: AbortSignal | undefined, check?: (now: number) => void): Promise<QueryWorked<R>> {
+    const { admission } = this.runtime;
+    const work: unknown = operation.work, timeout: unknown = operation.timeoutMs;
+    if (typeof work !== "function" || typeof operation.plan !== "function" || (timeout !== undefined && (!Number.isSafeInteger(timeout) || (timeout as number) < 1))) {
+      throw new OperationError("internal", "invalid_operation");
+    }
+    const input = this.parse(operation.parse, raw);
+    const refs = this.references(operation, input);
+    const gate = gateOf(operation);
+    const first = await admission.run(() => {
+      const phase = this.decideOn(this.prepare(context, gate, check), gate, refs);
+      const live: Liveness = { open: true };
+      try { return { phase, plan: synchronous(operation.plan(input, this.scope(phase, signal, live)), "plan_not_synchronous") }; } finally { live.open = false; }
+    }, { signal });
+    if (signal?.aborted) throw cancelled();
+
+    // 2. The asynchronous work, outside admission, bounded and cancellable. A caller that
+    //    already holds admission (`run` joins it) is suspended through `idle`, so other
+    //    admissions, provider borrows included, proceed while the work waits.
+    const outcome = await admission.idle(async (): Promise<{ ok: true; value: R } | { ok: false; error: unknown }> => {
+      const controller = new AbortController();
+      const limit = Math.min((timeout as number | undefined) ?? Number.POSITIVE_INFINITY, this.runtime.queryDeadlineMs ?? 30_000);
+      let timedOut = false;
+      const onAbort = () => controller.abort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const timer = setTimeout(() => { timedOut = true; controller.abort(); }, limit);
+      timer.unref?.();
+      try {
+        let pending: Promise<R>;
+        try { pending = Promise.resolve((work as (plan: unknown, signal: AbortSignal) => Promise<R>).call(operation, first.plan, controller.signal)); }
+        catch (error) { pending = Promise.reject(error); }
+        try {
+          const settled = await untilAbort(pending, controller.signal);
+          if (!settled) throw timedOut && !signal?.aborted ? new OperationError("unavailable", "query_timed_out", { retry: "retry" }) : cancelled();
+          return { ok: true, value: settled.value };
+        } catch (error) {
+          if (controller.signal.aborted) throw timedOut && !signal?.aborted ? new OperationError("unavailable", "query_timed_out", { retry: "retry" }) : cancelled();
+          return { ok: false, error };
+        }
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      }
+    });
+    return { gate, refs, resources: first.phase.resources, outcome };
+  }
+
+  /**
+   * Step 3 of a query. Must run inside an admitted phase: a fresh decision
+   * (with `check` first, decision Y), the resolution of step 1 unchanged and no
+   * abort; only then a failure of the work, or the projection of its result.
+   */
+  private queryPhase<I, R, P extends object>(operation: QueryOperation<I, R, P>, context: AuthenticationContext, worked: QueryWorked<R>,
+    signal: AbortSignal | undefined, check?: (now: number) => void): P {
+    const phase = this.decideOn(this.prepare(context, worked.gate, check), worked.gate, worked.refs);
+    if (!sameResolution(worked.resources, phase.resources)) throw new OperationError("conflict", "resource_changed");
+    if (signal?.aborted) throw cancelled();
+    if (!worked.outcome.ok) throw worked.outcome.error;
+    return releaseValue<P>(synchronous(operation.project(worked.outcome.value, phase.release), "projection_not_synchronous"), operation.publicKeys);
+  }
+
+  /**
+   * Releases a query inside the admitted phase of its step 3, as `readRelease`
+   * does for a read: the same eligibility, connection, deadline and signal
+   * checks (also before step 1), and `commit` called synchronously inside that
+   * phase. With `stage`, step 3 runs twice: the first fresh decision projects
+   * a value that `stage` may prepare outside admission (for example a buffered
+   * protocol envelope); the second takes a fresh decision again on the same
+   * resolution, re-projects the same work result, refuses a different
+   * canonical value (`conflict`/`release_payload_changed`) and only then
+   * commits. The work runs once; nothing it found is released without the
+   * final decision. `stage` must not write to the caller.
+   */
+  async queryRelease<I, R, P extends object>(operation: AnyOperation, context: AuthenticationContext, raw: unknown,
+    options: ReadReleaseOptions<P> & { stage?(value: P): Promise<void> }): Promise<ReadReleaseResult> {
+    const { signal } = options;
+    try {
+      if (operation.kind !== "query") throw new OperationError("internal", "invalid_operation");
+      const query = operation as QueryOperation<I, R, P>;
+      const { eligible, connected, deadline, commit, stage, idempotencyKey } = options;
+      if (typeof eligible !== "function" || typeof connected !== "function" || typeof commit !== "function"
+        || !Number.isFinite(deadline) || (stage !== undefined && typeof stage !== "function") || options.expectedCanonical !== undefined) {
+        throw new OperationError("invalid_request", "invalid_input");
+      }
+      if (!this.registeredFor(query, context)) throw notRegistered();
+      this.idempotency(false, idempotencyKey);
+      const check = releaseCheck(options, eligible, connected, deadline, signal);
+      const worked = await this.queryWork(query, context, raw, signal, check);
+      const { admission } = this.runtime;
+      let expected: string | undefined;
+      if (stage) {
+        const staged = await admission.run(() => this.queryPhase(query, context, worked, signal, check), { signal });
+        expected = canonicalJson(staged);
+        await admission.idle(async () => { await Reflect.apply(stage, options, [staged]); });
+        if (signal?.aborted) throw cancelled();
+      }
+      return await admission.run((): ReadReleaseResult => {
+        const value = this.queryPhase(query, context, worked, signal, check);
+        if (expected !== undefined && canonicalJson(value) !== expected) throw new OperationError("conflict", "release_payload_changed");
+        return this.commitRelease(options, commit, value, deadline);
+      }, { signal });
+    } catch (error) {
+      return { status: "refused", error: failure(error, null, signal) };
+    }
+  }
+
+  /** The last deadline check and the synchronous commit, inside the caller's admitted phase. */
+  private commitRelease<P>(options: object, commit: (value: P) => void, value: P, deadline: number): ReadReleaseResult {
+    const now = this.runtime.now();
+    if (isThenable(now)) absorb(now);
+    if (!Number.isFinite(now) || now >= deadline) throw new OperationError("unavailable", "release_timed_out", { retry: "retry" });
+    try {
+      synchronous(Reflect.apply(commit, options, [value]), "release_commit_failed");
+      return { status: "committed" };
+    } catch {
+      // The write may have partially happened. Never retry or expose its thrown value.
+      return { status: "commit_failed", error: failure(new OperationError("internal", "release_commit_failed"), null, undefined) };
     }
   }
 

@@ -67,7 +67,7 @@ import { OwnedSqliteDatabase, type DatabaseProvenance } from "./owned-database";
 import { IdentityQueries } from "./identity-queries";
 import { MachineCredentialQueries } from "./machine-credential-queries";
 import { AccountGrantsQueries } from "./account-grants-queries";
-import { ProjectDirectoryQueries, type ProjectId, type RegistrationId } from "./project-directory-queries";
+import { ProjectCatalogQueries, ProjectDirectoryQueries, type ProjectId, type RegistrationId } from "./project-directory-queries";
 import { KnowledgeQueries } from "./knowledge-queries";
 import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
 import type { TaskStateFacts } from "@/server/modules/knowledge";
@@ -966,6 +966,20 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       registration: (id: string) => directory.registration(id as RegistrationId),
       project: (id: string) => directory.project(id as ProjectId),
       projects: () => directory.projects(),
+    };
+  }
+
+  /**
+   * Synchronous, write-free project and registration facts for the operations
+   * project reads, on this owner's core connection. Call within an admitted
+   * core phase in strict mode; validation belongs to the caller.
+   */
+  projectCatalogReader() {
+    const catalog = new ProjectCatalogQueries(this.database);
+    return {
+      projects: () => catalog.projects(),
+      project: (id: string) => catalog.project(id),
+      registrations: (now: string, projectId?: string) => catalog.registrations(now, projectId),
     };
   }
 
