@@ -1665,7 +1665,7 @@ remains.
 
 ## 10. Proposed cut of slice 4
 
-D1a-8a builds the real lock's sticky, read-only `held()` and an unmounted
+D1a-8a builds the real lock's sticky, read-only `held()` and the
 offline composition that binds it at mint, execution and admitted read-release.
 Ownership loss refuses `unauthenticated` / `offline_lock_not_held`. The shared
 auth CLI cleanup sequence drains and closes the store before releasing the
@@ -1718,7 +1718,8 @@ missing sessions and mixed credentials never fall back. Unix and worker keep the
 `provider_cookie_not_supported` refusal. Open and token API refusals come from
 `resolveAcceptance`. See the [mounted cookie contract](authorization-contract.md#mounted-api-cookie-boundary)
 for exact public errors and limits. Installed-artifact checks now cover every
-mounted listener and supported mode; D1a-10 retains the final full matrix.
+mounted listener and supported mode; D1a-10 records the final full matrix in
+[the gate evidence](authorization-gate-evidence.md).
 D1a-6 also mounts this adapter on the configured HTTPS worker listener with
 `listener=worker`. TLS precedes HTTP dispatch; the raw namespace claim precedes
 legacy routing/authentication; the shared peer and Origin checks precede the
@@ -1770,7 +1771,8 @@ steps C0 to C4 of slice 3 (projects, roles and the fence) are merged. Slice 3's
 gate report and documentation (C5) are not. Slice 3 is on the branch
 `integration/auth-unification`. It left two unmounted SQLite adapters: the
 grants snapshot, and a resolver for the `registration` and `project` kinds
-only. Nothing of the operations module is mounted.
+only. That was the slice-3 baseline. D1a now wires them for `session.describe`
+on API, unix, worker, MCP and the lock-first CLI; other operations remain unmounted.
 
 Item 2 is split by what each consumer needs, in this order (a proposal, plan
 revision 3 in task 040062b4):

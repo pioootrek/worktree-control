@@ -52,6 +52,58 @@ This page states what the code enforces, including the
 [Obligations of later slices](#obligations-of-later-slices) and
 [Not implemented](#not-implemented).
 
+## D1a closure and release decisions
+
+The [gate evidence](authorization-gate-evidence.md) maps every executable gate
+clause to a verbatim test title, file and managed preset, and records the installed
+matrix and earlier named deferrals. [Runnable requests](authentication.md#describe-authority-through-each-listener-integration-branch)
+cover each mount. This evidence does not close release decisions.
+
+What a caller without a valid credential can learn on the new namespace:
+
+| Listener | open | token | better-auth |
+| --- | --- | --- | --- |
+| API bearer | Anonymous installation DTO, permissions and bounded project IDs; supplied credentials refuse | Public boundary errors and credential classification, no successful DTO | Public boundary errors and credential classification, no successful DTO |
+| API cookie | `credential_in_open_mode`, no cookie DTO | `credential_not_accepted_here`, no cookie DTO | Invalid cookie: `invalid_credential`; provider ineligibility: `provider_session_unavailable`; no DTO |
+| Unix | OS access supplies operator authority without a token | Same operator DTO | Same operator DTO |
+| HTTPS worker | Anonymous installation DTO including bounded project IDs | Public transport/credential refusals only | Public transport/credential refusals only |
+| MCP | Initialize/list/call and installation DTO including bounded project IDs | Public boundary/protocol refusals only; no successful initialize/list/call | Public boundary/protocol refusals only; no successful initialize/list/call |
+| CLI socket/offline | Local operator DTO through OS ownership | Same operator DTO | Same operator DTO |
+
+Unix still requires access to the private socket; offline requires the exclusive
+lock and ordinary store admission. Unsupported `legacy` answers `unknown_mode`
+on operations, while the legacy paths retain their existing policy. These are
+new-namespace observations, not statements about legacy public/status routes.
+
+Recorded release blockers, with owners:
+
+- Owner decision 4(b), unchanged below: non-loopback worker binding in open mode.
+  The owner decides; D1a-10 implements no restriction.
+- Knowledge project ID grammar: the owner owns the recorded hand migration;
+  the Knowledge create/Hub import implementation owns prevention and an approved
+  repair procedure. Release remains blocked on conforming IDs, prevention and
+  that procedure, as recorded under [Not implemented](#not-implemented).
+
+Deliberately unchanged limits collected for this slice:
+
+- MCP refuses both legacy secret header names. HTTP accepts a recognized token
+  in them; see [MCP](#mounted-mcp-boundary-d1a-7b).
+- The admin-socket client performs no socket ownership, permission or peer check;
+  server-side 0700/0600 protection is unchanged. Client verification remains a
+  separate hardening/interface decision.
+- Stale-lock acquisition uses PID liveness in the caller's PID namespace. It
+  does not establish cross-namespace liveness (`controller-lock.ts`).
+- `held()` is an accidental-loss check with the same-UID and unobserved rewrite,
+  timestamp-resolution and post-check non-goals stated in
+  [Offline ownership](#offline-ownership-d1a-8a).
+- A rejected MCP SDK `close()` is contained, called once and not retried;
+  never-settling disposal retains capacity and drain ownership.
+- There is no principal-incarnation detection for identical same-ID recreation;
+  a new workflow allowing that requires durable incarnation and retained-context
+  review. Credential-ID existence can be observable through lookup timing.
+- The import guard cannot see passed-around require functions, worker/process
+  entrypoints, vm evaluation or string-built code; its inventory is unchanged.
+
 ## Threat model
 
 Decision O bounds what this module defends against:
@@ -275,7 +327,7 @@ explicit deferral; these are source references, not claims of completed runs.
 | `src/cli/auth-management.ts:43` parse before ownership | Only `describe`, no path selector | rejects path-selection switches before ownership |
 | `src/cli/index.ts:172` handoff before ordinary opening | Check after lock, before constructor | pending/unreadable restore handoff stops before store construction |
 | `src/cli/auth-management.ts:47` atomic acquire, typed live-owner refusal | Same primitive, no socket probe | lock taken: missing/stale/reset/timeout fails exactly; another offline owner |
-| `src/cli/auth-management.ts:65` ordinary store fence/upgrade admission | Same constructor, one store | ordinary store opening keeps its fence refusal; named deferral D1a-10-upgrade-CLI: ordinary upgrade admission suite remains the upgrade oracle |
+| `src/cli/auth-management.ts:65` ordinary store fence/upgrade admission | Same constructor, one store | ordinary store opening keeps its fence refusal; `upgrade-required offline command preserves the diagnostic, never enables writes, and releases both locks` (D1a-10-upgrade-CLI closed) |
 | `src/cli/auth-management.ts:59` JSON style / output | Same two-space JSON plus newline; commit to the process stream inside admission, then asynchronous drain; slow readers receive complete output; scoped late-error handling | destroyed stdout is a failed admitted commit; session describe output suite; package-rbac.mjs closedSessionOutput on both paths |
 | `src/cli/auth-management.ts:74` producer disposal then store close/release | No provider producer; closeOfflineStore unchanged | offline writes then closes before release; offline-ownership.test.ts: drains real accepted work |
 | `src/cli/auth-management.ts:75` retain on close failure | Same retain helper and disposal error | close failure retains owner and reports disposal_unconfirmed |
@@ -682,8 +734,9 @@ success. The peer fixture controls the socket address because the test binds onl
 loopback. The older worker tests use plaintext fixtures; this suite generates an
 ephemeral local certificate. Pending provider work and completion reserve are
 inapplicable here because cookies are refused before work; their executable API
-proofs remain in the same suite. Timeout settings are asserted directly; a full
-slow-header timing test is deferred to D1a-10 to avoid timing-sensitive coverage.
+proofs remain in the same suite. Production timeout settings and real slow-header/request expiry are asserted by
+`%s production timeouts remain documented; real slow headers and request expiry refuse before mint`
+with bounded fixture overrides (see the [gate evidence](authorization-gate-evidence.md)).
 Installed TLS worker checks run under `node:test:rbac-artifact` in all three modes,
 using a stored token issued through `remote-verification provision`. They start a
 fixture listener only, without a remote execution worker loop. `node:check` runs
@@ -911,7 +964,7 @@ policy or shared owner. Test names identify executable assertions in
 | Maintenance/configuration (CLI auth closure `../cli/index.ts:405`) | Shared runtime eligibility; provider-only config does not disable bearers | `maintenance and pinned configuration reuse shared refusal and bearer eligibility`; `post-SDK-buffer release rechecks %s` |
 | No-store/JSON/nosniff (`mcp-http-server.ts:73`, `:136`) | Shared operations serializer adds CSP and finite errors | `stored matrix in %s on every method; unchanged legacy authentication`; `MCP security headers, raw singleton refusals and Node protocol ownership` |
 | Reauthentication/session binding (`transports/mcp/mcp-runtime.ts:179`, `:192`) | Fresh mint each method; full DTO witness at final Node write; session headers confer nothing | `concurrent distinct principals with identical IDs and forged session headers stay isolated`; `%s SDK sequential initialize/list/call has no session authority` |
-| Connections/request timers (`mcp-http-server.ts:134`, `:187`) | One Node owner with unchanged defaults; no legacy request counter to share | `legacy session capacity is independent; Node connection/request defaults cover both surfaces`; slow-header timing deferral D1a-10 |
+| Connections/request timers (`mcp-http-server.ts:134`, `:187`) | One Node owner with unchanged defaults; no legacy request counter to share | `legacy session capacity is independent; Node connection/request defaults cover both surfaces`; `%s production timeouts remain documented; real slow headers and request expiry refuse before mint` (D1a-10 timing obligation closed) |
 | Logical sessions (`transports/mcp/mcp-runtime.ts:141`; `modules/mcp-sessions/session-limits.ts:28`) | Governor unchanged; stateless request pair needs no session slot | `legacy session capacity is independent; Node connection/request defaults cover both surfaces` |
 | Session idle/absolute/reconnect/renewal (`modules/mcp-sessions/session-limits.ts:28`) | Inapplicable: no retained sessions/claims; ten-second request deadline instead | `MCP deadline retains capacity until real work settles; legacy requests retain independent admission`; unchanged `transports/mcp/mcp-session-policy.test.ts` |
 | Tool/resource work and cleanup (`transports/mcp/mcp-runtime.ts:201`, `:205`) | Adapter owns work through SDK disposal and Node finish/close | `disconnect retains all 32 slots and cookies bypass saturation without work`; `MCP body/DTO ceilings and Node completion retain the production owner`; `negative control: early release admits request 33 while work remains pending` |
@@ -922,8 +975,9 @@ policy or shared owner. Test names identify executable assertions in
 | SQLite/lock (`bootstrap/controller-shutdown.ts:58`) | Existing owner releases only after confirmed listeners | `%s close joins pending owners before SQLite/lock release; repeated cleanup` (`shutdown`, `policy then shutdown`) |
 | Installed listener/bootstrap | SDK from installed package, synthetic paths only, all supported modes | `scripts/package-rbac.mjs` `operationMcp` via `operationApi`; `scripts/package-smoke.mjs` `operations-installed-mcp-token` |
 
-D1c retains cross-request cancellation and session binding. D1a-10 retains full
-slow-header timing and final transport coverage. No schema or usage writer changes.
+D1c retains cross-request cancellation and session binding. D1a-10 records real
+slow-header/request expiry and final transport coverage in the
+[gate evidence](authorization-gate-evidence.md). No schema or usage writer changes.
 
 ## Permissions and roles
 

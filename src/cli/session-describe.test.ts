@@ -22,6 +22,9 @@ import { listenAdminSocket } from "../server/admin-socket";
 import { AuthenticationService } from "../server/modules/authentication";
 import { assertBackupHandoffCompleted } from "../server/modules/backups";
 import { recordHash } from "../server/modules/backups/records";
+import { createFencedAt49 } from "../server/infrastructure/sqlite/fixtures/released-schema";
+import { OwnedSqliteDatabase } from "../server/infrastructure/sqlite/owned-database";
+import { upgradeErrorBody } from "./upgrade";
 import { ownedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { hash, token, presentedBearer, none } from "../server/modules/operations/adapters/credential-verifier-fixture";
 import { FRESH_LOGIN_WINDOW_MS } from "../shared/contracts/operations";
@@ -136,6 +139,37 @@ describe("session describe CLI mount", () => {
     expect(seen.opened).toEqual([]); expect(stores.SqliteStateStore).toHaveBeenCalledTimes(1);
     expect(f.lines).toEqual([]); expect(existsSync(f.paths.controllerLockPath)).toBe(false);
   }, 20_000);
+
+  it("upgrade-required offline command preserves the diagnostic, never enables writes, and releases both locks", async () => {
+    const f = fixture();
+    rmSync(f.paths.dataDirectory, { recursive: true });
+    createFencedAt49(f.paths.databasePath);
+    const before = readFileSync(f.paths.databasePath), witness = readFileSync(`${f.paths.databasePath}.security/witness.json`);
+    const enableWrites = vi.spyOn(OwnedSqliteDatabase.prototype, "enableWrites"), seen = observe();
+    let refusal: unknown;
+    try { await f.run(); } catch (error) { refusal = error; }
+    expect(refusal).toMatchObject({ code: "upgrade_required", nextStep: "upgrade inspect" });
+    expect(enableWrites).not.toHaveBeenCalled(); expect(seen.opened).toEqual([]); expect(f.lines).toEqual([]);
+    expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+    expect(existsSync(`${f.paths.databasePath}.owner.lock`)).toBe(false);
+    const repository = fileURLToPath(new URL("../../", import.meta.url));
+    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, ["--import", "tsx", join(repository, "src/cli/index.ts"), "session", "describe",
+        "--data-dir", f.paths.dataDirectory, "--state-dir", f.paths.stateDirectory], {
+        cwd: repository, env: { PATH: process.env.PATH, HOME: f.root, NODE_ENV: "test" }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "", stderr = "";
+      const timer = setTimeout(() => { child.kill("SIGKILL"); }, 20_000);
+      child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
+      child.once("error", reject); child.once("close", code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+    });
+    expect(result.code).toBe(1); expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr)).toEqual(upgradeErrorBody(refusal));
+    expect(readFileSync(f.paths.databasePath)).toEqual(before);
+    expect(readFileSync(`${f.paths.databasePath}.security/witness.json`)).toEqual(witness);
+    expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+    expect(existsSync(`${f.paths.databasePath}.owner.lock`)).toBe(false);
+  }, 40_000);
 
   it("legacy is refused by the boundary without output", async () => {
     const f = fixture("legacy");

@@ -34,7 +34,8 @@ if (baseline === "historical-installed") {
   assert.equal(digest(await readFile(oldCli)), input.oldCliSha256, "Explicit old executable fingerprint must match.");
 }
 const root = await mkdtemp(join(tmpdir(), "wtc-rbac-installed-"));
-const children = new Set(), steps = [], clients = [];
+const children = new Set(), steps = [], clients = [], operationsMatrix = [];
+const matrixCell = (surface, mode, actor, listener, refusal, step) => operationsMatrix.push({ surface, mode, actor, listener, refusal, step });
 let controller, failureStep, cleanupConfirmed = false;
 let native, operationsSdk, storedOwner;
 const secretValues = new Set();
@@ -196,13 +197,17 @@ async function closedSessionOutput(path, closedStderr) {
 }
 
 async function operationSocket(mode) {
-  const reply = await new Promise((accept, reject) => {
-    const call = httpRequest({ socketPath: join(directoryArgs[3], "admin.sock"), path: "/api/operations/session.describe", method: "POST", headers: { "Content-Type": "application/json" } }, response => {
-      const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
-      response.on("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
-    });
-    call.setTimeout(10_000, () => call.destroy(new Error("Operations socket deadline"))); call.on("error", reject); call.end("{}");
+  return step(`operations-unix-${mode}`, async () => {
+    const callSocket = headers => new Promise((accept, reject) => {
+      const call = httpRequest({ socketPath: join(directoryArgs[3], "admin.sock"), path: "/api/operations/session.describe", method: "POST", headers: { "Content-Type": "application/json", ...headers } }, response => {
+        const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
+        response.on("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
+      });
+      call.setTimeout(10_000, () => call.destroy(new Error("Operations socket deadline"))); call.on("error", reject); call.end("{}");
   });
+  const denied = await callSocket({ Authorization: `Bearer ${storedOwner}` });
+  assert.equal(denied.status, 401); assert.equal(denied.body.error.reason, "credential_on_local_listener");
+  const reply = await callSocket({});
   assert.equal(reply.status, 200); assert.equal(reply.body.actor.kind, "operator"); assert.equal(reply.body.listener, "unix"); assert.equal(reply.body.mode, mode);
   const success = await command(currentCli, ["session", "describe"]);
   assert.equal(success.code, 0); assert.equal(success.stdout, `${JSON.stringify(reply.body, null, 2)}\n`);
@@ -214,59 +219,89 @@ async function operationSocket(mode) {
     const refused = await refusal(currentCli, ["session", "describe"]);
     assert.deepEqual(refused, { error: { category: "unavailable", status: 503, reason: "admin_socket_missing", retry: "none", effect: null } });
   } finally { await rename(hidden, socket); }
+  matrixCell("unix", mode, "operator", "unix", "credential_on_local_listener", `operations-unix-${mode}`);
+  matrixCell("cli-socket", mode, "operator", "unix", "admin_socket_missing (CLI has no credential input)", `operations-unix-${mode}`);
+  });
 }
 async function operationOffline(mode) {
-  const dto = await json(currentCli, ["session", "describe"]);
-  assert.equal(dto.actor.kind, "operator"); assert.equal(dto.actor.accountId, null);
-  assert.equal(dto.listener, "offline"); assert.equal(dto.mode, mode);
-  assert.equal(dto.freshLogin.state, "exempt");
-  assert(!JSON.stringify(dto).match(/sessionId|credentialId|verifierHash/));
-  for (const closedStderr of [false, true]) await step(`session-describe-offline-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
-    () => closedSessionOutput("offline", closedStderr));
+  return step(`operations-offline-${mode}`, async () => {
+    const dto = await json(currentCli, ["session", "describe"]);
+    assert.equal(dto.actor.kind, "operator"); assert.equal(dto.actor.accountId, null);
+    assert.equal(dto.listener, "offline"); assert.equal(dto.mode, mode);
+    assert.equal(dto.freshLogin.state, "exempt");
+    assert(!JSON.stringify(dto).match(/sessionId|credentialId|verifierHash/));
+    for (const closedStderr of [false, true]) await step(`session-describe-offline-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
+      () => closedSessionOutput("offline", closedStderr));
+    matrixCell("cli-offline", mode, "operator", "offline", "not applicable: no credential input; upgrade-required-offline-session-describe proves ordinary refusal", `operations-offline-${mode}`);
+  });
 }
 async function operationWorker(mode, secret) {
-  const call = secret => new Promise((accept, reject) => {
-    const request = httpsRequest({ hostname: "127.0.0.1", port: workerPort, ca: workerCa, path: "/api/operations/session.describe", method: "POST",
-      headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) } }, response => {
-      const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
-      response.on("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
-    });
-    request.setTimeout(10000, () => request.destroy(new Error("Worker operations deadline"))); request.on("error", reject); request.end("{}");
+  return step(`operations-worker-${mode}`, async () => {
+    const call = secret => new Promise((accept, reject) => {
+      const request = httpsRequest({ hostname: "127.0.0.1", port: workerPort, ca: workerCa, path: "/api/operations/session.describe", method: "POST",
+        headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) } }, response => {
+        const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
+        response.on("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
+      });
+      request.setTimeout(10000, () => request.destroy(new Error("Worker operations deadline"))); request.on("error", reject); request.end("{}");
   });
   const reply = await call(secret); assert.equal(reply.status, 200); assert.equal(reply.body.mode, mode); assert.equal(reply.body.listener, "worker");
   assert.equal(reply.body.actor.kind, mode === "better-auth" ? "agent" : "installation");
-  if (storedWorker) {
-    const refused = await call(storedWorker); assert.equal(refused.status, 401);
+  {
+    const refused = await call(storedWorker ?? storedOwner); assert.equal(refused.status, 401);
     assert.deepEqual(refused.body, { error: { category: "unauthenticated", status: 401, reason: mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", retry: "reauthenticate", effect: null } });
   }
+  matrixCell("worker-tls", mode, mode === "better-auth" ? "agent" : "installation", "worker", mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", `operations-worker-${mode}`);
+  });
 }
 async function operationMcp(mode, secret) {
-  const { Client, StreamableHTTPClientTransport } = operationsSdk;
-  const client = new Client({ name: "installed-operations", version: "1" }); clients.push(client);
-  try {
-    await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL + "/operations"), { requestInit: { headers: secret ? { Authorization: `Bearer ${secret}` } : {} } }));
-    assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ["session_describe"]);
-    const result = await client.callTool({ name: "session_describe", arguments: {} });
-    assert(!result.isError); const dto = result.structuredContent;
-    assert.equal(dto.mode, mode); assert.equal(dto.listener, "mcp"); assert.equal(dto.actor.kind, mode === "better-auth" ? "agent" : "installation");
-  } finally { await client.close(); }
-  for (const name of ["X-Worktree-Control-Token", "X-Worktree-Switcher-Token"]) {
-    const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", [name]: secret ?? storedWorker },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
-    assert.equal(refused.status, 401); assert.equal((await refused.json()).error.reason, "legacy_credential");
-  }
-  // A stored owner credential exists even before the worker fixture is provisioned.
-  const stored = storedWorker ?? storedOwner;
-  const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", Authorization: `Bearer ${stored}` },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "refusal", version: "1" } } }) });
-  assert.equal(refused.status, 401);
-  assert.deepEqual(await refused.json(), { error: { category: "unauthenticated", status: 401, reason: mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", retry: "reauthenticate", effect: null } });
+  return step(`operations-mcp-${mode}`, async () => {
+    // Same stateless JSON-RPC requests as the authentication guide; also keep the real SDK client below.
+    for (const message of [
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "authority-example", version: "1" } } },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "session_describe", arguments: {} } },
+    ]) {
+      const response = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: JSON.stringify(message) });
+      assert.equal(response.status, 200); const reply = await response.json(); assert.equal(reply.id, message.id); assert.equal(reply.error, undefined);
+      if (message.method === "initialize") assert.equal(reply.result.protocolVersion, "2025-03-26");
+      if (message.method === "tools/list") assert.deepEqual(reply.result.tools.map(tool => tool.name), ["session_describe"]);
+      if (message.method === "tools/call") { assert.equal(reply.result.structuredContent.listener, "mcp"); assert.equal(reply.result.structuredContent.mode, mode); assert.equal(reply.result.structuredContent.actor.kind, mode === "better-auth" ? "agent" : "installation"); }
+    }
+    const { Client, StreamableHTTPClientTransport } = operationsSdk;
+    const client = new Client({ name: "installed-operations", version: "1" }); clients.push(client);
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL + "/operations"), { requestInit: { headers: secret ? { Authorization: `Bearer ${secret}` } : {} } }));
+      assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ["session_describe"]);
+      const result = await client.callTool({ name: "session_describe", arguments: {} });
+      assert(!result.isError); const dto = result.structuredContent;
+      assert.equal(dto.mode, mode); assert.equal(dto.listener, "mcp"); assert.equal(dto.actor.kind, mode === "better-auth" ? "agent" : "installation");
+    } finally { await client.close(); }
+    for (const name of ["X-Worktree-Control-Token", "X-Worktree-Switcher-Token"]) {
+      const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", [name]: secret ?? storedWorker },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
+      assert.equal(refused.status, 401); assert.equal((await refused.json()).error.reason, "legacy_credential");
+    }
+    // A stored owner credential exists even before the worker fixture is provisioned.
+    const stored = storedWorker ?? storedOwner;
+    const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", Authorization: `Bearer ${stored}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "refusal", version: "1" } } }) });
+    assert.equal(refused.status, 401);
+    assert.deepEqual(await refused.json(), { error: { category: "unauthenticated", status: 401, reason: mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", retry: "reauthenticate", effect: null } });
+    matrixCell("mcp", mode, mode === "better-auth" ? "agent" : "installation", "mcp", mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here", `operations-mcp-${mode}`);
+  });
 }
 async function operationApi(mode, secret) {
   await operationWorker(mode, secret);
   await operationMcp(mode, secret);
-  const reply = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: "{}" });
-  assert.equal(reply.status, 200); const body = await reply.json(); assert.equal(body.mode, mode); assert.equal(body.listener, "api"); assert.equal(body.actor.kind, mode === "better-auth" ? "agent" : "installation");
+  await step(`operations-api-${mode}`, async () => {
+    const denied = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${storedOwner}` }, body: "{}" });
+    assert.equal(denied.status, 401); const reason = mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here";
+    assert.equal((await denied.json()).error.reason, reason);
+    const reply = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: "{}" });
+    assert.equal(reply.status, 200); const body = await reply.json(); assert.equal(body.mode, mode); assert.equal(body.listener, "api"); assert.equal(body.actor.kind, mode === "better-auth" ? "agent" : "installation");
+    matrixCell("api-bearer", mode, mode === "better-auth" ? "agent" : "installation", "api", reason, `operations-api-${mode}`);
+  });
 }
 const cookieJar = () => {
   const cookies = new Map();
@@ -452,6 +487,12 @@ try {
       assert(Array.isArray(value.acts) && value.acts.length > 0, "The review lists the operator's lines.");
       return value;
     });
+    await step("upgrade-required-offline-session-describe", async () => {
+      const result = await refusal(currentCli, ["session", "describe"]);
+      assert.equal(result.code, "upgrade_required"); assert.equal(result.nextStep, "upgrade inspect");
+      assert.equal(existsSync(join(state, "controller.lock")), false);
+      assert.equal(existsSync(join(data, "state.sqlite3.owner.lock")), false);
+    });
     await step("upgrade-apply-with-pre-upgrade-backup", async () => {
       const result = await json(currentCli, ["upgrade", "apply", "--expect", inspection.planHash, "--backup-dir", maintenanceBackups]);
       assert.equal(result.state, "current"); assert.equal(result.alreadyApplied, false); assert.equal(result.planHash, inspection.planHash);
@@ -491,6 +532,7 @@ try {
     storedOwner = oldOwner.token;
     await operationApi("token", installation.token); await operationSocket("token");
     assert.equal((await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" })).body.error.reason, "credential_not_accepted_here");
+    matrixCell("api-cookie", "token", null, "api", "credential_not_accepted_here", "community-token-mode-without-provider");
     const authorized = await fetch(endpoint + "/api/dashboard", { headers: { Authorization: `Bearer ${installation.token}` } }); await authorized.arrayBuffer();
     assert.equal(authorized.status, 200, "Installation token must keep working without a provider.");
     const anonymous = await fetch(endpoint + "/api/dashboard"); await anonymous.arrayBuffer(); assert.equal(anonymous.status, 401);
@@ -550,6 +592,7 @@ try {
     await json(currentCli, ["auth", "mode", "set", "open"]); await operationOffline("open"); await start();
     await operationApi("open"); await operationSocket("open");
     assert.equal((await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" })).body.error.reason, "credential_in_open_mode");
+    matrixCell("api-cookie", "open", null, "api", "credential_in_open_mode", "community-open-mode-without-provider");
     const anonymous = await fetch(endpoint + "/api/dashboard"); await anonymous.arrayBuffer(); assert.equal(anonymous.status, 200);
     await stop(); await json(currentCli, ["auth", "mode", "set", "token"]);
   });
@@ -587,6 +630,9 @@ try {
     const description = await browser.call("/api/operations/session.describe", {});
     assert.equal(description.status, 200); assert.deepEqual(description.body.actor, { kind: "human", accountId: oldOwner.principalId });
     assert.equal(description.body.mode, "better-auth"); assert.equal(description.body.listener, "api");
+    const invalidCookie = await browser.call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" });
+    assert.equal(invalidCookie.status, 401); assert.equal(invalidCookie.body.error.reason, "invalid_credential");
+    matrixCell("api-cookie", "better-auth", "human", "api", "invalid_credential", "public-packaged-login-and-transport-denial-matrix");
     assert.equal((await browser.call("/api/operations/session.describe", {}, { Authorization: `Bearer ${installation.token}` })).body.error.reason, "mixed_credentials");
     await operationApi("better-auth", currentAgentCredential.token); await operationSocket("better-auth");
     const session = await browser.call("/api/auth/get-session"); assert.equal(session.body.principal.id, oldOwner.principalId);
@@ -769,6 +815,7 @@ try {
   const snapshot = { baseline, oldSchema: before.schema, currentSchema: CURRENT_SCHEMA, communityWithoutProvider: ["token", "open"], ownerContinuity: true, authority,
     oldCredentialsNotWidened: true, restorationQuarantinesAuthority: true, publicBackupRestore: oldBackup ? ["existing-installation", "empty-installation"] : [],
     durationMs: steps.reduce((sum, entry) => sum + (entry.ms ?? 0), 0) };
+  assert.equal(new Set(operationsMatrix.map(cell => `${cell.surface}/${cell.mode}`)).size, 21);
   report = { result: "passed", steps, source: (await bounded("git", ["rev-parse", "HEAD"], { cwd: repository })).stdout.trim(),
     community: { path: tarball, sha256: communitySha256 }, provider: artifact,
     baseline: { kind: baseline, artifact: baselineArtifact, cliSha256: oldCliSha256 }, evidence: snapshot };
@@ -792,6 +839,7 @@ try {
   if (!graceful || forced || !cleanupConfirmed) { report.result = "failed"; report.cleanupFailure = true; process.exitCode = 1; }
   // Keep private fixture state if ownership could not be confirmed as ended.
   if (cleanupConfirmed) await rm(root, { recursive: true, force: true });
+  report.operationsMatrix = operationsMatrix;
   report.cleanupConfirmed = cleanupConfirmed;
   await mkdir(dirname(reportPath), { recursive: true });
   await writeFile(reportPath, JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });

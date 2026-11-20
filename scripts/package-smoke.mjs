@@ -391,7 +391,8 @@ async function main() {
   });
   await step("operations-installed-token-and-local", async () => {
     const response = await fetch(`http://127.0.0.1:${dashboardPort}/api/operations/session.describe`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: "{}" });
-    check(response.status === 200 && (await response.json()).actor.kind === "installation", "Installed operations token path failed.");
+    const apiDto = await response.json();
+    check(response.status === 200 && apiDto.actor.kind === "installation" && apiDto.mode === "token" && apiDto.listener === "api", "Installed operations token path failed.");
     const body = await new Promise((accept, reject) => {
       const call = httpRequest({ socketPath: join(state, "admin.sock"), path: "/api/operations/session.describe", method: "POST", headers: { "Content-Type": "application/json" } }, response => {
         const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);

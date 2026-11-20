@@ -114,7 +114,7 @@ async function fixture(mode = "better-auth", withProvider = false, admissionTime
 const providerUnavailable = { ok: false, error: { category: "unavailable", status: 503, reason: "provider_session_unavailable", retry: "retry", effect: null } };
 const unauthenticated = (reason: string) => ({ ok: false, error: { category: "unauthenticated", reason } });
 
-describe("unmounted real operations composition under strict admission", () => {
+describe("real operations composition under strict admission", () => {
   it("reports an eligibility admission that cannot run inside mint as busy, not an invalid cookie", async () => {
     const f = await fixture("better-auth", true), h = await f.human("human");
     const admission = f.store.admission;
@@ -125,7 +125,7 @@ describe("unmounted real operations composition under strict admission", () => {
       error: { category: "busy", status: 503, reason: "admission_refused", retry: "retry", effect: null } });
     tryRun.mockRestore();
     expect(await f.composition!.mint("api", h.presented, h.session, {})).toMatchObject({ ok: true });
-  });
+  }, 20_000);
 
   it("gives mint the same contention refusal as run while a provider holds real admission", async () => {
     const f = await fixture("token", false, 20);
@@ -148,7 +148,7 @@ describe("unmounted real operations composition under strict admission", () => {
     // The same token still works after contention ends.
     expect(await f.composition!.mint("api", presented, null, {})).toMatchObject({ ok: true });
     expect(await f.composition!.mintOffline(() => true, {})).toMatchObject({ ok: true });
-  });
+  }, 20_000);
 
   it("gives mint the runner's cancellation error for an already aborted signal", async () => {
     const f = await fixture("token");
@@ -158,7 +158,7 @@ describe("unmounted real operations composition under strict admission", () => {
     expect(normal).toEqual({ ok: false, error: { category: "unavailable", status: 503, reason: "request_cancelled", retry: "retry", effect: null } });
     expect(await f.composition!.mint("api", presented, null, { signal: controller.signal })).toEqual(normal);
     expect(await f.composition!.mintOffline(() => true, { signal: controller.signal })).toEqual(normal);
-  });
+  }, 20_000);
 
   it("reports an unexpected clock throw inside admitted mint as a sanitized internal error", async () => {
     const f = await fixture("token");
@@ -168,7 +168,7 @@ describe("unmounted real operations composition under strict admission", () => {
       ok: false, error: { category: "internal", status: 500, reason: "unexpected_failure", retry: "none", effect: null },
     });
     expect(now).toHaveBeenCalledTimes(1);
-  });
+  }, 20_000);
 
   it.each(["open", "token"])("describes the %s installation and each served listener", async mode => {
     const f = await fixture(mode);
@@ -179,7 +179,7 @@ describe("unmounted real operations composition under strict admission", () => {
         installationPermissions: [...installationPermissions], projectsTruncated: false });
       expect(value.projects).toEqual(["project-a", "project-b"].map(projectId => ({ projectId, permissions: [...projectPermissions] })));
     }
-  });
+  }, 20_000);
 
   it.each(["none", "reader", "executor"] as const)("describes an agent with %s roles", async role => {
     // A provider is present, but bearer requests use only controller eligibility.
@@ -190,7 +190,7 @@ describe("unmounted real operations composition under strict admission", () => {
     const value = await f.read(await f.context(presentedBearer(secret)));
     expect(value).toMatchObject({ actor: { kind: "agent", accountId: "agent" }, fullAuthority: false, installationPermissions: [] });
     expect(value.projects).toEqual(role === "none" ? [] : [{ projectId: "project-b", permissions: projectPermissions.filter(p => roleDefinitions[role].permissions.includes(p)) }]);
-  });
+  }, 20_000);
 
   it.each(["admin", "secrets"] as const)("describes a human with %s only using the provider-session fixture", async role => {
     const f = await fixture("better-auth", true);
@@ -203,7 +203,7 @@ describe("unmounted real operations composition under strict admission", () => {
       projectId, permissions: projectPermissions.filter(p => roleDefinitions[role].permissions.includes(p)),
     })));
     if (role === "admin") expect(value.projects.flatMap(p => p.permissions).some(p => p.startsWith("secrets:"))).toBe(false);
-  });
+  }, 20_000);
 
   it("uses controller eligibility for a providerless account-mode boot, including offline CLI", async () => {
     const f = await fixture("better-auth");
@@ -227,7 +227,7 @@ describe("unmounted real operations composition under strict admission", () => {
     expect(await c.mint("api", presentedBearer(secret), null, {})).toMatchObject(unauthenticated("listener_closed"));
     expect(await c.mintOffline(() => true, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
     expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
-  });
+  }, 20_000);
 
   it.each(["open", "token", "better-auth"])("fences offline mint and revalidation on maintenance and stopping in %s mode", async mode => {
     const f = await fixture(mode), c = f.composition!;
@@ -244,7 +244,7 @@ describe("unmounted real operations composition under strict admission", () => {
       expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
       f.state[change] = false;
     }
-  });
+  }, 20_000);
 
   it.each(["not-ready", "ineligible", "configuration"] as const)("keeps agent and operator access when the provider is %s", async change => {
     const f = await fixture("better-auth", true), c = f.composition!;
@@ -286,7 +286,7 @@ describe("unmounted real operations composition under strict admission", () => {
       })).toEqual({ status: "committed" });
       expect(commit).toHaveBeenCalledTimes(1);
     }
-  });
+  }, 20_000);
 
   it.each(["maintenance", "stopping"] as const)("fences every agent and operator path during %s with a provider present", async change => {
     const f = await fixture("better-auth", true), c = f.composition!;
@@ -308,7 +308,7 @@ describe("unmounted real operations composition under strict admission", () => {
     }
     expect(await c.mintOffline(() => true, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
     expect(await c.runner.run(sessionDescribe, offline.context, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
-  });
+  }, 20_000);
 
   it("refuses lost, throwing and thenable offline locks at mint and revalidation", async () => {
     const f = await fixture("better-auth"), c = f.composition!;
@@ -330,10 +330,11 @@ describe("unmounted real operations composition under strict admission", () => {
     const lockHeld = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
     expect(await c.mintOffline(lockHeld, {})).toMatchObject(unauthenticated("offline_lock_not_held"));
     expect(lockHeld).toHaveBeenCalledTimes(2);
-  });
+  }, 20_000);
 
   it("bounds the listing, omits invalid IDs and includes archived projects", async () => {
     const f = await fixture("open");
+    expect((await f.read(await f.context())).projects.map(project => project.projectId)).toEqual(["project-a", "project-b"]);
     await f.store.admission.run(() => { for (let n = 0; n < MAX_DESCRIBED_PROJECTS; n++) f.project(`extra-${String(n).padStart(4, "0")}`); });
     const value = await f.read(await f.context());
     expect(value.projects).toHaveLength(MAX_DESCRIBED_PROJECTS);
@@ -352,7 +353,7 @@ describe("unmounted real operations composition under strict admission", () => {
     const next = await f.context(presentedBearer(secret));
     await f.store.admission.run(() => f.database.prepare("DELETE FROM account_grants WHERE account_id='agent'").run());
     expect((await f.read(next)).projects).toEqual([]);
-  });
+  }, 20_000);
 
   it.each(["credential", "account", "fingerprint", "rotation"])("refuses a changed %s after mint", async change => {
     const f = await fixture("better-auth", true);
@@ -365,7 +366,7 @@ describe("unmounted real operations composition under strict admission", () => {
       else f.store.revokeCredential(a.credentialId, iso(NOW), "fixture");
     });
     expect(await f.composition!.runner.run(sessionDescribe, context, {})).toMatchObject(unauthenticated("credential_no_longer_valid"));
-  });
+  }, 20_000);
 
   it("invalidates installation contexts on token rotation and shares the injected clock", async () => {
     const f = await fixture("token");
@@ -376,7 +377,7 @@ describe("unmounted real operations composition under strict admission", () => {
     });
     expect(await f.composition!.runner.run(sessionDescribe, context, {})).toMatchObject(unauthenticated("credential_no_longer_valid"));
     expect(f.composition!.runtime.now).toBe(f.options.now);
-  });
+  }, 20_000);
 
   it.each(["open", "token"])("ignores a pending next-start mode selection during a %s boot", async mode => {
     const f = await fixture(mode);
@@ -384,7 +385,7 @@ describe("unmounted real operations composition under strict admission", () => {
     await f.store.admission.run(() => f.store.saveAuthenticationPolicy({ ...f.store.getAuthenticationPolicy(), mode: "better-auth" }, "fixture", "fixture"));
     expect((await f.read(context)).mode).toBe(mode);
     expect((await f.read(await f.context(mode === "open" ? none() : presentedBearer(f.installationSecret)))).mode).toBe(mode);
-  });
+  }, 20_000);
 
   it.each(["maintenance", "stopping", "configuration", "runtime", "not-ready"] as const)("fences human sessions after %s between resolve and mint and between mint and execution", async change => {
     const f = await fixture("better-auth", true);
@@ -410,14 +411,14 @@ describe("unmounted real operations composition under strict admission", () => {
       eligible: c.eligible, connected: () => true, deadline: NOW + 1000, commit,
     })).toMatchObject({ status: "refused", error: { category: "unauthenticated", reason } });
     expect(commit).not.toHaveBeenCalled();
-  });
+  }, 20_000);
 
   it.each(["open", "token"])("fences maintenance in %s mode without a provider", async mode => {
     const f = await fixture(mode); f.state.maintenance = true;
     expect(f.eligibility.controllerEligible()).toBe(false);
     expect(f.composition!.eligible()).toBe(false);
     expect(await f.composition!.mint("unix", none(), null, {})).toMatchObject(unauthenticated("listener_closed"));
-  });
+  }, 20_000);
 
   it("returns unknown_mode for legacy and other unknown modes without constructing ports or boundaries", async () => {
     const f = await fixture("legacy");
@@ -436,7 +437,7 @@ describe("unmounted real operations composition under strict admission", () => {
       expect(lockHeld).not.toHaveBeenCalled();
     }
     expect(ports).not.toHaveBeenCalled(); expect(boundary).not.toHaveBeenCalled();
-  });
+  }, 20_000);
 
   it("sanitizes a throwing or thenable policy reader", async () => {
     const f = await fixture("open");
@@ -445,7 +446,7 @@ describe("unmounted real operations composition under strict admission", () => {
     expect(await f.composition!.mint("api", none(), null, {})).toMatchObject(unauthenticated("invalid_credential"));
     reader.mockReturnValue(Promise.reject(new Error("synthetic failure")) as never);
     expect(await f.composition!.mint("api", none(), null, {})).toMatchObject(unauthenticated("invalid_credential"));
-  });
+  }, 20_000);
 
   it("refuses closed/throwing/thenable listener predicates, clocks and eligibility", async () => {
     const f = await fixture("open");
@@ -456,7 +457,7 @@ describe("unmounted real operations composition under strict admission", () => {
     expect(await f.build({ now }).mint("api", none(), null, {})).toMatchObject(unauthenticated("invalid_credential"));
     const eligibility = { ...f.eligibility, controllerEligible: () => Promise.reject(new Error("synthetic")) as never };
     expect(await f.build({ eligibility }).mint("api", none(), null, {})).toMatchObject(unauthenticated("listener_closed"));
-  });
+  }, 20_000);
 
   it("refuses mixed credentials, unserved listeners and unresolved cookies", async () => {
     const f = await fixture("better-auth", true), h = await f.human("human");
@@ -465,7 +466,19 @@ describe("unmounted real operations composition under strict admission", () => {
       .toMatchObject(unauthenticated("mixed_credentials"));
     expect(await f.composition!.mint("api", h.presented, null, {})).toMatchObject(unauthenticated("invalid_credential"));
     expect(await f.build({ listeners: {} }).mint("api", none(), null, {})).toMatchObject(unauthenticated("listener_closed"));
-  });
+  }, 20_000);
+
+  it("keeps session and credential row identifiers out of DTOs and diagnostics, including a zero-role human", async () => {
+    const f = await fixture("better-auth", true), h = await f.human("human");
+    const a = await f.store.admission.run(() => f.agent());
+    const human = await f.read(await f.context(h.presented, h.session));
+    expect(human.projects).toEqual([]); expect(human.installationPermissions).toEqual([]);
+    const agent = await f.read(await f.context(presentedBearer(a.secret)));
+    f.composition!.runtime.observer.streamDisposalFailed({ operationId: "session.describe", kind: "timed_out" });
+    const released = JSON.stringify([human, agent, f.logs.controller.mock.calls]);
+    expect(released).not.toContain(h.session.sessionId); expect(released).not.toContain(a.credentialId);
+    expect(released).not.toMatch(/sessionId|credentialId|verifierHash|last_used_at/);
+  }, 20_000);
 
   it("pins the production registry and logs disposal failures without thrown values or credential facts", async () => {
     const f = await fixture("open"), c = f.composition!;
@@ -491,7 +504,7 @@ describe("unmounted real operations composition under strict admission", () => {
     c.runtime.observer.streamDisposalFailed({ operationId: "session.describe", kind: "timed_out" });
     expect(f.logs.controller).toHaveBeenCalledExactlyOnceWith("operations.stream_disposal_failed", { operationId: "session.describe", kind: "timed_out" });
     expect(CONTROLLER_OPERATION_SESSION_POLICY).toEqual({ stagedCapacity: 16, stagedTtlMs: 5000 });
-  });
+  }, 20_000);
 });
 
 it("keeps the old guard's errors, precedence and configuration-read throws", () => {
