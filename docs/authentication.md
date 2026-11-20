@@ -270,7 +270,12 @@ An account with no role on any project gets an empty list. A hidden project and 
 missing project both refuse `resource_not_found` (404). A project visible only
 through `secrets` or `executor` refuses `permission_denied` (403). The installed
 RBAC script verifies this in `project-reads-${mode}` with the account-mode agent,
-which holds no role after the upgrade's authority reset.
+which holds no role after the upgrade's authority reset. In the same lane the
+upgraded owner, signed in with a provider cookie, holds the installation `admin`
+role and reads every project, while the agent's read of the same project is
+refused. No release command grants a project role yet, so the installed build
+cannot show a reader scoped to one project; the source tests show it with real
+Git worktrees and a hidden neighbouring project.
 
 Over MCP, `tools/list` returns `project_list`, `project_status`,
 `project_worktrees` and `session_describe`. Call a project tool with the same

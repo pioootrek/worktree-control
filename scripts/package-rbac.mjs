@@ -417,6 +417,28 @@ async function operationProjectReads(mode, secret) {
     assert.equal(worker.status, 404); assert.deepEqual(worker.body, operationRefusal("operation_not_found", "not_found", 404, "none"));
   });
 }
+/**
+ * D2a with a provider cookie: the human's project reads follow their stored roles. After an upgrade the owner holds
+ * the installation `admin` role and reads every project; the zero-role agent of the same request matrix sees none of them.
+ */
+async function projectReadsAsHuman(browser, accountId, agentToken) {
+  const ids = observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id").all().map(row => row.id));
+  const admin = observe(db => db.prepare("SELECT count(*) n FROM account_grants WHERE account_id=? AND role='admin' AND scope_kind='installation'").get(accountId).n) === 1;
+  const projectId = ids[0];
+  const listed = await browser.call("/api/operations/project.list", {});
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.body.items.filter(item => item.projectId !== null).map(item => item.projectId), admin ? ids : []);
+  for (const id of ["project.status", "project.worktrees"]) {
+    const reply = await browser.call(`/api/operations/${id}`, { projectId }), missing = await browser.call(`/api/operations/${id}`, { projectId: "missing-project" });
+    assert.equal(missing.status, 404); assert.deepEqual(missing.body, operationRefusal("resource_not_found", "not_found", 404, "none"));
+    if (!admin) { assert.deepEqual(reply, missing); continue; }
+    assert.equal(reply.status, 200, `${id} as the installation admin`); assert.equal(reply.body.projectId, projectId);
+    if (id === "project.status") { assert.equal(typeof reply.body.revision, "number"); assert.equal(typeof reply.body.writable, "boolean"); }
+    else for (const entry of reply.body.registrations) assert(["complete", "partial", "unavailable"].includes(entry.discovery));
+  }
+  const viaAgent = await fetch(endpoint + "/api/operations/project.status", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` }, body: JSON.stringify({ projectId }) });
+  assert.equal(viaAgent.status, 404, "The zero-role agent cannot see the project the admin reads.");
+}
 const cookieJar = () => {
   const cookies = new Map();
   return { cookies, async call(path, body, headers = {}, method = body === undefined ? "GET" : "POST") {
@@ -753,6 +775,7 @@ try {
     matrixCell("api-cookie", "better-auth", "human", "api", "invalid_credential", "public-packaged-login-and-transport-denial-matrix");
     assert.equal((await browser.call("/api/operations/session.describe", {}, { Authorization: `Bearer ${installation.token}` })).body.error.reason, "mixed_credentials");
     await operationApi("better-auth", currentAgentCredential.token); await operationSocket("better-auth");
+    await projectReadsAsHuman(browser, oldOwner.principalId, currentAgentCredential.token);
     const session = await browser.call("/api/auth/get-session"); assert.equal(session.body.principal.id, oldOwner.principalId);
     assert.equal((await browser.call("/api/runtime/read", { operation: "list-projects" })).status, 200);
     for (const path of ["/api/dashboard", "/api/events", "/api/backups", "/api/identity/bootstrap", "/api/dev-vault", "/api/auth/sign-up/email", "/api/auth/revoke-sessions"]) assert.equal((await browser.call(path, {})).status, 401);

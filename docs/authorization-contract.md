@@ -1404,7 +1404,11 @@ controller runs managed servers, and the CLI command uses its own Git reader.
 All three declare `excludedListeners: ["worker"]`. `H` in the dispositions is
 the API on TCP and the unix socket, never the worker listener, so the worker path
 parser refuses them as `not_found`/`operation_not_found` and the runner refuses
-a worker context as `operation_not_registered`. No transport adds policy: each
+a worker context as `operation_not_registered`. In `legacy` or another unknown
+mode no registry is built, so the project paths answer
+`not_found`/`operation_not_found` on every listener and only
+`session.describe` answers `unauthenticated`/`unknown_mode`; the CLI commands
+refuse `unknown_mode`. No transport adds policy: each
 one dispatches a registry operation by kind and passes the raw input to its
 `parse`.
 

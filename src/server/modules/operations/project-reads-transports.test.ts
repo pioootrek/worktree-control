@@ -240,11 +240,13 @@ describe("project reads over every transport (D2a)", () => {
     expect(f.git.listTrees.mock.calls.map(([path]) => path)).toEqual(["/repo/alpha", "/repo/alpha"]);
   });
 
-  it("legacy: every listener refuses the project reads without running them", async () => {
+  it("legacy: no registry exists, so every listener refuses the project reads without running them", async () => {
     const f = await fixture("legacy");
-    for (const operation of Object.keys(inputs) as (keyof typeof inputs)[]) {
-      for (const listener of ["api", "unix"] as const) {
-        expect(await f.post(listener, operation, inputs[operation]), `${listener} ${operation}`).toEqual({ status: 401, body: refusal("unauthenticated", 401, "unknown_mode", "reauthenticate") });
+    for (const listener of ["api", "unix"] as const) {
+      // Only the reserved describe path is claimed, and it answers the mode refusal.
+      expect(await f.post(listener, "session.describe", {})).toEqual({ status: 401, body: refusal("unauthenticated", 401, "unknown_mode", "reauthenticate") });
+      for (const operation of Object.keys(inputs) as (keyof typeof inputs)[]) {
+        expect(await f.post(listener, operation, inputs[operation]), `${listener} ${operation}`).toEqual({ status: 404, body: refusal("not_found", 404, "operation_not_found") });
       }
     }
     expect(f.git.listTrees).not.toHaveBeenCalled(); expect(f.placement.statusSummary).not.toHaveBeenCalled();

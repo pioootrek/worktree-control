@@ -637,6 +637,14 @@ describe("projects CLI mount (D2a)", () => {
     }
   });
 
+  it("legacy refuses every projects command offline without output", async () => {
+    const f = fixture("legacy");
+    for (const args of [["list"], ["status", "project-a"], ["worktrees", "project-a"]]) {
+      await expect(runProjectsCommand(args, f.paths, f.write), args.join(" ")).rejects.toMatchObject({ error: operationError("unknown_mode", "unauthenticated", "reauthenticate", 401) });
+    }
+    expect(f.lines).toEqual([]); expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+  });
+
   it.each(["open", "token", "better-auth"])("%s: offline and through the private socket release the same operator DTOs", async mode => {
     const f = fixture(mode), seeded = new stores.SqliteStateStore(f.paths.databasePath);
     seeded.saveKnowledgeProject({ id: "project-a", name: "Alpha", status: "active", revision: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, "fixture");
