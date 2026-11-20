@@ -2229,7 +2229,7 @@ it("mounted responses and diagnostic sinks never disclose stored session or cred
     execFile(process.execPath, ["--import", "tsx", join(repository, "src/cli/index.ts"), "session", "describe", "--data-dir", paths.dataDirectory, "--state-dir", paths.stateDirectory],
       { cwd: repository, env: { PATH: process.env.PATH, HOME: f.root, NODE_ENV: "test" }, timeout: 15000 }, (error, stdout, stderr) => {
         if (error && typeof error.code !== "number") reject(error);
-        else resolve({ code: error?.code ?? 0, stdout, stderr });
+        else resolve({ code: typeof error?.code === "number" ? error.code : 0, stdout, stderr });
       });
   });
   const cliSuccess = await cli(); responses.push(cliSuccess);
