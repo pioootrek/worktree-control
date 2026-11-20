@@ -1671,9 +1671,12 @@ Ownership loss refuses `unauthenticated` / `offline_lock_not_held`. The shared
 auth CLI cleanup sequence drains and closes the store before releasing the
 lock, retaining ownership on unconfirmed cleanup. See the
 [offline ownership rule](authorization-contract.md#offline-ownership-d1a-8a).
-No CLI command, listener, schema step or usage writer is added. D1a-8b retains
-`session describe`, lock-first socket selection and the existing restore-handoff
-check before ordinary store construction.
+D1a-8b mounts `session describe`: lock acquisition selects the existing unix
+operation or one offline store, with no socket-failure fallback. The restore
+handoff check precedes store construction, and cleanup drains/closes before
+release. The [CLI contract and neighbour checklist](authorization-contract.md#mounted-cli-boundary-d1a-8b)
+record limits, deterministic errors, mode semantics and executable assertions.
+No listener, schema step, credential usage writer or legacy command change is added.
 
 D1a-7b mounts the D1a-7a request-scoped MCP adapter for `/mcp/operations`.
 Each POST authenticates through `mint("mcp", ...)` and owns a fresh stateless SDK

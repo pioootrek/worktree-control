@@ -14,6 +14,31 @@ installation, read [Upgrade from 0.1.1 to 0.2.0](package-trial.md#upgrade-from-0
 first. Implementation history and internal contracts are kept in the
 [authentication reference](https://github.com/pioootrek/worktree-control/blob/v0.2.0/docs/authentication-reference.md).
 
+## Describe local authority (integration branch)
+
+`worktree-control session describe` prints the local operator's authority as
+JSON. It requires no token. With a running controller it uses the private unix
+socket, reporting listener `unix`:
+
+```bash
+worktree-control session describe --data-dir /tmp/wtc-example/data --state-dir /tmp/wtc-example/state
+```
+
+After stopping that same example controller, the identical command acquires the
+singleton lock and reads offline, reporting listener `offline`:
+
+```bash
+worktree-control session describe --data-dir /tmp/wtc-example/data --state-dir /tmp/wtc-example/state
+```
+
+Use directories of an existing synthetic installation, or substitute your own
+installation directories. The lock selects the path; there is no path-selection
+flag. A taken lock with an unavailable socket fails with exit 1 and never opens
+the database offline. All three supported modes report operator authority;
+legacy installations refuse `unknown_mode`. Success exits 0. Operations
+failures print public category, reason and retry fields as JSON on stderr.
+See the [error mapping](authorization-contract.md#mounted-cli-boundary-d1a-8b).
+
 ## What this release provides
 
 Implemented in `0.2.0`:

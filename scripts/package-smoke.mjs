@@ -400,6 +400,8 @@ async function main() {
       call.setTimeout(10_000, () => call.destroy(new Error("Installed operation deadline"))); call.on("error", reject); call.end("{}");
     });
     check(body.actor.kind === "operator" && body.listener === "unix" && body.mode === "token", "Installed local operation actor failed.");
+    const described = JSON.parse((await run(cliCommand, ["session", "describe", ...common], { cwd: root, env: runtimeEnv })).stdout);
+    check(JSON.stringify(described) === JSON.stringify(body), "Installed CLI differs from the released unix DTO.");
   });
   await step("backup-monitor-live", async () => {
     const disabled = JSON.parse((await run(cliCommand, ["backup", "monitor", ...common], { cwd: root, env: runtimeEnv })).stdout);
@@ -509,6 +511,10 @@ async function main() {
   await client.close();
   client = undefined;
   await stopController();
+  await step("operations-installed-offline-token", async () => {
+    const dto = JSON.parse((await run(cliCommand, ["session", "describe", ...common], { cwd: root, env: runtimeEnv })).stdout);
+    check(dto.actor.kind === "operator" && dto.listener === "offline" && dto.mode === "token", "Installed offline CLI differs.");
+  });
   await step("backup-monitor-controller-absent", async () => {
     let stopped;
     // The normal run helper deliberately redacts and discards failure payloads.

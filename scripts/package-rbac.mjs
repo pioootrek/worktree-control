@@ -161,6 +161,20 @@ async function operationSocket(mode) {
     call.setTimeout(10_000, () => call.destroy(new Error("Operations socket deadline"))); call.on("error", reject); call.end("{}");
   });
   assert.equal(reply.status, 200); assert.equal(reply.body.actor.kind, "operator"); assert.equal(reply.body.listener, "unix"); assert.equal(reply.body.mode, mode);
+  assert.deepEqual(await json(currentCli, ["session", "describe"]), reply.body);
+  const socket = join(directoryArgs[3], "admin.sock"), hidden = socket + ".hidden";
+  await rename(socket, hidden);
+  try {
+    const refused = await refusal(currentCli, ["session", "describe"]);
+    assert.deepEqual(refused, { error: { category: "unavailable", status: 503, reason: "admin_socket_missing", retry: "none", effect: null } });
+  } finally { await rename(hidden, socket); }
+}
+async function operationOffline(mode) {
+  const dto = await json(currentCli, ["session", "describe"]);
+  assert.equal(dto.actor.kind, "operator"); assert.equal(dto.actor.accountId, null);
+  assert.equal(dto.listener, "offline"); assert.equal(dto.mode, mode);
+  assert.equal(dto.freshLogin.state, "exempt");
+  assert(!JSON.stringify(dto).match(/sessionId|credentialId|verifierHash/));
 }
 async function operationWorker(mode, secret) {
   const call = secret => new Promise((accept, reject) => {
@@ -425,7 +439,7 @@ try {
   await step("community-token-mode-without-provider", async () => {
     // The installation token and the mode are kept by the upgrade.
     assert.equal((await json(currentCli, ["auth", "status"])).mode, "token");
-    await start();
+    await operationOffline("token"); await start();
     storedOwner = oldOwner.token;
     await operationApi("token", installation.token); await operationSocket("token");
     assert.equal((await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" })).body.error.reason, "credential_not_accepted_here");
@@ -485,7 +499,7 @@ try {
     await start(); await operationWorker("token", installation.token); await stop();
   });
   await step("community-open-mode-without-provider", async () => {
-    await json(currentCli, ["auth", "mode", "set", "open"]); await start();
+    await json(currentCli, ["auth", "mode", "set", "open"]); await operationOffline("open"); await start();
     await operationApi("open"); await operationSocket("open");
     assert.equal((await cookieJar().call("/api/operations/session.describe", {}, { Cookie: "__Secure-wtc.session_token=invalid" })).body.error.reason, "credential_in_open_mode");
     const anonymous = await fetch(endpoint + "/api/dashboard"); await anonymous.arrayBuffer(); assert.equal(anonymous.status, 200);
@@ -514,7 +528,7 @@ try {
   await json(currentCli, ["auth", "provider", "runtime-access", "set", "--input-stdin"], {}, { principalId: oldOwner.principalId,
     scope: { kind: "runtime-project", id: project.id }, role: "operator", permissions: ["projects:read", "tests:run", "profiles:select", "config:write"], expectedRevision: 0 });
   await step("protected-rbac-selection-and-real-restart", async () => {
-    await json(currentCli, ["auth", "mode", "set", "better-auth"]); await start();
+    await json(currentCli, ["auth", "mode", "set", "better-auth"]); await operationOffline("better-auth"); await start();
     assert.equal((await json(currentCli, ["auth", "status"])).activeMode, "better-auth");
   });
   const browser = cookieJar();

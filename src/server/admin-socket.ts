@@ -137,13 +137,19 @@ export class AdminRequestError extends Error {
   }
 }
 
+/** Optional wire decoder for the operations mount; legacy /auth callers keep their envelope. */
+export interface AdminSocketReply {
+  path: "/api/operations/session.describe";
+  decode(status: number | undefined, value: unknown): unknown;
+}
+
 /** Sends one request to a running controller's admin socket. */
-export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_000, maxResponseBytes?: number): Promise<unknown> {
+export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_000, maxResponseBytes?: number, reply?: AdminSocketReply): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
     const request = httpRequest({
       socketPath: path,
-      path: "/auth",
+      path: reply?.path ?? "/auth",
       method: "POST",
       headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
       timeout: timeoutMs,
@@ -162,8 +168,9 @@ export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_0
       });
       response.on("end", () => {
         try {
-          const value = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { result?: unknown; code?: string; error?: string; committed?: unknown; cleanupConfirmed?: unknown };
-          if (response.statusCode === 200) resolve(value.result);
+          const value = JSON.parse(reply ? new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)) : Buffer.concat(chunks).toString("utf8")) as { result?: unknown; code?: string; error?: string; committed?: unknown; cleanupConfirmed?: unknown };
+          if (reply) resolve(reply.decode(response.statusCode, value));
+          else if (response.statusCode === 200) resolve(value.result);
           else reject(new AdminRequestError(value.code, value.error ?? `Admin request failed with HTTP ${response.statusCode}.`,
             value.committed === true ? true : undefined, value.cleanupConfirmed === false ? false : undefined));
         } catch (error) {

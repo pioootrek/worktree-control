@@ -3,7 +3,7 @@ import type { ControllerLock } from "../controller-lock";
 import { buildOperationsRuntime, type OperationsRuntimeOptions } from "./operations-runtime";
 import { OperationError, publicError } from "../modules/operations";
 
-/** Prepared for the offline CLI; no production caller mounts this composition yet. */
+/** Offline session describe binds mint and release to the real singleton owner lock. */
 export function buildOfflineOperationsRuntime(options: Omit<OperationsRuntimeOptions, "listeners" | "provider"> & {
   controllerLock: ControllerLock;
 }) {

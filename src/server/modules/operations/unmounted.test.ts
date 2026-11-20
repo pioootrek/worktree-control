@@ -54,9 +54,10 @@ const ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
 
 /** Exact production and mounted-provider proof consumers. No legacy handler imports the module. */
 const APPROVED_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
+  "src/cli/session-describe.ts": "mounts the one offline CLI read and validates private socket DTOs and public failures",
   "packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts": "runs cookie listener proofs through production bootstrap and reuses the mounted boundary driver and exact conformance assertions",
   "src/server/bootstrap/operations-runtime.ts": "composes the runtime from the store owner's read ports and controller policies",
-  "src/server/bootstrap/offline-operations-runtime.ts": "binds the real offline owner lock; remains unmounted until the CLI step",
+  "src/server/bootstrap/offline-operations-runtime.ts": "binds the real offline owner lock; offline CLI session describe uses the real owner lock",
   "src/server/transports/operations-mcp.ts": "mounted request adapter uses public release and error policy and receives the runtime as a value",
   "src/server/transports/operations-http.ts": "uses the public classifier and error serializer to avoid duplicating wire and failure policy; receives the runtime as a value",
 });
@@ -310,8 +311,13 @@ describe("authorization contract stays unmounted", () => {
     expect(guard.invalidImporters(approved)).toEqual([]);
   }, 30_000);
 
-  it("keeps the offline composition unmounted", () => {
-    expect(createGuard(repository, false, "src/server/bootstrap/offline-operations-runtime.ts").violations(ALLOWLIST)).toEqual([]);
+  it("allows exactly the session describe command to mount the offline composition", () => {
+    const target = "src/server/bootstrap/offline-operations-runtime.ts";
+    const approved = { "src/cli/session-describe.ts": "lock-first CLI read owns one store through drain and close" };
+    const guard = createGuard(repository, false, target);
+    expect(guard.violations(ALLOWLIST, approved)).toEqual([]);
+    expect(guard.invalidImporters(approved)).toEqual([]);
+    expect(guard.violations(ALLOWLIST)).toContain("src/cli/session-describe.ts: imports ../server/bootstrap/offline-operations-runtime");
   }, 30_000);
 
   it("text-scans allowlisted production files for computed composition imports", () => {
