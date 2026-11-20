@@ -186,7 +186,7 @@ With the lock taken, the existing `requestAdminSocket` client sends `{}` to
 `POST /api/operations/session.describe`. Its optional route/decoder parameter
 preserves all existing `/auth` callers. This invocation uses the existing
 15-second inactivity and total deadlines and a 262144-byte response ceiling.
-Strict operator/unix DTO validation rejects additional fields without echoing
+Strict UTF-8 and duplicate-key JSON parsing plus operator/unix DTO validation rejects additional fields without echoing
 them. The unix listener still owns authentication, admission and release.
 The client does not use a legacy authenticator or update credential usage.
 
@@ -222,6 +222,7 @@ families. Local connection failures below use category `unavailable`, status
 | Invalid JSON/UTF-8, wrong shape/status, extra fields | admin_invalid_response | 1 |
 | Valid operations error, including maintenance/release refusal | Exact public category, reason and retry retained | 1 |
 | Other acquisition refusal | offline_lock_unavailable | 1 |
+| Unexpected offline initialization/read failure | offline_unavailable; details suppressed | 1 |
 | Pending restore handoff | Existing `Start the controller to complete restore authentication recovery before offline administration.` | 1 |
 | Unreadable/malformed restore handoff | restore_handoff_unreadable; record contents suppressed | 1 |
 | Ordinary upgrade refusal | Existing upgrade JSON body | 1 |

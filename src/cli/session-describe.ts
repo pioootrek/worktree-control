@@ -2,6 +2,7 @@ import { z } from "zod";
 import { requestAdminSocket } from "../server/admin-socket";
 import { acquireControllerLock, ControllerAlreadyRunningError } from "../server/controller-lock";
 import type { AppPaths } from "../server/paths";
+import { SecurityFenceError, UpgradeError } from "../server/infrastructure/sqlite";
 import { SqliteStateStore } from "../server/sqlite-store";
 import { BackupHandoffPendingError, assertBackupHandoffCompleted } from "../server/modules/backups";
 import { buildOfflineOperationsRuntime } from "../server/bootstrap/offline-operations-runtime";
@@ -59,7 +60,7 @@ export async function runSessionDescribe(args: string[], paths: AppPaths, write:
       const code = (cause as NodeJS.ErrnoException).code;
       throw localFailure(code === "ENOENT" ? "admin_socket_missing" : code === "ECONNREFUSED" ? "admin_socket_refused"
         : code === "admin_timeout" ? "admin_timeout" : code === "admin_response_limit" ? "admin_response_limit"
-        : cause instanceof SyntaxError || cause instanceof TypeError ? "admin_invalid_response" : "admin_socket_failed");
+        : cause instanceof SyntaxError || cause instanceof TypeError || cause instanceof ProviderAdminError ? "admin_invalid_response" : "admin_socket_failed");
     }
     write(JSON.stringify(result, null, 2)); return;
   }
@@ -84,6 +85,10 @@ export async function runSessionDescribe(args: string[], paths: AppPaths, write:
       commit(value) { write(JSON.stringify(value, null, 2)); },
     });
     if (released.status !== "committed") throw new SessionDescribeError(released.error);
+  } catch (error) {
+    if (error instanceof SessionDescribeError || error instanceof BackupHandoffPendingError
+      || error instanceof SecurityFenceError || error instanceof UpgradeError) throw error;
+    throw localFailure("offline_unavailable");
   } finally {
     try { await closeOfflineStore(store, lock); }
     catch {

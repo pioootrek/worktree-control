@@ -18,10 +18,13 @@ import { assertBackupHandoffCompleted } from "../server/modules/backups";
 import { recordHash } from "../server/modules/backups/records";
 import { ownedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { hash, token, presentedBearer, none } from "../server/modules/operations/adapters/credential-verifier-fixture";
+import { FRESH_LOGIN_WINDOW_MS } from "../shared/contracts/operations";
+import { createProviderWorld } from "../server/modules/operations/adapters/provider-session-fixture";
 import { sessionDescribe } from "../server/modules/operations";
 import { resolveAppPaths } from "../server/paths";
 import { runSessionDescribe } from "./session-describe";
 
+const RealStore = stores.SqliteStateStore;
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const close of cleanup.splice(0).reverse()) await close(); });
 const operationError = (reason: string, category = "unavailable", retry = "none", status = 503) => ({ category, reason, retry, status, effect: null });
@@ -40,10 +43,13 @@ function owner(f: ReturnType<typeof fixture>) {
   cleanup.push(() => lock.release()); return lock;
 }
 function observe() {
-  const Original = stores.SqliteStateStore, opened: stores.SqliteStateStore[] = [];
-  vi.spyOn(stores, "SqliteStateStore").mockImplementation(class extends Original {
-    constructor(...args: ConstructorParameters<typeof Original>) { super(args[0], args[1], { ...args[2], admission: "strict" }); opened.push(this); }
-  });
+  const opened: stores.SqliteStateStore[] = [];
+  vi.spyOn(stores, "SqliteStateStore").mockImplementation(class {
+    constructor(...args: ConstructorParameters<typeof RealStore>) {
+      const store = new RealStore(args[0], args[1], { ...args[2], admission: "strict" });
+      opened.push(store); return store;
+    }
+  } as unknown as typeof RealStore);
   const acquire = vi.spyOn(locks, "acquireControllerLock");
   return { opened, acquire };
 }
@@ -54,9 +60,9 @@ const options = (store: stores.SqliteStateStore, mode: string) => ({ store, acti
 describe("session describe CLI mount", () => {
   it.each(["open", "token", "better-auth"])("offline %s writes the released DTO admitted, then closes before release", async mode => {
     const f = fixture(mode), seen = observe(), events: string[] = [];
-    const legacy = vi.spyOn(AuthenticationService.prototype, "authenticateInstallation"), usage = vi.spyOn(stores.SqliteStateStore.prototype, "recordCredentialUsed");
-    const close = stores.SqliteStateStore.prototype.close;
-    vi.spyOn(stores.SqliteStateStore.prototype, "close").mockImplementation(function () {
+    const legacy = vi.spyOn(AuthenticationService.prototype, "authenticateInstallation"), usage = vi.spyOn(RealStore.prototype, "recordCredentialUsed");
+    const close = RealStore.prototype.close;
+    vi.spyOn(RealStore.prototype, "close").mockImplementation(function (this: stores.SqliteStateStore) {
       expect(existsSync(f.paths.controllerLockPath)).toBe(true); events.push("closed"); close.call(this);
     });
     await runSessionDescribe(["describe"], f.paths, line => {
@@ -108,6 +114,8 @@ describe("session describe CLI mount", () => {
       if (result.ok) expect(result.value).toEqual({ ...unixDto,
         actor: { kind: mode === "better-auth" ? "agent" : "installation", accountId: mode === "better-auth" ? "fixture-agent" : null },
         listener: "api", fullAuthority: mode !== "better-auth",
+        // admin is human-only (grantAllowed); an agent never inherits this stored role.
+        installationPermissions: mode === "better-auth" ? [] : unixDto.installationPermissions,
         freshLogin: { state: mode === "better-auth" ? "unavailable" : "exempt", validUntil: null } });
     }
     expect(seen.opened).toEqual([]); expect(seen.acquire).toHaveBeenCalledTimes(1);
@@ -117,9 +125,41 @@ describe("session describe CLI mount", () => {
     expect(JSON.stringify([f.lines, policy.logs.controller.mock.calls])).not.toMatch(/sessionId|credentialId|verifierHash|last_used_at/);
   }, 20_000);
 
-  it.each(["missing", "stale", "reset", "timeout", "maintenance", "release_not_eligible", "garbage", "oversize", "extra-field"])(
+  it("better-auth human freshness differs exactly from the offline operator", async () => {
+    const f = fixture("better-auth"), now = Date.now(), world = createProviderWorld({ now });
+    const session = world.passwordLogin(world.account("fixture-human"));
+    const store = new RealStore(f.paths.databasePath);
+    store.humanAccounts().createHumanPrincipal({ id: "fixture-human", kind: "human", status: "active" }, "fixture");
+    ownedFixtureDatabase(store).prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES(?,?,?,?,?)")
+      .run("fixture-human", "admin", "installation", null, new Date(now).toISOString());
+    store.close(); await f.run(); const offlineDto = JSON.parse(f.lines[0]);
+    const opened = new RealStore(f.paths.databasePath); cleanup.push(() => opened.closeAfterDrain());
+    const runtime = buildOperationsRuntime({ ...options(opened, "better-auth"), now: () => now,
+      eligibility: { controllerEligible: () => true, providerSessionEligible: () => true },
+      provider: { providerId: "better-auth", reader: world.store, isSessionAuthorityEligible: () => true,
+        resolveRequest: () => ({ result: Promise.resolve(null), settled: Promise.resolve() }) } });
+    if (!runtime.supported) throw new Error("unsupported fixture");
+    const minted = await runtime.mint("api", { ...none(), providerSession: { secret: "fixture-cookie" }, browserHeaders: true }, session, {});
+    if (!minted.ok) throw new Error("human mint failed");
+    const result = await runtime.runner.run(sessionDescribe, minted.context, {});
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) expect(result.value).toEqual({ ...offlineDto, actor: { kind: "human", accountId: "fixture-human" }, listener: "api", fullAuthority: false,
+      freshLogin: { state: "satisfied", validUntil: new Date(now + FRESH_LOGIN_WINDOW_MS).toISOString() } });
+    expect(JSON.stringify(f.lines)).not.toContain(session.sessionId);
+  }, 20_000);
+
+  it("legacy on the real unix listener refuses unknown_mode without fallback", async () => {
+    const f = fixture("legacy"); owner(f); const store = new RealStore(f.paths.databasePath); cleanup.push(() => store.closeAfterDrain());
+    const server = await listenAdminSocket(f.paths.adminSocketPath, vi.fn(), buildOperationsRuntime(options(store, "legacy")));
+    cleanup.push(() => server.close()); const seen = observe();
+    await expect(f.run()).rejects.toMatchObject({ error: operationError("unknown_mode", "unauthenticated", "reauthenticate", 401) });
+    expect(seen.opened).toEqual([]); expect(seen.acquire).toHaveBeenCalledTimes(1); expect(f.lines).toEqual([]);
+  }, 20_000);
+
+  it.each(["missing", "stale", "reset", "timeout", "maintenance", "release_not_eligible", "garbage", "oversize", "extra-field", "duplicate-key", "invalid-utf8", "wrong-status", "invalid-outcome"])(
     "lock taken: %s fails exactly, never opens a store or acquires ownership", async kind => {
-      const f = fixture(), lock = owner(f), before = readFileSync(f.paths.controllerLockPath, "utf8");
+      const f = fixture(); await f.run(); const dto = JSON.parse(f.lines.pop()!);
+      const lock = owner(f), before = readFileSync(f.paths.controllerLockPath, "utf8");
       if (kind === "stale") {
         // Publish a real socket inode with no listener by moving it before close.
         const path = join(f.root, "listening.sock"), server = createNetServer();
@@ -131,16 +171,21 @@ describe("session describe CLI mount", () => {
       } else if (kind !== "missing") {
         const server = createServer((_request, response) => {
           if (kind === "timeout") return;
+          if (kind === "wrong-status" || kind === "invalid-outcome") {
+            response.writeHead(503); response.end(JSON.stringify({ error: operationError("fixture", kind === "invalid-outcome" ? "outcome_unknown" : "unavailable", "none", kind === "wrong-status" ? 401 : 503) })); return;
+          }
+          if (kind === "invalid-utf8") { response.end(Buffer.from([0xff])); return; }
+          if (kind === "duplicate-key") { response.end('{"actor":null,"actor":null}'); return; }
           if (kind === "maintenance" || kind === "release_not_eligible") {
             response.writeHead(503); response.end(JSON.stringify({ error: operationError(kind) }));
-          } else response.end(kind === "oversize" ? "x".repeat(256 * 1024 + 1) : kind === "extra-field" ? '{"credentialId":"secret-row"}' : "garbage");
+          } else response.end(kind === "oversize" ? "x".repeat(256 * 1024 + 1) : kind === "extra-field" ? JSON.stringify({ ...dto, credentialId: "secret-row" }) : "garbage");
         });
         await new Promise<void>(resolve => server.listen(f.paths.adminSocketPath, resolve));
         cleanup.push(() => { server.closeAllConnections(); return new Promise<void>(resolve => server.close(() => resolve())); });
       }
       const seen = observe();
       const reason = ({ missing: "admin_socket_missing", stale: "admin_socket_refused", reset: "admin_socket_failed", timeout: "admin_timeout",
-        garbage: "admin_invalid_response", oversize: "admin_response_limit", "extra-field": "admin_invalid_response" } as Record<string, string>)[kind] ?? kind;
+        garbage: "admin_invalid_response", oversize: "admin_response_limit", "extra-field": "admin_invalid_response", "duplicate-key": "admin_invalid_response", "invalid-utf8": "admin_invalid_response", "wrong-status": "admin_invalid_response", "invalid-outcome": "admin_invalid_response" } as Record<string, string>)[kind] ?? kind;
       await expect(f.run()).rejects.toMatchObject({ error: operationError(reason) });
       expect(seen.opened).toEqual([]); expect(seen.acquire).toHaveBeenCalledTimes(1);
       expect(readFileSync(f.paths.controllerLockPath, "utf8")).toBe(before); expect(lock.held()).toBe(true); expect(f.lines).toEqual([]);
@@ -187,7 +232,7 @@ describe("session describe CLI mount", () => {
   }, 20_000);
 
   it("close failure retains the owner and reports disposal_unconfirmed", async () => {
-    const f = fixture(), close = vi.spyOn(stores.SqliteStateStore.prototype, "close").mockImplementation(() => { throw new Error("private-row"); });
+    const f = fixture(), close = vi.spyOn(RealStore.prototype, "close").mockImplementation(() => { throw new Error("private-row"); });
     const retain = vi.spyOn(ownership, "retainAuthenticationOwnership").mockImplementation(() => {}), seen = observe();
     await expect(f.run()).rejects.toMatchObject({ code: "disposal_unconfirmed", cleanupConfirmed: false });
     expect(retain).toHaveBeenCalledTimes(1); expect(existsSync(f.paths.controllerLockPath)).toBe(true);
@@ -235,8 +280,8 @@ describe("session describe CLI mount", () => {
   it("negative control: premature release fails the exact held-before-close assertion", async () => {
     const f = fixture(), close = closeOwnership.closeOfflineStore;
     vi.spyOn(closeOwnership, "closeOfflineStore").mockImplementation(async (store, lock) => { lock.release(); await close(store, lock); });
-    let held = true; const actualClose = stores.SqliteStateStore.prototype.close;
-    vi.spyOn(stores.SqliteStateStore.prototype, "close").mockImplementation(function () {
+    let held = true; const actualClose = RealStore.prototype.close;
+    vi.spyOn(RealStore.prototype, "close").mockImplementation(function (this: stores.SqliteStateStore) {
       held = existsSync(f.paths.controllerLockPath); actualClose.call(this);
     });
     await f.run(); expect(held).toBe(false);

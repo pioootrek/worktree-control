@@ -168,7 +168,7 @@ export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_0
       });
       response.on("end", () => {
         try {
-          const value = JSON.parse(reply ? new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)) : Buffer.concat(chunks).toString("utf8")) as { result?: unknown; code?: string; error?: string; committed?: unknown; cleanupConfirmed?: unknown };
+          const value = (reply ? parseStrictProviderJson(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)), { maxDepth: 32, maxFields: 100000 }) : JSON.parse(Buffer.concat(chunks).toString("utf8"))) as { result?: unknown; code?: string; error?: string; committed?: unknown; cleanupConfirmed?: unknown };
           if (reply) resolve(reply.decode(response.statusCode, value));
           else if (response.statusCode === 200) resolve(value.result);
           else reject(new AdminRequestError(value.code, value.error ?? `Admin request failed with HTTP ${response.statusCode}.`,

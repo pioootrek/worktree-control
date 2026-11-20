@@ -54,6 +54,7 @@ const ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
 
 /** Exact production and mounted-provider proof consumers. No legacy handler imports the module. */
 const APPROVED_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
+  "src/cli/session-describe.test.ts": "CLI conformance uses real operation runtime and credential fixtures; not a production importer",
   "src/cli/session-describe.ts": "mounts the one offline CLI read and validates private socket DTOs and public failures",
   "packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts": "runs cookie listener proofs through production bootstrap and reuses the mounted boundary driver and exact conformance assertions",
   "src/server/bootstrap/operations-runtime.ts": "composes the runtime from the store owner's read ports and controller policies",
