@@ -376,7 +376,12 @@ describe("session describe output", () => {
       bytes.push({ fd, bytes: Buffer.from(buffer.subarray(offset, offset + length)) });
       return length;
     });
-    vi.spyOn(fs, "writeSync").mockImplementation(syscall as typeof fs.writeSync);
+    vi.spyOn(fs, "writeSync").mockImplementation((fd, buffer: unknown, offset?: unknown, length?: unknown) => {
+      if (!Buffer.isBuffer(buffer) || typeof offset !== "number" || typeof length !== "number") {
+        throw new Error("Expected the buffer descriptor-write overload.");
+      }
+      return syscall(fd, buffer, offset, length);
+    });
     return { stdout, stderr, fail, bytes, syscall, io: createSessionDescribeOutput(stdout, stderr, fail) };
   }
 
