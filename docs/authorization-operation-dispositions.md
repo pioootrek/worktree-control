@@ -146,13 +146,13 @@ not implement them. PR #129, the first pull request of slice 4
 ([section 10](#10-proposed-cut-of-slice-4)), implemented extensions 1 to 7, 9
 and 10 in the then-unmounted module, as recorded in the `Status` column and
 described in [the authorization contract](authorization-contract.md#contract-extensions-of-slice-4).
-Mounted `session.describe` now uses the read runner, listener boundaries and
-SQLite adapters. The query, mutation, stream and coordination extensions remain
-unmounted; each catalogue row records what its own future workflow needs.
+Mounted `session.describe` and the project reads now use the read runner, listener
+boundaries and SQLite adapters, and `project.worktrees` uses the query extension.
+The mutation, stream and coordination extensions remain unmounted; each catalogue row records what its own future workflow needs.
 
 | # | Extension | Marker in `Needs` | What it adds | Status |
 | --- | --- | --- | --- | --- |
-| 1 | Kind `query` and waits as bounded one-event streams | `query`, `bounded_stream` | `query`: authorization in an admitted phase, asynchronous work outside admission, then a fresh decision with unchanged resolution before release. `project.wait` and `test_run.wait` are streams of at most one event with waiter limits and cancellation. There is no `wait` kind. Discovery, hashing and filesystem reads (`project.worktrees`, `test_preset.list`, `backup.preview`, `directory.browse`) are queries. See [section 2](#2-execution-shapes-and-expected-transitions). | implemented, unmounted |
+| 1 | Kind `query` and waits as bounded one-event streams | `query`, `bounded_stream` | `query`: authorization in an admitted phase, asynchronous work outside admission, then a fresh decision with unchanged resolution before release. `project.wait` and `test_run.wait` are streams of at most one event with waiter limits and cancellation. There is no `wait` kind. Discovery, hashing and filesystem reads (`project.worktrees`, `test_preset.list`, `backup.preview`, `directory.browse`) are queries. See [section 2](#2-execution-shapes-and-expected-transitions). | implemented; `query` mounted for `project.worktrees` (D2a), waits unmounted |
 | 2 | Expected transitions | `expected_transition` | An operation may declare which resource slots its effect changes or removes (`registration.move`, `registration.detach`, `claim.release`, `claim.force_release`, `runtime.switch`, `user_backup.save`). | implemented, unmounted |
 | 3 | Predicate `claim_holder_if_claimed` | `claim_holder_if_claimed` | Owner decision OPEN-1 (`42019833`): with no claim anyone holding the permission may act; when a claim exists only its holder may; anyone else needs `claim.force_release` (`runtime:administer`). Needs a way to resolve an absent claim safely. | implemented, unmounted: resource kind `project_claim`, requirement `same_project` and `recheck()` between steps of an effect |
 | 4 | Requirement kind `any_project(permission)` | `any_project` | Aggregates (`capacity.read`, `test_queue.read`, controller-wide events) require `project:read` on at least one project. Installation detail is a separate operation requiring `capacity:read`. | implemented, unmounted |
@@ -1756,7 +1756,15 @@ operator acknowledgement. Recommend: refuse a non-loopback worker binding in
 and data exposure; settle this before the release. This step does not implement
 that restriction.
 
-The other three reads and every mutation keep their prerequisites below.
+D2a mounts the other three reads of item 3: `project.list`, `project.status` and
+`project.worktrees`, on the API listener, the private unix socket, MCP and the CLI,
+never on the worker listener (`H` is the API on TCP and unix). `project.worktrees`
+is the first mounted query; `OperationRunner.queryRelease` commits it inside its
+final admitted phase. The exact field allowlists of these rows (D5), the claim
+relation without coordination sessions, the bounds and the transport behaviour
+are in [the contract](authorization-contract.md#project-reads-d2a). The legacy
+project reads they replace (rows 1.1 to 1.4, 1.R and part of 2.5) remain until
+their removal step. Every mutation keeps its prerequisites below.
 
 
 A proposal, not a decision. It reproduces the ordering of review `ce8aa214`.

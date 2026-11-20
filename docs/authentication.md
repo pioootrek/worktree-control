@@ -225,6 +225,77 @@ allocated fixture ports, paths and secrets. The scripts use Node HTTP/TLS client
 and the installed CLI, so the shell's curl executable itself is not under test.
 See the complete [gate evidence and artifact matrix](authorization-gate-evidence.md).
 
+## Read projects through each listener (integration branch)
+
+The first project read family (D2a) is `project.list`, `project.status` and
+`project.worktrees`. It is served on the API listener, the private unix socket,
+MCP and the CLI. The HTTPS worker listener does not serve it in any mode; such a
+request is refused with `operation_not_found` (404). Use the same synthetic installation,
+`WTC_API`, `WTC_MCP` and private header file as in the
+[previous section](#describe-authority-through-each-listener-integration-branch).
+A project is a Knowledge project; its registrations carry the port, runtime phase
+and worktree. A project with no registration has an empty list.
+
+```bash
+curl --fail-with-body "$WTC_API/api/operations/project.list" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' --data '{"limit":50}'
+curl --fail-with-body "$WTC_API/api/operations/project.status" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' --data '{"projectId":"example"}'
+curl --fail-with-body "$WTC_API/api/operations/project.worktrees" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' --data '{"projectId":"example"}'
+```
+
+`project.list` returns `{"items":[...],"nextCursor":null}`. It filters items before
+pagination; pass `nextCursor` back as `cursor` for the next page (`limit` 1 to 100,
+default 50). Each item has `projectId`, `name`, `status` (`active` or `archived`),
+up to 16 `registrations` sorted by ID and `registrationsTruncated`. A registration
+lists `registrationId`, `name`, `port`, `phase`, `worktreePath` and `claim`
+(`none` or `other`; see [limits](authorization-contract.md#project-reads-d2a)).
+A registration without a project appears only to full authority, as an item with
+`projectId: null`.
+
+`project.status` adds the project's Knowledge `revision`, whether the caller may
+write Knowledge there (`writable`), and per registration `selectedWorktreePath`,
+`startedAt` and `managedServer`. `launch` (executable and arguments) appears only
+with `config:read` on the project. `claimHolder` appears only with `claims:manage`
+and an active claim. `{"compact":true}` returns the list's registration entries
+instead. `project.worktrees` discovers Git worktrees on every call. For each
+registration it returns `discovery` (`complete` or `unavailable`) and up to 64
+worktrees in total with `path`, `branch`, `head`, `shortHead`, `detached`,
+`locked`, `prunable` and `dirty`.
+
+An account with no role on any project gets an empty list. A hidden project and a
+missing project both refuse `resource_not_found` (404). A project visible only
+through `secrets` or `executor` refuses `permission_denied` (403). The installed
+RBAC script verifies this in `project-reads-${mode}` with the account-mode agent,
+which holds no role after the upgrade's authority reset.
+
+Over MCP, `tools/list` returns `project_list`, `project_status`,
+`project_worktrees` and `session_describe`. Call a project tool with the same
+arguments as the HTTP body:
+
+```bash
+curl --fail-with-body "$WTC_MCP/mcp/operations" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' --data-binary @- <<'JSON'
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"project_list","arguments":{"limit":50}}}
+JSON
+```
+
+A tool refusal is a tool result with `isError: true` and the public error as
+`structuredContent`. The local operator uses the CLI. Like `session describe`,
+it goes through the private socket while a controller owns the lock and reads
+offline otherwise. Offline, every registration reports `phase: "stopped"`:
+
+```bash
+worktree-control projects list --data-dir /tmp/wtc-example/data --state-dir /tmp/wtc-example/state
+worktree-control projects status example --data-dir /tmp/wtc-example/data --state-dir /tmp/wtc-example/state
+worktree-control projects worktrees example --data-dir /tmp/wtc-example/data --state-dir /tmp/wtc-example/state
+```
+
+The legacy `project list` command and the legacy MCP and HTTP project routes are
+unchanged until their families are migrated.
+
 ## What this release provides
 
 Implemented in `0.2.0`:
