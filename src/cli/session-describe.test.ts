@@ -27,6 +27,8 @@ import { sessionDescribe } from "../server/modules/operations";
 import { resolveAppPaths } from "../server/paths";
 import { createSessionDescribeOutput, runSessionDescribe } from "./session-describe";
 
+vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>() }));
+
 const RealStore = stores.SqliteStateStore;
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -96,10 +98,10 @@ describe("session describe CLI mount", () => {
       return runtime;
     });
     const drain = RealStore.prototype.closeAfterDrain, close = RealStore.prototype.close;
-    vi.spyOn(RealStore.prototype, "closeAfterDrain").mockImplementation(async function (this: stores.SqliteStateStore) {
+    const drainSpy = vi.spyOn(RealStore.prototype, "closeAfterDrain").mockImplementation(async function (this: stores.SqliteStateStore) {
       expect(existsSync(f.paths.controllerLockPath)).toBe(true); events.push("drain"); await drain.call(this);
     });
-    vi.spyOn(RealStore.prototype, "close").mockImplementation(function (this: stores.SqliteStateStore) {
+    const closeSpy = vi.spyOn(RealStore.prototype, "close").mockImplementation(function (this: stores.SqliteStateStore) {
       expect(existsSync(f.paths.controllerLockPath)).toBe(true); events.push("close"); close.call(this);
     });
     await expect(runSessionDescribe(["describe"], f.paths, () => {
@@ -108,6 +110,7 @@ describe("session describe CLI mount", () => {
     expect(outcome).toMatchObject({ status: "commit_failed", error: { reason: "release_commit_failed" } });
     expect(events).toEqual(["write", "drain", "close"]); expect(f.lines).toEqual([]);
     expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+    drainSpy.mockRestore(); closeSpy.mockRestore();
     const reopened = new RealStore(f.paths.databasePath); await reopened.closeAfterDrain();
   }, 20_000);
 
@@ -363,7 +366,6 @@ describe("session describe CLI mount", () => {
     expect(seen.acquire).not.toHaveBeenCalled(); expect(seen.opened).toEqual([]);
   }, 20_000);
 });
-
 
 describe("session describe output", () => {
   function output() {
