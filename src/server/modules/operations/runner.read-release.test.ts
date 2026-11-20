@@ -364,8 +364,8 @@ describe("staged refusal delivery (D2a)", () => {
 
   it.each([
     ["rejected promise", () => Promise.reject(new Error("private"))],
-    ["rejecting thenable", () => ({ then(_resolve: unknown, reject: (err: Error) => void) { reject(new Error("private")); } })],
-    ["throwing then getter", () => ({ get then() { throw new Error("private"); } })],
+    ["rejecting thenable", (): unknown => ({ then(_resolve: unknown, reject: (err: Error) => void): void { reject(new Error("private")); } })],
+    ["throwing then getter", (): unknown => ({ get then(): never { throw new Error("private"); } })],
   ] as const)("rejects a refusal commit returning a %s without retrying", async (_name, result) => {
     const f = projectRead();
     const { log, refusal } = delivery(f.world);
