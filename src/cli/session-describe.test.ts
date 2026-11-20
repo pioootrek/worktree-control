@@ -16,6 +16,8 @@ import { listenAdminSocket } from "../server/admin-socket";
 import { AuthenticationService } from "../server/modules/authentication";
 import { assertBackupHandoffCompleted } from "../server/modules/backups";
 import { recordHash } from "../server/modules/backups/records";
+import { ownedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
+import { hash, token, presentedBearer, none } from "../server/modules/operations/adapters/credential-verifier-fixture";
 import { sessionDescribe } from "../server/modules/operations";
 import { resolveAppPaths } from "../server/paths";
 import { runSessionDescribe } from "./session-describe";
@@ -52,7 +54,7 @@ const options = (store: stores.SqliteStateStore, mode: string) => ({ store, acti
 describe("session describe CLI mount", () => {
   it.each(["open", "token", "better-auth"])("offline %s writes the released DTO admitted, then closes before release", async mode => {
     const f = fixture(mode), seen = observe(), events: string[] = [];
-    const legacy = vi.spyOn(AuthenticationService.prototype, "authenticateInstallation");
+    const legacy = vi.spyOn(AuthenticationService.prototype, "authenticateInstallation"), usage = vi.spyOn(stores.SqliteStateStore.prototype, "recordCredentialUsed");
     const close = stores.SqliteStateStore.prototype.close;
     vi.spyOn(stores.SqliteStateStore.prototype, "close").mockImplementation(function () {
       expect(existsSync(f.paths.controllerLockPath)).toBe(true); events.push("closed"); close.call(this);
@@ -66,7 +68,7 @@ describe("session describe CLI mount", () => {
     expect(dto).toMatchObject({ actor: { kind: "operator", accountId: null }, listener: "offline", mode, fullAuthority: true,
       freshLogin: { state: "exempt", validUntil: null } });
     expect(f.lines).toHaveLength(1); expect(seen.opened).toHaveLength(1); expect(seen.acquire).toHaveBeenCalledTimes(1);
-    expect(legacy).not.toHaveBeenCalled();
+    expect(legacy).not.toHaveBeenCalled(); expect(usage).not.toHaveBeenCalled();
   }, 20_000);
 
   it("legacy is refused by the boundary without output", async () => {
@@ -76,7 +78,20 @@ describe("session describe CLI mount", () => {
   }, 20_000);
 
   it.each(["open", "token", "better-auth"])("unix %s equals offline and API authority with exactly actor/listener differences", async mode => {
-    const f = fixture(mode); await f.run(); const offlineDto = JSON.parse(f.lines.pop()!);
+    const f = fixture(mode);
+    const seeded = new stores.SqliteStateStore(f.paths.databasePath), secret = token(mode === "better-auth" ? "wts" : "wsi"), credentialId = secret.slice(4, 40);
+    if (mode === "token") seeded.saveAuthenticationPolicy({ ...seeded.getAuthenticationPolicy(), token: {
+      id: credentialId, prefix: secret.slice(0, 40), verifierHash: hash(secret), createdAt: new Date().toISOString(),
+    } }, "fixture", "fixture");
+    if (mode === "better-auth") {
+      seeded.savePrincipal({ id: "fixture-agent", kind: "agent", status: "active" }, "fixture");
+      seeded.saveCredential({ id: credentialId, principalId: "fixture-agent", kind: "agent_token", label: "fixture", tokenPrefix: secret.slice(0, 40),
+        verifierHash: hash(secret), status: "active", expiresAt: null, createdAt: new Date().toISOString(), revokedAt: null, lastUsedAt: null }, "fixture");
+      ownedFixtureDatabase(seeded).prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES(?,?,?,?,?)")
+        .run("fixture-agent", "admin", "installation", null, new Date().toISOString());
+    }
+    seeded.close();
+    await f.run(); const offlineDto = JSON.parse(f.lines.pop()!);
     const lock = owner(f), store = new stores.SqliteStateStore(f.paths.databasePath);
     cleanup.push(() => store.closeAfterDrain());
     const policy = options(store, mode), runtime = buildOperationsRuntime(policy);
@@ -86,16 +101,19 @@ describe("session describe CLI mount", () => {
     const usage = vi.spyOn(store, "recordCredentialUsed");
     await f.run(); const unixDto = JSON.parse(f.lines[0]);
     expect(unixDto).toEqual({ ...offlineDto, listener: "unix" });
-    // The API boundary assigns installation in open mode; all other common DTO fields agree.
-    if (mode === "open" && runtime.supported) {
-      const minted = await runtime.mint("api", {}, null, {}); if (!minted.ok) throw new Error("mint failed");
+    if (runtime.supported) {
+      const minted = await runtime.mint("api", mode === "open" ? none() : presentedBearer(secret), null, {}); if (!minted.ok) throw new Error("mint failed");
       const result = await runtime.runner.run(sessionDescribe, minted.context, {});
       expect(result).toMatchObject({ ok: true });
-      if (result.ok) expect(result.value).toEqual({ ...unixDto, actor: { kind: "installation", accountId: null }, listener: "api" });
+      if (result.ok) expect(result.value).toEqual({ ...unixDto,
+        actor: { kind: mode === "better-auth" ? "agent" : "installation", accountId: mode === "better-auth" ? "fixture-agent" : null },
+        listener: "api", fullAuthority: mode !== "better-auth",
+        freshLogin: { state: mode === "better-auth" ? "unavailable" : "exempt", validUntil: null } });
     }
     expect(seen.opened).toEqual([]); expect(seen.acquire).toHaveBeenCalledTimes(1);
     expect(readFileSync(f.paths.controllerLockPath, "utf8")).toBe(record); expect(lock.held()).toBe(true);
     expect(legacy).not.toHaveBeenCalled(); expect(usage).not.toHaveBeenCalled();
+    expect(JSON.stringify([f.lines, policy.logs.controller.mock.calls])).not.toContain(credentialId);
     expect(JSON.stringify([f.lines, policy.logs.controller.mock.calls])).not.toMatch(/sessionId|credentialId|verifierHash|last_used_at/);
   }, 20_000);
 
@@ -178,7 +196,7 @@ describe("session describe CLI mount", () => {
 
 
   it("negative control: socket fallback is detected as an unexpected store open", async () => {
-    const f = fixture(), lock = owner(f), seen = observe(), acquire = locks.acquireControllerLock;
+    const f = fixture(), lock = owner(f), acquire = locks.acquireControllerLock, seen = observe();
     // Mutant drops the real owner's refusal and grants the command the existing owner.
     seen.acquire.mockImplementation(path => { try { return acquire(path); } catch { return lock; } });
     await f.run();

@@ -9,7 +9,7 @@ import { closeOfflineStore } from "../server/bootstrap/offline-store-ownership";
 import { retainAuthenticationOwnership } from "../server/bootstrap/authentication-administration";
 import { AuthenticationRequestBudget } from "../server/bootstrap/authentication-request-budget";
 import { ProviderAdminError } from "../server/modules/authentication";
-import { OperationError, publicError, sessionDescribe } from "../server/modules/operations";
+import { OperationError, publicError, releaseError, sessionDescribe } from "../server/modules/operations";
 import { authenticationModes, errorCategories, errorCategoryStatus, installationPermissions, projectPermissions, retryDispositions,
   type PublicOperationError } from "../shared/contracts/operations";
 
@@ -36,7 +36,8 @@ function decodeReply(status: number | undefined, value: unknown): unknown {
     return value; // Validate without transforming or adding fields to the released projection.
   }
   const parsed = failure.safeParse(value);
-  if (!parsed.success || status !== parsed.data.error.status || status !== errorCategoryStatus[parsed.data.error.category]) {
+  if (!parsed.success || status !== parsed.data.error.status || status !== errorCategoryStatus[parsed.data.error.category]
+    || JSON.stringify(releaseError(parsed.data.error)) !== JSON.stringify(parsed.data.error)) {
     throw localFailure("admin_invalid_response");
   }
   throw new SessionDescribeError(parsed.data.error);
