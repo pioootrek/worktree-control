@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FRESH_LOGIN_WINDOW_MS, installationPermissions, projectPermissions, type ProjectId } from "@/shared/contracts/operations";
+import { mintOfflineContext } from "./authentication-context";
 import { OperationRegistry, type ReadOperation } from "./operation";
 import { createWorld, P } from "./operations-fixture";
 import { OperationRunner } from "./runner";
@@ -99,7 +100,10 @@ describe("session.describe", () => {
   }, 30_000);
 
   it.each([0, 1])("accounts for the complete DTO when the last project puts it %i bytes over budget", async over => {
-    const w = createWorld(), runner = new OperationRunner(w.runtime()), context = w.installation().context;
+    const w = createWorld(), runner = new OperationRunner(w.runtime());
+    // Offline is the widest declared listener, so this tests the actual DTO's
+    // exact wire size, without the shorter listeners' deterministic headroom.
+    const context = mintOfflineContext({ mode: "better-auth", lockHeld: () => true });
     const empty = await runner.run(sessionDescribe, context, {});
     if (!empty.ok) throw new Error("description required");
     const permissions = [...projectPermissions];
@@ -127,6 +131,8 @@ describe("session.describe", () => {
     expect(described.value.projectsTruncated).toBe(over === 1);
     expect(bytes(described.value)).toBeLessThanOrEqual(MAX_DESCRIBED_BYTES);
     if (over === 0) expect(bytes(described.value)).toBe(MAX_DESCRIBED_BYTES);
+    const unix = await runner.run(sessionDescribe, w.operator(), {});
+    expect(unix).toMatchObject({ ok: true, value: { ...described.value, listener: "unix" } });
     // With another visible project, true is a byte shorter than false. Even the
     // formerly one-byte-over prefix now fits, but that next project does not.
     w.resolver.addProject(P("z-extra"));
@@ -135,6 +141,35 @@ describe("session.describe", () => {
     expect(truncated.value.projects).toEqual(full.projects);
     expect(truncated.value.projectsTruncated).toBe(true);
     expect(bytes(truncated.value)).toBe(MAX_DESCRIBED_BYTES + over - 1);
+  }, 30_000);
+
+  it("keeps the same prefix across API, MCP and worker at a listener-width boundary", async () => {
+    const w = createWorld(), runner = new OperationRunner(w.runtime());
+    const context = w.installation("api").context;
+    const empty = await runner.run(sessionDescribe, context, {});
+    if (!empty.ok) throw new Error("description required");
+    const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
+    const projects = Array.from({ length: 430 }, (_, n) => ({ projectId: P(`p${String(n).padStart(159, "0")}`), permissions: [...projectPermissions] }));
+    const full = { ...empty.value, projects };
+    // The complete prefix fits the actual API/MCP DTO exactly, but would be
+    // three bytes too large on worker. All listeners must truncate identically.
+    let remove = bytes(full) - MAX_DESCRIBED_BYTES;
+    for (let n = 0; remove > 0; n++) {
+      const cut = Math.min(remove, 150);
+      const id = projects[n].projectId;
+      projects[n].projectId = P(id.slice(0, 1) + id.slice(1 + cut));
+      remove -= cut;
+    }
+    expect(bytes(full)).toBe(MAX_DESCRIBED_BYTES);
+    projects.sort((a, b) => a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0);
+    for (const project of [...projects].reverse()) w.resolver.addProject(project.projectId);
+    for (const listener of ["api", "mcp", "worker"] as const) {
+      const result = await runner.run(sessionDescribe, listener === "api" ? context : w.installation(listener).context, {});
+      if (!result.ok) throw new Error("description required");
+      expect(result.value.projects, listener).toEqual(projects.slice(0, -1));
+      expect(result.value.projectsTruncated, listener).toBe(true);
+      expect(bytes(result.value), listener).toBeLessThanOrEqual(MAX_DESCRIBED_BYTES);
+    }
   }, 30_000);
 
   it("is a fresh decision every time, never cached", async () => {

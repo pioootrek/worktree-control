@@ -571,7 +571,9 @@ The operation lists a deterministic prefix of at most 500 visible projects,
 within a 248 KiB UTF-8 `JSON.stringify` budget for the whole DTO, including its
 fixed fields. `projectsTruncated` is true when either bound omits a visible
 project. The operation owns this budget independently of transports, leaving
-8 KiB below their default ceiling.
+8 KiB below their default ceiling. Selection uses the exact serialized size of
+the widest declared listener for all transports, reserving at most four bytes
+on shorter listeners so their project prefixes agree.
 
 Limits share HTTP's 256 KiB serialized-DTO bound, checked at the initial
 witness commit; an oversized DTO receives the same pre-dispatch HTTP 413
