@@ -113,7 +113,7 @@ async function exactNegative(assertion: string, observed: unknown, expected: unk
   expect(failure).toMatchObject({ assertion, observed, expected });
 }
 
-describe("unmounted request-scoped MCP adapter", () => {
+describe("request-scoped MCP adapter", () => {
   it.each(["open", "token", "better-auth"])("%s: real SDK sequential initialize, notification, list and call, with no usage writer", async mode => {
     const f = await fixture(mode), client = await f.client(f.credential);
     expect((await client.listTools()).tools.map(t => t.name)).toEqual(["session_describe"]);

@@ -1848,3 +1848,35 @@ it("MCP body/DTO ceilings and Node completion retain the production owner", asyn
   });
   const oversized = await f.driver.send().reply; expect(oversized.status).toBe(413); expect(oversized.body.error.reason).toBe("response_too_large");
 }, 20_000);
+
+it.each([mcpInitialize, mcpNotification, mcpList, mcpCall])("MCP full witness gates post-buffer release for $method", async message => {
+  const f = await mcpFixture(); if (!f.built.supported) throw new Error("supported fixture");
+  const runner = f.built.runner, real = runner.readRelease.bind(runner), entered = pause(), release = pause(); let commits = 0;
+  vi.spyOn(runner, "readRelease").mockImplementation(async (operation, context, raw, options) => {
+    if (options.expectedCanonical === undefined) return real(operation, context, raw, options);
+    entered.done(); await release.promise;
+    return real(operation, context, raw, { ...options, commit(dto) { commits++; options.commit(dto); } });
+  });
+  const pending = f.driver.send({ body: JSON.stringify(message) }); await entered.promise;
+  f.state.maintenance = true; release.done(); const reply = await pending.reply;
+  expect(reply.status).toBe(message === mcpNotification ? 401 : 200); expect(mcpError(reply).reason).toBe("listener_closed");
+  expect(reply.body).not.toHaveProperty("result"); expect(commits).toBe(0);
+});
+
+it("MCP security headers, raw singleton refusals and Node protocol ownership", async () => {
+  const f = await mcpFixture(), mint = vi.spyOn(f.runtime, "mint");
+  for (const name of ["Host", "Origin", "Accept", "Mcp-Protocol-Version", "Content-Type"]) {
+    const value = name === "Origin" ? `http://localhost:${(f.mcp.server.address() as AddressInfo).port}` : name === "Host" ? "localhost" : name === "Accept" ? "application/json, text/event-stream" : name === "Content-Type" ? "application/json" : "2025-03-26";
+    const headers = ["Content-Length", String(Buffer.byteLength(JSON.stringify(mcpCall))),
+      ...(name === "Host" ? [] : ["Host", "localhost"]), ...(name === "Content-Type" ? [] : ["Content-Type", "application/json"]), name, value, name, value];
+    const reply = await f.driver.send({ headers }).reply;
+    expect(reply.status).toBe(400); expect(reply.body.error.reason).toBe("invalid_request");
+  }
+  expect(mint).not.toHaveBeenCalled();
+  const reply = await f.driver.send().reply;
+  expect(reply.headers["cache-control"]).toBe("no-store"); expect(reply.headers["x-content-type-options"]).toBe("nosniff");
+  expect(reply.headers["content-type"]).toBe("application/json; charset=utf-8"); expect(reply.headers["content-security-policy"]).toBe("default-src 'none'; frame-ancestors 'none'");
+  expect(f.mcp.server.listenerCount("connect")).toBe(0); expect(f.mcp.server.listenerCount("upgrade")).toBe(0);
+  for (const path of ["/mcp", "/mcp/operations", "/mcp/operations/"]) await expect(f.driver.wire(path, "CONNECT")).rejects.toMatchObject({ code: "ECONNRESET" });
+  const upgrade = await f.driver.wire("/mcp/operations/", "GET", true); expect(upgrade.status).toBe(404);
+});

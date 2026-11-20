@@ -465,7 +465,8 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     if (mcp) await listen(mcp.server, mcpPort, "127.0.0.1");
   } catch (error) {
     providerAdministration.stop();
-    remoteVerification?.stopOperations(); mcp?.stopOperations();
+    remoteVerification?.stopOperations();
+    mcp?.stopOperations();
     userSchedules?.close(); await backups.close();
     await mcp?.close();
     await controller.close();
@@ -580,7 +581,8 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     authenticationProvider: providerAdministration,
     stopping: () => {
       providerAdministration.stop();
-      remoteVerification?.stopOperations(); mcp?.stopOperations();
+      remoteVerification?.stopOperations();
+      mcp?.stopOperations();
       process.removeListener("SIGINT", handleSignal);
       process.removeListener("SIGTERM", handleSignal);
       writeCliLine(translate(locale, "cli.stopping"));

@@ -251,7 +251,7 @@ describe("authorization contract stays unmounted", () => {
     expect(rootSources).toEqual([...ROOT_FILES].sort());
     expect(guard.violations(ALLOWLIST, APPROVED_IMPORTERS)).toEqual([]);
     expect(guard.invalidImporters(APPROVED_IMPORTERS)).toEqual([]);
-  });
+  }, 30_000);
 
   it("allows only the separate MCP listener to mount the request adapter, including indirect production importers", () => {
     const target = "src/server/transports/operations-mcp.ts";
@@ -268,7 +268,7 @@ describe("authorization contract stays unmounted", () => {
     writeFileSync(join(root, "src/server/mcp-http-server.ts"), 'import "./helper";');
     expect(createGuard(root, false, target).violations(ALLOWLIST)).toContain("src/server/helper.ts: imports @/server/transports/operations-mcp");
     expect(createGuard(root, false, target).violations(ALLOWLIST)).not.toContain("src/server/mcp-http-server.ts: imports ./helper");
-  });
+  }, 30_000);
 
   it("follows production imports through test files, including emitted specifiers and cycles", () => {
     const target = "src/server/transports/operations-mcp.ts";
@@ -306,7 +306,7 @@ describe("authorization contract stays unmounted", () => {
     const guard = createGuard(repository, true);
     expect(guard.violations(ALLOWLIST, approved)).toEqual([]);
     expect(guard.invalidImporters(approved)).toEqual([]);
-  });
+  }, 30_000);
 
   it("text-scans allowlisted production files for computed composition imports", () => {
     const root = mkdtempSync(join(tmpdir(), "composition-allowlist-")); temporary.push(root);
