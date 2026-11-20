@@ -55,7 +55,7 @@ async function fixture(mode: "open" | "token" | "better-auth") {
   const git = { list: vi.fn((path: string) => gates.get(path)?.promise ?? Promise.resolve([tree(path)])) };
   const eligibility = createControllerOperationEligibility({ maintenance: () => false, stopping: () => false, configurationRestartRequired: () => false, runtime: () => undefined });
   const built = buildOperationsRuntime({ store, activeMode: mode, now: Date.now, logs: { controller() {} }, provider: null, eligibility,
-    projectReads: { placement: { placement: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git },
+    projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git },
     requestBudget: new AuthenticationRequestBudget(16, 4), listeners: { api: () => true, unix: () => true, worker: () => true, mcp: () => true } });
   if (!built.supported) throw new Error("unsupported");
   const serve = async (handler: Parameters<typeof createServer>[1], stop: () => Promise<void>) => {

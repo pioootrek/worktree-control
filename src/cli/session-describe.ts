@@ -205,7 +205,7 @@ async function runLockFirstRead(read: LockFirstRead, paths: AppPaths, write: (li
     git = new SystemGitWorktreeReader();
     const runtime = buildOfflineOperationsRuntime({ store, controllerLock: lock, activeMode, now: Date.now,
       logs: { controller() {} }, requestBudget: new AuthenticationRequestBudget(16, 4),
-      projectReads: { placement: { placement: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git },
+      projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git },
       eligibility: { controllerEligible: () => true, providerSessionEligible: () => false } });
     const minted = await runtime.mintOffline({});
     if (!minted.ok) throw new SessionDescribeError(minted.error);

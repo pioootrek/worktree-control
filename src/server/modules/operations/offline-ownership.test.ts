@@ -24,7 +24,7 @@ function fixture(mode: AuthenticationMode = "open") {
   const store = new SqliteStateStore(paths.databasePath, undefined, { admission: "strict" });
   cleanups.push(async () => { await closeOfflineStore(store, lock); rmSync(root, { recursive: true, force: true }); });
   const build = (controllerLock = lock) => buildOfflineOperationsRuntime({ controllerLock, store, activeMode: mode, now: () => 1000,
-    logs: { controller() {} }, projectReads: { placement: { placement: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { list: async () => [] } }, requestBudget: new AuthenticationRequestBudget(16, 4),
+    logs: { controller() {} }, projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { list: async () => [] } }, requestBudget: new AuthenticationRequestBudget(16, 4),
     eligibility: { controllerEligible: () => true, providerSessionEligible: () => false } });
   const runtime = build();
   if (!runtime.supported) throw new Error("expected supported offline runtime");

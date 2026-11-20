@@ -56,7 +56,7 @@ async function fixture() {
   });
   const clock = { offset: 0 };
   const operations = buildOperationsRuntime({ store, activeMode: authentication.mode(), now: () => Date.now() + clock.offset, logs: { controller() {} },
-    eligibility: administration, provider: administration.operationSessionAuthority(), projectReads: { placement: { placement: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { list: async () => [] } }, requestBudget: administration.requestBudget, listeners: { api: () => server.server.listening } });
+    eligibility: administration, provider: administration.operationSessionAuthority(), projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { list: async () => [] } }, requestBudget: administration.requestBudget, listeners: { api: () => server.server.listening } });
   const httpOptions: Parameters<typeof createControllerServer>[0] = { service: {} as never, directoryBrowser: {} as never, events: new EventStream(),
     mcpStatus: () => ({} as never), webRoot: root, host: "127.0.0.1", port: 0, accessToken: "synthetic", authentication, admission: store.admission,
     operations, publicOrigin: ORIGIN, maintenance: () => maintenance, operationsCookieBoundary: { origin: ORIGIN, cookieBytes: CONTROLLER_AUTHENTICATION_POLICY.limits.cookieBytes } };

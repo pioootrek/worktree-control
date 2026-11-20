@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProcessManager } from "@/server/process-manager";
 import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite/sqlite-state-store";
 import { AccountGrantsQueries } from "@/server/infrastructure/sqlite/account-grants-queries";
@@ -44,7 +45,7 @@ function reparent(database: Database.Database, registration: string, parent: str
   })();
 }
 
-function fixture() {
+function fixture(processes?: ProcessManager) {
   const root = mkdtempSync(join(tmpdir(), "project-reads-")); roots.push(root);
   const store = new SqliteStateStore(join(root, "state.sqlite"));
   closers.push(() => store.close());
@@ -61,7 +62,7 @@ function fixture() {
     return Promise.resolve([tree(path, "main"), tree(`${path}-feature`, "feature")]);
   }) };
   const discovery = new CoalescingWorktreeDiscovery(git);
-  const placement = { placement: vi.fn((id: string) => id === ids.alpha
+  const placement = processes ?? { statusSummary: vi.fn((id: string) => id === ids.alpha
     ? { phase: "running", worktreePath: "/code/alpha-feature", startedAt: AT } : { phase: "stopped", worktreePath: null, startedAt: null }) };
   const reads = createProjectReads({ catalog: store.projectCatalogReader(), placement, discovery });
   const registry = new OperationRegistry();
@@ -113,6 +114,23 @@ describe("project reads (D2a)", () => {
       expect(await f.runner.run(f.worktrees, zero, { projectId })).toEqual(notFound);
     }
     expect(f.git.list).not.toHaveBeenCalled();
+  });
+
+  it("reads runtime summaries only for registrations on the visible page", async () => {
+    const processes = new ProcessManager();
+    const summaries = vi.spyOn(processes, "statusSummary");
+    const snapshots = vi.spyOn(processes, "snapshot");
+    const f = fixture(processes);
+    expect(await f.runner.run(f.list, f.agent("zero"), {})).toMatchObject({ ok: true, value: { items: [] } });
+    expect(summaries).not.toHaveBeenCalled();
+
+    const reader = f.agent("reader", "reader", "project-a");
+    f.grant("reader", "reader", "project-b");
+    expect(await f.runner.run(f.list, reader, { limit: 1 })).toMatchObject({
+      ok: true, value: { items: [{ projectId: "project-a" }], nextCursor: expect.any(String) },
+    });
+    expect(summaries.mock.calls.map(([id]) => id)).toEqual([f.ids.alpha, f.ids.alpha2].sort());
+    expect(snapshots).not.toHaveBeenCalled();
   });
 
   it("filters before pagination: a reader sees only its project, with no cursor betraying hidden ones", async () => {

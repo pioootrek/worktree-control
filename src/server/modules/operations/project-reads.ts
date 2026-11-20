@@ -46,7 +46,7 @@ export interface ProjectCatalogReader {
 
 /** In-memory runtime placement of a registration (the process manager). Synchronous. */
 export interface RegistrationPlacementReader {
-  placement(registrationId: string): { phase: unknown; worktreePath: unknown; startedAt: unknown };
+  statusSummary(registrationId: string): { phase: unknown; worktreePath: unknown; startedAt: unknown };
 }
 
 /** One discovered worktree, before the allowlist. */
@@ -137,7 +137,7 @@ function registrationRow(row: unknown): CatalogRegistration | null {
 }
 
 function placed(placement: RegistrationPlacementReader, registration: CatalogRegistration): Placed {
-  const current = port(() => placement.placement(registration.id), "placement_unavailable");
+  const current = port(() => placement.statusSummary(registration.id), "placement_unavailable");
   const phase = own(current, "phase"), worktreePath = own(current, "worktreePath"), startedAt = own(current, "startedAt");
   if (!PHASES.includes(phase) || !optionalText(worktreePath) || !optionalText(startedAt)) throw corrupt("placement_unavailable");
   return { ...registration, phase: phase as RegistrationPhase, worktreePath: worktreePath ?? registration.selectedWorktreePath, startedAt };
@@ -195,7 +195,7 @@ function projectInput(raw: unknown, allowed: readonly string[]): { input: Record
 // project.list ------------------------------------------------------------
 
 interface ListInput { limit: number; cursor: string | null }
-interface ListEntry { key: string; projectId: ProjectId | null; name: string; status: "active" | "archived" | null; registrations: Placed[] }
+interface ListEntry { key: string; projectId: ProjectId | null; name: string; status: "active" | "archived" | null; registrations: CatalogRegistration[] }
 interface ListInternal { input: ListInput; entries: ListEntry[] }
 
 const listKeys = Object.freeze(["items", "nextCursor"] as const);
@@ -221,17 +221,16 @@ function listOperation(ports: ProjectReadPorts): ReadOperation<ListInput, ListIn
       if (!Array.isArray(rows)) throw corrupt();
       const projects = rows.map(projectRow).filter((row): row is CatalogProject => row !== null);
       if (new Set(projects.map(project => project.id)).size !== projects.length) throw corrupt();
-      const children = new Map<ProjectId, Placed[]>(projects.map(project => [project.id, []]));
+      const children = new Map<ProjectId, CatalogRegistration[]>(projects.map(project => [project.id, []]));
       const entries: ListEntry[] = [];
       for (const registration of registrations(ports.catalog, scope.now)) {
         // A parent the contract cannot name, or that is not a listed project, belongs to no item.
         if (registration.projectId === undefined) continue;
         if (registration.projectId === null) {
-          const item = placed(ports.placement, registration);
-          entries.push({ key: `r:${registration.id}`, projectId: null, name: registration.name, status: null, registrations: [item] });
+          entries.push({ key: `r:${registration.id}`, projectId: null, name: registration.name, status: null, registrations: [registration] });
           continue;
         }
-        children.get(registration.projectId)?.push(placed(ports.placement, registration));
+        children.get(registration.projectId)?.push(registration);
       }
       for (const project of projects) {
         entries.push({ key: `p:${project.id}`, projectId: project.id, name: project.name, status: project.status, registrations: children.get(project.id)! });
@@ -244,7 +243,7 @@ function listOperation(ports: ProjectReadPorts): ReadOperation<ListInput, ListIn
       const page = release.page(entries, { projectOf: entry => entry.projectId, keyOf: entry => entry.key, permission: "project:read", limit: input.limit, cursor: input.cursor });
       const items: ProjectListItem[] = page.items.map(entry => {
         const listed = bounded(entry.registrations);
-        return { projectId: entry.projectId, name: entry.name, status: entry.status, registrations: listed.items.map(summary), registrationsTruncated: listed.truncated };
+        return { projectId: entry.projectId, name: entry.name, status: entry.status, registrations: listed.items.map(item => summary(placed(ports.placement, item))), registrationsTruncated: listed.truncated };
       });
       return pick({ items, nextCursor: page.nextCursor }, listKeys);
     },
@@ -379,7 +378,7 @@ function worktreesOperation(ports: ProjectReadPorts): QueryOperation<WorktreesIn
 /** The three frozen definitions over bootstrap's ports. */
 export function createProjectReads(ports: ProjectReadPorts) {
   if (typeof ports?.catalog?.projects !== "function" || typeof ports.catalog.project !== "function" || typeof ports.catalog.registrations !== "function"
-    || typeof ports.placement?.placement !== "function" || typeof ports.discovery?.discover !== "function") {
+    || typeof ports.placement?.statusSummary !== "function" || typeof ports.discovery?.discover !== "function") {
     throw new TypeError("Invalid project read ports.");
   }
   return Object.freeze({
