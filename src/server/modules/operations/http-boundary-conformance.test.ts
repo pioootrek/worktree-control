@@ -2364,7 +2364,7 @@ it("real legacy startup refuses all mounted operations and CLI with a consistent
   const repository = fileURLToPath(new URL("../../../../", import.meta.url));
   const entry = ["--import", "tsx", join(repository, "src/cli/index.ts")];
   const directoryArgs = ["--data-dir", paths.dataDirectory, "--state-dir", paths.stateDirectory];
-  const env = { PATH: process.env.PATH, HOME: root, NODE_ENV: "test", LANG: "C.UTF-8" };
+  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: root, NODE_ENV: "test", LANG: "C.UTF-8" };
   const cli = () => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
     execFile(process.execPath, [...entry, "session", "describe", ...directoryArgs], { cwd: repository, env, timeout: 15_000 }, (error, stdout, stderr) => {
       if (error && typeof error.code !== "number") reject(error);
