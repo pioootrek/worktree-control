@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ProjectId } from "@/shared/contracts/operations";
 import { OperationError } from "./errors";
 import { OperationRegistry, type QueryOperation, type StreamOperation } from "./operation";
@@ -214,6 +214,20 @@ describe("query refusal delivery (D2a)", () => {
     expect(await new OperationRunner(other.runtime({ queryDeadlineMs: 20 })).queryRelease(slow.operation, alice.context, { registrationId: REG.id }, second.options)).toEqual({ status: "committed" });
     expect(second.log.committed).toEqual([timedOut]);
     expect(slow.log.works).toBe(1);
+  });
+
+  it("reports a rejected refusal commit once without running the denied query", async () => {
+    const { world: fixture } = world();
+    const stranger = fixture.human("stranger");
+    const { operation, log: work } = worktrees(fixture);
+    const { log, options } = release(fixture);
+    const commit = vi.fn(async () => { throw new Error("private"); });
+    const result = await new OperationRunner(fixture.runtime()).queryRelease(operation, stranger.context,
+      { registrationId: REG.id }, { ...options, refusal: { ...options.refusal, commit } });
+    expect(result).toEqual({ status: "commit_failed", error: { category: "internal", status: 500, reason: "release_commit_failed", retry: "none", effect: null } });
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(log).toMatchObject({ staged: [notFound], values: [] });
+    expect(work.works).toBe(0);
   });
 
   it("returns the fresh answer and commits nothing when authority changes while the refusal is staged", async () => {

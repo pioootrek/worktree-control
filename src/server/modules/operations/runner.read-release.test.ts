@@ -362,6 +362,23 @@ describe("staged refusal delivery (D2a)", () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["rejected promise", () => Promise.reject(new Error("private"))],
+    ["rejecting thenable", () => ({ then(_resolve: unknown, reject: (err: Error) => void) { reject(new Error("private")); } })],
+    ["throwing then getter", () => ({ get then() { throw new Error("private"); } })],
+  ] as const)("rejects a refusal commit returning a %s without retrying", async (_name, result) => {
+    const f = projectRead();
+    const { log, refusal } = delivery(f.world);
+    const commit = vi.fn(() => result());
+    const success = vi.fn();
+    const released = await f.runner.readRelease(f.read, f.bob.context, { projectId: "project-a" },
+      options(success, { refusal: { stage: refusal.stage, commit } }));
+    expect(released).toEqual({ status: "commit_failed", error: publicError("internal", 500, "release_commit_failed") });
+    expect(log.staged).toEqual([publicError("not_found", 404, "resource_not_found")]);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(success).not.toHaveBeenCalled();
+  });
+
   it("commits the same refusal when only unrelated authority changed while staging", async () => {
     const f = projectRead();
     const { log, refusal } = delivery(f.world, () => { f.world.grants.grant({ accountId: f.bob.id, role: "reader", scope: { kind: "project", projectId: P("project-b") } }); });

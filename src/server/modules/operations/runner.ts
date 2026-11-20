@@ -215,7 +215,7 @@ function refusalOf(value: unknown, expectedCanonical: string | undefined): Refus
   if (expectedCanonical !== undefined || typeof stage !== "function" || typeof commit !== "function") throw new OperationError("invalid_request", "invalid_input");
   return Object.freeze({
     stage: (error: PublicOperationError) => Reflect.apply(stage, value, [error]) as Promise<void>,
-    commit: (error: PublicOperationError) => { Reflect.apply(commit, value, [error]); },
+    commit: (error: PublicOperationError) => Reflect.apply(commit, value, [error]),
   });
 }
 
