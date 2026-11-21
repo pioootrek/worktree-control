@@ -1440,8 +1440,9 @@ fields are absent, never null, when not released:
 releases per registration `discovery` and the worktree allowlist `path`,
 `branch`, `head`, `shortHead`, `detached`, `locked`, `prunable` and `dirty`.
 `discovery` is `complete` when every released tree has its status, `partial`
-when Git listed the trees but could not read the status of at least one (its
-`dirty` is null), and `unavailable` when the listing failed or was malformed.
+when Git listed the trees but could not read the status of at least one, or
+not within the call's status budget of 6 s (its `dirty` is null), and
+`unavailable` when the listing failed or was malformed.
 Nothing about a cause is released.
 
 **Claim relation.** The relation is `none` without an active claim and `other`

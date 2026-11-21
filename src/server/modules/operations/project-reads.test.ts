@@ -9,14 +9,14 @@ import { SqliteStateStore } from "@/server/infrastructure/sqlite/sqlite-state-st
 import { AccountGrantsQueries } from "@/server/infrastructure/sqlite/account-grants-queries";
 import { ProjectDirectoryQueries } from "@/server/infrastructure/sqlite/project-directory-queries";
 import { GitCommandCapacityError } from "@/server/git-worktrees";
-import { CoalescingWorktreeDiscovery, type WorktreeGit } from "./adapters/worktree-discovery";
+import { CoalescingWorktreeDiscovery, WORKTREE_DISCOVERY_LIMITS, type WorktreeGit } from "./adapters/worktree-discovery";
 import { sqliteGrants } from "./adapters/sqlite-grants";
 import { SqliteResourceResolver } from "./adapters/sqlite-resolver";
 import type { AuthenticationContext } from "./authentication-context";
 import { OperationRegistry, type Operation } from "./operation";
 import type { ProjectListResult } from "@/shared/contracts/operations";
 import { createWorld } from "./operations-fixture";
-import { createProjectReads, MAX_PROJECT_REGISTRATIONS, MAX_PROJECT_WORKTREES } from "./project-reads";
+import { createProjectReads, MAX_PROJECT_REGISTRATIONS, MAX_PROJECT_WORKTREES, PROJECT_WORKTREES_TIMEOUT_MS } from "./project-reads";
 import { OperationRunner, type RunResult } from "./runner";
 
 /**
@@ -135,6 +135,30 @@ describe("project reads (D2a)", () => {
     });
     expect(summaries.mock.calls.map(([id]) => id)).toEqual([f.ids.alpha, f.ids.alpha2].sort());
     expect(snapshots).not.toHaveBeenCalled();
+  });
+
+  it("reports the selected worktree for a stopped or failed runtime, never the path it last ran", async () => {
+    const f = fixture(), installation = f.world.installation("api").context;
+    f.store.setSelectedWorktree(f.ids.alpha2, "/code/alpha2-selected");
+    const summaries = f.placement.statusSummary as unknown as ReturnType<typeof vi.fn>;
+    for (const phase of ["stopped", "failed"] as const) {
+      // An explicit start on a non-selected worktree, then a stop: the runtime keeps its last path.
+      summaries.mockImplementation((id: string) => id === f.ids.alpha2
+        ? { phase, worktreePath: "/code/alpha2-explicit", startedAt: null } : { phase: "stopped", worktreePath: null, startedAt: null });
+      const listed = await f.runner.run(f.list, installation, {});
+      if (!listed.ok) throw new Error(listed.error.reason);
+      const entry = listed.value.items.flatMap(item => item.registrations).find(registration => registration.registrationId === f.ids.alpha2);
+      expect([phase, entry?.worktreePath]).toEqual([phase, "/code/alpha2-selected"]);
+      const compact = await f.runner.run(f.status, installation, { projectId: "project-a", compact: true });
+      if (!compact.ok) throw new Error(compact.error.reason);
+      expect(compact.value.registrations.find(registration => registration.registrationId === f.ids.alpha2)?.worktreePath).toBe("/code/alpha2-selected");
+    }
+    // A live runtime still reports the worktree it runs.
+    summaries.mockImplementation((id: string) => id === f.ids.alpha2
+      ? { phase: "running", worktreePath: "/code/alpha2-explicit", startedAt: AT } : { phase: "stopped", worktreePath: null, startedAt: null });
+    const running = await f.runner.run(f.list, installation, {});
+    if (!running.ok) throw new Error(running.error.reason);
+    expect(running.value.items.flatMap(item => item.registrations).find(registration => registration.registrationId === f.ids.alpha2)?.worktreePath).toBe("/code/alpha2-explicit");
   });
 
   it("filters before pagination: a reader sees only its project, with no cursor betraying hidden ones", async () => {
@@ -413,6 +437,33 @@ describe("CoalescingWorktreeDiscovery (D2a)", () => {
     await expect(abandoned).rejects.toMatchObject({ reason: "request_cancelled" });
     expect(reader.signals.get("list /t")!.aborted).toBe(true);
     expect(discovery.inFlight).toBe(0);
+  });
+
+  it("releases trees whose status is still pending at the time budget as dirty null, and aborts the abandoned read", async () => {
+    const reader = git();
+    reader.worktreeDirty.mockImplementation(async (path: string, options: { signal: AbortSignal }) => {
+      reader.signals.set(`status ${path}`, options.signal);
+      return path === "/r/b" ? never<boolean>() : false;
+    });
+    const discovery = new CoalescingWorktreeDiscovery(reader, { statusBudgetMs: 30 });
+    const started = Date.now();
+    expect(await discovery.discover(["/r"], 64, new AbortController().signal)).toEqual([
+      { state: "partial", truncated: false, worktrees: [{ ...fact("/r/main"), dirty: false }, { ...fact("/r/b"), dirty: null }] },
+    ]);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // The slow read had no other caller, so it was aborted and left nothing in flight.
+    expect(reader.signals.get("status /r/b")!.aborted).toBe(true);
+    expect(discovery.statusesInFlight).toBe(0);
+
+    // A budget already spent by the listing schedules no status read at all.
+    const spent = git();
+    const late = new CoalescingWorktreeDiscovery(spent, { statusBudgetMs: 0 });
+    expect(await late.discover(["/r"], 64, new AbortController().signal)).toEqual([
+      { state: "partial", truncated: false, worktrees: [{ ...fact("/r/main"), dirty: null }, { ...fact("/r/b"), dirty: null }] },
+    ]);
+    expect(spent.worktreeDirty).not.toHaveBeenCalled();
+    // The default stays below the query deadline.
+    expect(WORKTREE_DISCOVERY_LIMITS.statusBudgetMs).toBeLessThan(PROJECT_WORKTREES_TIMEOUT_MS);
   });
 
   it("keeps at most maxTrees from one listing and marks it truncated", async () => {

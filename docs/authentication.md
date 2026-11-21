@@ -262,7 +262,8 @@ and an active claim, and names only the holder (`kind`, `accountId`), never the
 claim's reason or times. `{"compact":true}` returns the list's registration
 entries instead. `project.worktrees` discovers Git worktrees on every call. For
 each registration it returns `discovery` (`complete`, `partial` when Git could
-not read a tree's status, or `unavailable`) and up to 64 worktrees in total with
+not read a tree's status within 6 s of the call's start, or `unavailable`) and
+up to 64 worktrees in total with
 `path`, `branch`, `head`, `shortHead`, `detached`, `locked`, `prunable` and
 `dirty` (null when its status could not be read).
 

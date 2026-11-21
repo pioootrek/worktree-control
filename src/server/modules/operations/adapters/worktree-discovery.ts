@@ -1,6 +1,6 @@
 import { GitCommandCapacityError } from "@/server/git-worktrees";
 import { OperationError } from "../errors";
-import type { RepositoryDiscovery, WorktreeDiscoveryPort, WorktreeFact } from "../project-reads";
+import { PROJECT_WORKTREES_TIMEOUT_MS, type RepositoryDiscovery, type WorktreeDiscoveryPort, type WorktreeFact } from "../project-reads";
 
 /**
  * The two reads of the controller's Git reader (`SystemGitWorktreeReader`)
@@ -21,8 +21,18 @@ export interface WorktreeDiscoveryLimits {
   maxStatuses: number;
   /** Trees kept from one listing; any one call uses at most its budget of them. */
   maxTrees: number;
+  /**
+   * Time from the start of one call after which it reads no more statuses: the
+   * reads still pending are left (aborted when no other call shares them) and
+   * their trees are released with `dirty: null`, so the repository is `partial`.
+   * It stays below the query deadline, so slow status reads degrade the answer
+   * instead of failing the whole call with `query_timed_out`.
+   */
+  statusBudgetMs: number;
 }
-export const WORKTREE_DISCOVERY_LIMITS: Readonly<WorktreeDiscoveryLimits> = Object.freeze({ maxRepositories: 16, maxStatuses: 64, maxTrees: 64 });
+export const WORKTREE_DISCOVERY_LIMITS: Readonly<WorktreeDiscoveryLimits> = Object.freeze({
+  maxRepositories: 16, maxStatuses: 64, maxTrees: 64, statusBudgetMs: PROJECT_WORKTREES_TIMEOUT_MS - 2_000,
+});
 
 interface Listing { trees: readonly WorktreeFact[]; truncated: boolean }
 interface Shared<T> { promise: Promise<T>; controller: AbortController; waiters: number }
@@ -30,6 +40,16 @@ interface Shared<T> { promise: Promise<T>; controller: AbortController; waiters:
 const cancelled = () => new OperationError("unavailable", "request_cancelled", { retry: "retry" });
 const capacity = () => new OperationError("busy", "discovery_capacity", { retry: "retry" });
 const isCapacity = (error: unknown) => error instanceof GitCommandCapacityError || (error instanceof OperationError && error.category === "busy");
+/** A signal that aborts with `signal` or after `ms` (at once when `ms` is not positive); `dispose` clears the timer and the listener. */
+function withDeadline(signal: AbortSignal, ms: number): { signal: AbortSignal; dispose(): void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal.aborted || !(ms > 0)) controller.abort();
+  else signal.addEventListener("abort", abort, { once: true });
+  const timer = controller.signal.aborted ? undefined : setTimeout(abort, ms);
+  timer?.unref?.();
+  return { signal: controller.signal, dispose: () => { if (timer) clearTimeout(timer); signal.removeEventListener("abort", abort); } };
+}
 const settle = <T>(promise: Promise<T>) => promise.then(value => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error }));
 
 /**
@@ -51,8 +71,9 @@ const settle = <T>(promise: Promise<T>) => promise.then(value => ({ ok: true as 
  * Git admission drops it from its queue or stops its process. Distinct reads
  * in flight are bounded; a call that would exceed a bound starts nothing new
  * and is refused as `busy`/`discovery_capacity` with retry, as is a call whose
- * Git command admission is full. A tree whose status Git could not read is
- * released with `dirty: null` and makes its repository `partial`; a
+ * Git command admission is full. A tree whose status Git could not read, or
+ * did not read within the call's time budget (`statusBudgetMs`), is released
+ * with `dirty: null` and makes its repository `partial`; a
  * repository whose listing failed is `unavailable`. Shared results are frozen
  * copies, so one caller cannot change what another receives.
  */
@@ -76,6 +97,7 @@ export class CoalescingWorktreeDiscovery implements WorktreeDiscoveryPort {
       throw new OperationError("internal", "invalid_discovery");
     }
     if (signal.aborted) throw cancelled();
+    const startedAt = Date.now();
     const repositories = [...new Set(repositoryPaths)];
     if (this.#listings.size + repositories.filter(path => !this.#listings.has(path)).length > this.#limits.maxRepositories) throw capacity();
     const maxTrees = this.#limits.maxTrees;
@@ -101,8 +123,15 @@ export class CoalescingWorktreeDiscovery implements WorktreeDiscoveryPort {
     });
     const paths = [...new Set(assigned.flatMap(entry => entry ? entry.trees.map(tree => tree.path as string) : []))];
     if (this.#statuses.size + paths.filter(path => !this.#statuses.has(path)).length > this.#limits.maxStatuses) throw capacity();
-    const statuses = new Map(await Promise.all(paths.map(async path =>
-      [path, await settle(this.#join(this.#statuses, path, shared => this.git.worktreeDirty(path, { signal: shared }), signal))] as const)));
+    // The status reads stop at the call's time budget: a read still pending then settles as a failure (`dirty: null`).
+    const deadline = withDeadline(signal, this.#limits.statusBudgetMs - (Date.now() - startedAt));
+    let statuses: Map<string, { ok: true; value: boolean } | { ok: false; error: unknown }>;
+    try {
+      statuses = new Map(await Promise.all(paths.map(async path =>
+        [path, await settle(this.#join(this.#statuses, path, shared => this.git.worktreeDirty(path, { signal: shared }), deadline.signal))] as const)));
+    } finally {
+      deadline.dispose();
+    }
     this.#refuse(signal, [...statuses.values()]);
 
     return assigned.map((entry): RepositoryDiscovery => {
@@ -126,6 +155,8 @@ export class CoalescingWorktreeDiscovery implements WorktreeDiscoveryPort {
 
   /** Joins the shared read of `key`, starting it when none is in flight. Aborts it when its last caller leaves before it settles. */
   #join<T>(map: Map<string, Shared<T>>, key: string, start: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
+    // An already aborted signal never fires `abort` again: join nothing and start nothing.
+    if (signal.aborted) return Promise.reject(cancelled());
     let entry = map.get(key);
     if (!entry) {
       const controller = new AbortController();

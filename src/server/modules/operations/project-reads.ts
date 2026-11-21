@@ -151,7 +151,10 @@ function placed(placement: RegistrationPlacementReader, registration: CatalogReg
   const current = port(() => placement.statusSummary(registration.id), "placement_unavailable");
   const phase = own(current, "phase"), worktreePath = own(current, "worktreePath"), startedAt = own(current, "startedAt");
   if (!PHASES.includes(phase) || !optionalText(worktreePath) || !optionalText(startedAt)) throw corrupt("placement_unavailable");
-  return { ...registration, phase: phase as RegistrationPhase, worktreePath: worktreePath ?? registration.selectedWorktreePath, startedAt };
+  // The runtime's path names the running worktree only while a runtime is live. A stopped or failed runtime keeps its last path,
+  // but the next default start resolves the selected worktree, so that is the one reported.
+  const live = phase === "starting" || phase === "running" || phase === "stopping";
+  return { ...registration, phase: phase as RegistrationPhase, worktreePath: live ? worktreePath ?? registration.selectedWorktreePath : registration.selectedWorktreePath, startedAt };
 }
 
 function registrations(catalog: ProjectCatalogReader, now: number, project?: ProjectId): CatalogRegistration[] {
