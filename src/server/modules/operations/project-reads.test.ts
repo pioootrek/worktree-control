@@ -153,12 +153,30 @@ describe("project reads (D2a)", () => {
       if (!compact.ok) throw new Error(compact.error.reason);
       expect(compact.value.registrations.find(registration => registration.registrationId === f.ids.alpha2)?.worktreePath).toBe("/code/alpha2-selected");
     }
-    // A live runtime still reports the worktree it runs.
+    // A live runtime, or a failed one that still owns its process group (a failed stop), reports the worktree it holds.
+    const reported = async () => {
+      const listed = await f.runner.run(f.list, installation, {});
+      if (!listed.ok) throw new Error(listed.error.reason);
+      const compact = await f.runner.run(f.status, installation, { projectId: "project-a", compact: true });
+      if (!compact.ok) throw new Error(compact.error.reason);
+      const full = await f.runner.run(f.status, installation, { projectId: "project-a" });
+      if (!full.ok) throw new Error(full.error.reason);
+      return [listed.value.items.flatMap(item => item.registrations), compact.value.registrations, full.value.registrations]
+        .map(entries => entries.find(registration => registration.registrationId === f.ids.alpha2)?.worktreePath);
+    };
+    for (const held of [{ phase: "running", ownsProcess: true }, { phase: "failed", ownsProcess: true }]) {
+      summaries.mockImplementation((id: string) => id === f.ids.alpha2
+        ? { ...held, worktreePath: "/code/alpha2-explicit", startedAt: AT } : { phase: "stopped", worktreePath: null, startedAt: null });
+      expect([held, await reported()]).toEqual([held, ["/code/alpha2-explicit", "/code/alpha2-explicit", "/code/alpha2-explicit"]]);
+    }
+    // A failed runtime that owns nothing any more reports the selected worktree on every form.
     summaries.mockImplementation((id: string) => id === f.ids.alpha2
-      ? { phase: "running", worktreePath: "/code/alpha2-explicit", startedAt: AT } : { phase: "stopped", worktreePath: null, startedAt: null });
-    const running = await f.runner.run(f.list, installation, {});
-    if (!running.ok) throw new Error(running.error.reason);
-    expect(running.value.items.flatMap(item => item.registrations).find(registration => registration.registrationId === f.ids.alpha2)?.worktreePath).toBe("/code/alpha2-explicit");
+      ? { phase: "failed", ownsProcess: false, worktreePath: "/code/alpha2-explicit", startedAt: AT } : { phase: "stopped", worktreePath: null, startedAt: null });
+    expect(await reported()).toEqual(["/code/alpha2-selected", "/code/alpha2-selected", "/code/alpha2-selected"]);
+    // A malformed ownership flag is refused, never read as ownership.
+    summaries.mockImplementation((id: string) => id === f.ids.alpha2
+      ? { phase: "failed", ownsProcess: "yes", worktreePath: "/code/alpha2-explicit", startedAt: AT } : { phase: "stopped", worktreePath: null, startedAt: null });
+    expect(await f.runner.run(f.list, installation, {})).toMatchObject({ ok: false, error: { category: "internal" } });
   });
 
   it("filters before pagination: a reader sees only its project, with no cursor betraying hidden ones", async () => {

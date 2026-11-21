@@ -46,7 +46,8 @@ export interface ProjectCatalogReader {
 
 /** In-memory runtime placement of a registration (the process manager). Synchronous. */
 export interface RegistrationPlacementReader {
-  statusSummary(registrationId: string): { phase: unknown; worktreePath: unknown; startedAt: unknown };
+  /** `ownsProcess` (the process group or its cleanup is still held) may be absent, which reads as false. */
+  statusSummary(registrationId: string): { phase: unknown; worktreePath: unknown; startedAt: unknown; ownsProcess?: unknown };
 }
 
 /** One discovered worktree, before the allowlist. */
@@ -149,11 +150,14 @@ function registrationRow(row: unknown): CatalogRegistration | null {
 
 function placed(placement: RegistrationPlacementReader, registration: CatalogRegistration): Placed {
   const current = port(() => placement.statusSummary(registration.id), "placement_unavailable");
-  const phase = own(current, "phase"), worktreePath = own(current, "worktreePath"), startedAt = own(current, "startedAt");
-  if (!PHASES.includes(phase) || !optionalText(worktreePath) || !optionalText(startedAt)) throw corrupt("placement_unavailable");
-  // The runtime's path names the running worktree only while a runtime is live. A stopped or failed runtime keeps its last path,
-  // but the next default start resolves the selected worktree, so that is the one reported.
-  const live = phase === "starting" || phase === "running" || phase === "stopping";
+  const phase = own(current, "phase"), worktreePath = own(current, "worktreePath"), startedAt = own(current, "startedAt"), owns = own(current, "ownsProcess");
+  if (!PHASES.includes(phase) || !optionalText(worktreePath) || !optionalText(startedAt) || !(owns === undefined || typeof owns === "boolean")) {
+    throw corrupt("placement_unavailable");
+  }
+  // The runtime's path names its worktree while a runtime is live or still owns its process group (a failed stop keeps the
+  // group, which may still run there). A stopped runtime, or a failed one that owns nothing, keeps its last path, but the
+  // next default start resolves the selected worktree, so that is the one reported.
+  const live = phase === "starting" || phase === "running" || phase === "stopping" || owns === true;
   return { ...registration, phase: phase as RegistrationPhase, worktreePath: live ? worktreePath ?? registration.selectedWorktreePath : registration.selectedWorktreePath, startedAt };
 }
 
