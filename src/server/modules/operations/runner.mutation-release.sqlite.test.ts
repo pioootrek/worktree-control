@@ -205,9 +205,9 @@ describe("mutationRelease over SQLite: an existing record is answered and left a
   ])("another attempt's %s record: request_in_progress, untouched; the reopen's repair decides the retry", async (state, repaired, retried, effects) => {
     const s = await start();
     await s.release();
-    // The row of a live attempt: this test's arrangement, written through the owned connection inside admission.
+    // The row of a live attempt (live rows carry no expiry): this test's arrangement, written through the owned connection inside admission.
     await s.current.store.admission.run(() => s.current.database
-      .prepare("UPDATE operation_idempotency SET state=?, result_json=NULL, transitions_json=NULL, expires_at=updated_at+600000").run(state));
+      .prepare("UPDATE operation_idempotency SET state=?, result_json=NULL, transitions_json=NULL, expires_at=NULL").run(state));
     const stored = await s.current.rows();
     const first = await s.release();
     expect(first.writes).toEqual([refused(answer("conflict", 409, "request_in_progress", "none", "not_started"), inside([state]))]);
