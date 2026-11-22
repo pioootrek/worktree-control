@@ -3,11 +3,11 @@
  * the module's public API.
  */
 import type { DatabaseAdmission } from "@/server/database-admission";
-import type { ProjectId } from "@/shared/contracts/operations";
-import type { Lease, MutationOperation, PhaseScope, StreamOperation } from "./operation";
+import type { EffectState, ProjectId, PublicOperationError } from "@/shared/contracts/operations";
+import type { AdmittedCommitScope, Lease, MutationOperation, PhaseScope, StreamOperation } from "./operation";
 import { createWorld, MemoryIdempotency, P } from "./operations-fixture";
 import { onProject, type OperationRequirement } from "./requirements";
-import { OperationRunner, type StreamItem } from "./runner";
+import { OperationRunner, type MutationReleaseOptions, type StreamItem } from "./runner";
 
 export const projectA = P("project-a");
 export const projectB = P("project-b");
@@ -198,3 +198,67 @@ export async function unhandledDuring(body: () => Promise<void>): Promise<unknow
   }
   return seen;
 }
+
+export interface WriteInput { n: number }
+export interface WriteResult { n: number; projectId: ProjectId | null }
+export type WriteOperation = MutationOperation<WriteInput, WriteResult, { value: number }>;
+
+/**
+ * An admitted write with a declared commit point (the shape `mutationRelease`
+ * accepts). `before` runs before `commit()`, `after` past it; both may throw.
+ * `counts.runs` counts handler invocations, `counts.inside` those that ran
+ * inside admission.
+ */
+export function admittedWrite(world: ReturnType<typeof createWorld>, hooks: {
+  before?: () => void; after?: () => void; finalize?: () => void; project?: (result: WriteResult) => { value: number };
+} = {}) {
+  const counts = { runs: 0, inside: 0, finalizes: 0, projections: 0 };
+  const operation: WriteOperation = {
+    id: "fixture.admitted_write", kind: "mutation",
+    requirement: { require: onProject("runtime:control", "registration") },
+    parse: raw => {
+      const n = (raw as { n?: unknown } | null)?.n;
+      if (typeof n !== "number") throw new Error("n must be a number");
+      return { n };
+    },
+    resources: () => ({ registration: { ...REGISTRATION } }),
+    effect: { mode: "admitted", commitPoint: "declared", run: (value: WriteInput, scope: AdmittedCommitScope) => {
+      counts.runs++;
+      if (world.admission.admitted) counts.inside++;
+      hooks.before?.();
+      scope.commit();
+      hooks.after?.();
+      return { n: value.n, projectId: scope.resources.registration.projectId };
+    } },
+    finalize: () => { counts.finalizes++; hooks.finalize?.(); },
+    retain: true, publicKeys: ["value"],
+    project: result => { counts.projections++; return hooks.project ? hooks.project(result) : { value: result.n }; },
+  };
+  return { operation, counts };
+}
+
+/** One write to the caller as `mutationRelease` made it: which callback, whether inside admission, during which admission. */
+export interface DeliveryWrite { kind: "commit" | "refuse"; value: unknown; admitted: boolean; admission: number }
+
+/**
+ * Release options that record every write. `admitted` is the fixture
+ * admission's flag at the moment of the write; `admission` is the number of
+ * admissions entered so far, so a test names the phase that wrote.
+ */
+export function recordingDelivery<P>(world: ReturnType<typeof createWorld>, extra: Partial<MutationReleaseOptions<P>> = {}) {
+  const writes: DeliveryWrite[] = [];
+  const record = (kind: DeliveryWrite["kind"], value: unknown) => {
+    writes.push({ kind, value, admitted: world.admission.admitted, admission: world.admission.events.filter(event => event.kind === "run").length });
+  };
+  const options: MutationReleaseOptions<P> = {
+    eligible: () => true, connected: () => true, deadline: Number.MAX_SAFE_INTEGER,
+    commit(value: P) { record("commit", value); },
+    refuse(error: PublicOperationError) { record("refuse", error); },
+    ...extra,
+  };
+  return { options, writes };
+}
+
+/** The five public fields of an answer. */
+export const answer = (category: string, status: number, reason: string, retry: string, effect: EffectState | null): PublicOperationError =>
+  ({ category, status, reason, retry, effect }) as PublicOperationError;
