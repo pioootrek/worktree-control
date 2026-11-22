@@ -50,10 +50,15 @@ export async function initializeOperationRetention(options: {
     try { logs.controller("operations.retention_unavailable", { reason }); } catch { /* Diagnostics never change the outcome. */ }
     return null;
   };
-  let key: Buffer;
-  try { key = loadOperationKey(store.canonicalDatabasePath, options.excludedRoots ?? []); } catch { return unavailable("key_unavailable"); }
-  const keyId = fingerprintKeyId(key);
   const port = store.operationIdempotency();
+  let key: Buffer;
+  try { key = loadOperationKey(store.canonicalDatabasePath, options.excludedRoots ?? []); } catch {
+    // A key failure is local only while the store itself is still sound: one ordinary admitted
+    // statement first, so a failed fence, a lost owner or a file-level failure still refuses the store.
+    try { await store.admission.run(() => port.probe()); } catch (error) { if (storeWide(error)) throw error; }
+    return unavailable("key_unavailable");
+  }
+  const keyId = fingerprintKeyId(key);
   try {
     const counts = await store.admission.run(() => port.repair({ now: now(), keyId }));
     if (counts.deletedExpired || counts.convertedForeign || counts.deletedReserved || counts.convertedStarted) {

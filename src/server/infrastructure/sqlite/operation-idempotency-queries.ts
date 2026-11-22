@@ -54,6 +54,9 @@ export class OperationIdempotencyQueries {
     schemaTarget(OPERATION_IDEMPOTENCY_VERSION);
   }
 
+  /** One read of the table through the owned connection: the fence and admission checks of an ordinary statement, nothing else. */
+  probe(): void { this.database.prepare("SELECT 1 FROM operation_idempotency LIMIT 1").get(); }
+
   /** Whether the shared connection holds an open transaction now. */
   inTransaction(): boolean { return this.database.inTransaction; }
 
@@ -105,9 +108,11 @@ export class OperationIdempotencyQueries {
       const total = this.database.prepare(`SELECT count(*) AS n,ifnull(sum(charged_bytes),0) AS bytes FROM operation_idempotency WHERE ${unexpired}`).get(now) as { n: number; bytes: number };
       if (principal >= OPERATION_IDEMPOTENCY_LIMITS.perPrincipal || total.n >= OPERATION_IDEMPOTENCY_LIMITS.total
         || total.bytes + OPERATION_IDEMPOTENCY_LIMITS.recordBytes > OPERATION_IDEMPOTENCY_LIMITS.bytes) return "capacity";
-      this.database.prepare(`DELETE FROM operation_idempotency WHERE rowid IN (SELECT rowid FROM operation_idempotency
-        WHERE expires_at IS NOT NULL AND expires_at<=? ORDER BY expires_at LIMIT ?)`).run(now, OPERATION_IDEMPOTENCY_LIMITS.sweep);
-      if (existing) this.database.prepare(`DELETE FROM operation_idempotency WHERE ${KEY} AND expires_at IS NOT NULL AND expires_at<=?`).run(...keyValues(key), now);
+      // The requested key's own expired record counts against the same sweep budget.
+      let budget = OPERATION_IDEMPOTENCY_LIMITS.sweep;
+      if (existing) budget -= this.database.prepare(`DELETE FROM operation_idempotency WHERE ${KEY} AND expires_at IS NOT NULL AND expires_at<=?`).run(...keyValues(key), now).changes;
+      if (budget > 0) this.database.prepare(`DELETE FROM operation_idempotency WHERE rowid IN (SELECT rowid FROM operation_idempotency
+        WHERE expires_at IS NOT NULL AND expires_at<=? ORDER BY expires_at LIMIT ?)`).run(now, budget);
       this.database.prepare(`INSERT INTO operation_idempotency(operation_id,principal,idempotency_key,attempt,key_id,fingerprint,state,resources_json,
           result_json,transitions_json,charged_bytes,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,?,'reserved',?,NULL,NULL,?,?,?,NULL)`)
         .run(...keyValues(key), input.attempt, input.keyId, input.fingerprint, input.resourcesJson, OPERATION_IDEMPOTENCY_LIMITS.recordBytes, now, now);

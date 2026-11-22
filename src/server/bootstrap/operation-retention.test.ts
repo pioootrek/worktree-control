@@ -216,6 +216,32 @@ describe("failure classes", () => {
     expect(log.controller).not.toHaveBeenCalled();
   });
 
+  it("a key failure beside a failed fence keeps the store-wide refusal", async () => {
+    const paths = installation();
+    const first = await start(paths, T0);
+    first.store.close();
+    chmodSync(operationKeyPath(first.store.canonicalDatabasePath), 0o644);
+    const store = open(paths);
+    const outside = new Database(paths.databasePath);
+    outside.exec("CREATE TABLE outside_change(x); DROP TABLE outside_change;");
+    outside.close();
+    const log = logs();
+    await expect(initializeOperationRetention({ store, now: () => T0, logs: log })).rejects.toBeInstanceOf(SecurityFenceError);
+    expect(log.controller).not.toHaveBeenCalled();
+  });
+
+  it("a key failure on a closed owner keeps the store-wide refusal", async () => {
+    const paths = installation();
+    const first = await start(paths, T0);
+    first.store.close();
+    chmodSync(operationKeyPath(first.store.canonicalDatabasePath), 0o644);
+    const store = open(paths);
+    store.close();
+    const log = logs();
+    await expect(initializeOperationRetention({ store, now: () => T0, logs: log })).rejects.toBeTruthy();
+    expect(log.controller).not.toHaveBeenCalled();
+  });
+
   it("runs once per database owner", async () => {
     const paths = installation();
     const first = await start(paths, T0);

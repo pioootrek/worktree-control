@@ -189,6 +189,21 @@ describe("SQLite idempotency store: expiry", () => {
   });
 });
 
+describe("SQLite idempotency store: sweep budget", () => {
+  it("counts the replaced expired record of the requested key against the 100-record sweep", () => {
+    const clock = { now: 1_000 };
+    const { db, store: s } = store(clock);
+    fill(db, 100, { expiresAt: 500 });
+    s.put(K(), record("reserved")); s.put(K(), record("started")); s.put(K(), record("completed", { result: 1 }));
+    clock.now = 1_000 + HORIZON;
+    expect(count(db)).toBe(101);
+    s.put(K(), record("reserved", { attempt: "attempt-2", fingerprint: OTHER_PRINT }));
+    // 1 (the requested key) + 99 swept: one earlier expired filler and the new reservation remain.
+    expect(count(db)).toBe(2);
+    expect(row(db)).toMatchObject({ state: "reserved", attempt: "attempt-2" });
+  });
+});
+
 describe("SQLite idempotency store: bounds without early eviction", () => {
   const capacity = (call: () => unknown) => reason(call);
 

@@ -140,8 +140,9 @@ describe("schema step 53: operation idempotency records", () => {
       { k: "transitions", state: "unknown", r: null, t: null, e: horizon, c: 2 },
       { k: "unknown", state: "unknown", r: null, t: null, e: 900, c: 6 },
     ]);
+    const before = rows();
     invalidateOperationIdempotency(database, 600);
-    expect(rows()).toEqual(rows());
+    expect(rows()).toEqual(before);
     expect((rows() as Array<{ e: number }>).map(row => row.e)).toEqual([horizon, horizon, horizon, horizon, 900]);
   });
 });
