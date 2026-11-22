@@ -14,6 +14,8 @@ import { OPERATION_IDEMPOTENCY_HORIZON_MS, OPERATION_IDEMPOTENCY_RECORD_BYTES, O
 export const OPERATION_IDEMPOTENCY_LIMITS = Object.freeze({
   perPrincipal: 1000,
   total: 10_000,
+  /** One principal namespace holds at most a quarter of the byte budget, so it cannot refuse every other namespace. */
+  perPrincipalBytes: 16 * 1024 * 1024,
   bytes: 64 * 1024 * 1024,
   recordBytes: OPERATION_IDEMPOTENCY_RECORD_BYTES,
   horizonMs: OPERATION_IDEMPOTENCY_HORIZON_MS,
@@ -67,10 +69,12 @@ export class OperationIdempotencyQueries {
    */
   read(key: OperationIdempotencyKey, now: number): OperationIdempotencyRead {
     try {
-      const meta = this.database.prepare(`SELECT expires_at,typeof(resources_json) AS r,typeof(result_json) AS s,typeof(transitions_json) AS t,
+      const meta = this.database.prepare(`SELECT expires_at,state IN ('reserved','started') AS live,typeof(resources_json) AS r,typeof(result_json) AS s,typeof(transitions_json) AS t,
           length(CAST(resources_json AS BLOB))+ifnull(length(CAST(result_json AS BLOB)),0)+ifnull(length(CAST(transitions_json AS BLOB)),0) AS bytes
-        FROM operation_idempotency WHERE ${KEY}`).get(...keyValues(key)) as { expires_at: unknown; r: string; s: string; t: string; bytes: unknown } | undefined;
+        FROM operation_idempotency WHERE ${KEY}`).get(...keyValues(key)) as { expires_at: unknown; live: unknown; r: string; s: string; t: string; bytes: unknown } | undefined;
       if (!meta) return { kind: "none" };
+      // A record written past its CHECK (a tampered file): a terminal one never lacks an expiry, a live one never has one.
+      if ((meta.expires_at === null) !== (meta.live === 1)) return { kind: "malformed" };
       if (meta.expires_at !== null && (typeof meta.expires_at !== "number" || !Number.isSafeInteger(meta.expires_at))) return { kind: "malformed" };
       if (meta.expires_at !== null && meta.expires_at <= now) return { kind: "none" };
       if (meta.r !== "text" || !["text", "null"].includes(meta.s) || !["text", "null"].includes(meta.t)
@@ -104,9 +108,11 @@ export class OperationIdempotencyQueries {
     return this.database.transaction((): OperationIdempotencyReservation => {
       const existing = this.database.prepare(`SELECT expires_at FROM operation_idempotency WHERE ${KEY}`).get(...keyValues(key)) as { expires_at: number | null } | undefined;
       if (existing && (existing.expires_at === null || existing.expires_at > now)) return "exists";
-      const principal = (this.database.prepare(`SELECT count(*) AS n FROM operation_idempotency WHERE principal=? AND ${unexpired}`).get(key.principal, now) as { n: number }).n;
+      const own = this.database.prepare(`SELECT count(*) AS n,ifnull(sum(charged_bytes),0) AS bytes FROM operation_idempotency WHERE principal=? AND ${unexpired}`).get(key.principal, now) as { n: number; bytes: number };
+      const principal = own.n;
       const total = this.database.prepare(`SELECT count(*) AS n,ifnull(sum(charged_bytes),0) AS bytes FROM operation_idempotency WHERE ${unexpired}`).get(now) as { n: number; bytes: number };
       if (principal >= OPERATION_IDEMPOTENCY_LIMITS.perPrincipal || total.n >= OPERATION_IDEMPOTENCY_LIMITS.total
+        || own.bytes + OPERATION_IDEMPOTENCY_LIMITS.recordBytes > OPERATION_IDEMPOTENCY_LIMITS.perPrincipalBytes
         || total.bytes + OPERATION_IDEMPOTENCY_LIMITS.recordBytes > OPERATION_IDEMPOTENCY_LIMITS.bytes) return "capacity";
       // The requested key's own expired record counts against the same sweep budget.
       let budget = OPERATION_IDEMPOTENCY_LIMITS.sweep;
@@ -161,6 +167,8 @@ export class OperationIdempotencyQueries {
     const horizon = now + OPERATION_IDEMPOTENCY_LIMITS.horizonMs;
     const charge = `min(length(CAST(resources_json AS BLOB)),${OPERATION_IDEMPOTENCY_LIMITS.recordBytes})`;
     return this.database.transaction((): OperationIdempotencyRepair => {
+      // A terminal record without an expiry exists only past the table's CHECK: it gets one horizon, never permanence.
+      this.database.prepare("UPDATE operation_idempotency SET expires_at=? WHERE expires_at IS NULL AND state NOT IN ('reserved','started')").run(horizon);
       const deletedExpired = this.database.prepare("DELETE FROM operation_idempotency WHERE expires_at IS NOT NULL AND expires_at<=?").run(now).changes;
       const convertedForeign = this.database.prepare(`UPDATE operation_idempotency SET state='unknown',result_json=NULL,transitions_json=NULL,charged_bytes=${charge},
         updated_at=?,expires_at=ifnull(expires_at,?) WHERE key_id<>? AND state<>'unknown'`).run(now, horizon, keyId).changes;

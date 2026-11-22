@@ -146,3 +146,18 @@ describe("schema step 53: operation idempotency records", () => {
     expect((rows() as Array<{ e: number }>).map(row => row.e)).toEqual([horizon, horizon, horizon, horizon, 900]);
   });
 });
+
+describe("invalidation of a record past the CHECK", () => {
+  it("gives a terminal record without an expiry one horizon instead of keeping it forever", () => {
+    const database = new Database(":memory:");
+    try {
+      initializeSchema(database, true);
+      database.pragma("ignore_check_constraints = ON");
+      database.prepare(`INSERT INTO operation_idempotency(operation_id,principal,idempotency_key,attempt,key_id,fingerprint,state,resources_json,result_json,transitions_json,
+        charged_bytes,created_at,updated_at,expires_at) VALUES('fixture.op','operator','k','a',?,?,'unknown','{}',NULL,NULL,2,0,0,NULL)`).run("0".repeat(32), `hmac-sha256:v1:${"a".repeat(64)}`);
+      database.pragma("ignore_check_constraints = OFF");
+      invalidateOperationIdempotency(database, 500);
+      expect(database.prepare("SELECT state,expires_at AS e FROM operation_idempotency").get()).toEqual({ state: "unknown", e: 500 + OPERATION_IDEMPOTENCY_HORIZON_MS });
+    } finally { database.close(); }
+  });
+});

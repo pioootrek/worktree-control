@@ -205,6 +205,42 @@ describe("SQLite idempotency store: sweep budget", () => {
   });
 });
 
+describe("SQLite idempotency store: per-principal bytes and rows past the CHECK", () => {
+  it("one principal holds at most 16 MiB, so another principal still reserves", () => {
+    const clock = { now: 1_000 };
+    const { store: s } = store(clock);
+    const per = OPERATION_IDEMPOTENCY_LIMITS.perPrincipalBytes / IDEMPOTENCY_RECORD_BYTES;
+    for (let index = 0; index < per; index++) s.put(K(`a-${index}`, "account:alice"), record("reserved"));
+    expect(reason(() => s.put(K("a-more", "account:alice"), record("reserved")))).toBe("busy/idempotency_capacity");
+    expect(reason(() => s.put(K("b-1", "account:bob"), record("reserved")))).toBe("accepted");
+  });
+
+  /** A terminal record without an expiry, written with CHECK enforcement off (a tampered file). */
+  function tamper(db: Database.Database) {
+    db.pragma("ignore_check_constraints = ON");
+    db.prepare(`INSERT INTO operation_idempotency(operation_id,principal,idempotency_key,attempt,key_id,fingerprint,state,resources_json,result_json,transitions_json,
+      charged_bytes,created_at,updated_at,expires_at) VALUES('fixture.runtime_start','account:alice','k-1','attempt-1',?,?,'unknown','{}',NULL,NULL,262144,0,0,NULL)`).run(KEY_ID, FINGERPRINT);
+    db.pragma("ignore_check_constraints = OFF");
+  }
+
+  it("reads a terminal record without an expiry as malformed, never as a live record", () => {
+    const clock = { now: 1_000 };
+    const { db, store: s } = store(clock);
+    tamper(db);
+    expect(reason(() => s.get(K()))).toBe("internal/invalid_idempotency_record");
+  });
+
+  it("restart repair gives such a record one horizon, so it expires", () => {
+    const clock = { now: 1_000 };
+    const { db, queries } = store(clock);
+    tamper(db);
+    queries.repair({ now: 1_000, keyId: KEY_ID });
+    expect(row(db)).toMatchObject({ state: "unknown", expires_at: 1_000 + HORIZON });
+    queries.repair({ now: 1_000 + HORIZON, keyId: KEY_ID });
+    expect(count(db)).toBe(0);
+  });
+});
+
 describe("SQLite idempotency store: bounds without early eviction", () => {
   const capacity = (call: () => unknown) => reason(call);
 

@@ -1722,8 +1722,9 @@ synchronous.
   absent. A reservation deletes at most 100 expired records; the restart repair
   deletes all of them.
 - **Bounds, without early eviction.** At most 1,000 unexpired records per
-  principal namespace, 10,000 in all, 64 MiB of stored JSON in all and 256 KiB
-  per record. Each live attempt is charged 256 KiB from its reservation until
+  principal namespace, 10,000 in all, 16 MiB of stored JSON per principal
+  namespace, 64 MiB in all and 256 KiB per record. One namespace therefore
+  cannot fill the byte budget of all the others. Each live attempt is charged 256 KiB from its reservation until
   its final write, which replaces the charge with the record's actual size, so
   a completion is never refused for capacity. When a bound is full, a new
   reservation is refused before any change as `busy`/`idempotency_capacity`

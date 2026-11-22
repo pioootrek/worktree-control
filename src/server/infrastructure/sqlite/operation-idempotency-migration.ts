@@ -104,6 +104,8 @@ export function applyOperationIdempotencyMigration(database: Database.Database):
 export function invalidateOperationIdempotency(database: Database.Database, now: number): void {
   schemaTarget(OPERATION_IDEMPOTENCY_VERSION);
   if (!Number.isSafeInteger(now) || now < 0) throw new Error("Invalid idempotency clock.");
+  // A terminal record without an expiry exists only past the table's CHECK: it gets one horizon, never permanence.
+  database.prepare("UPDATE operation_idempotency SET expires_at=? WHERE expires_at IS NULL AND state NOT IN ('reserved','started')").run(now + OPERATION_IDEMPOTENCY_HORIZON_MS);
   database.prepare("DELETE FROM operation_idempotency WHERE expires_at IS NOT NULL AND expires_at<=?").run(now);
   database.prepare(`UPDATE operation_idempotency SET state='unknown',result_json=NULL,transitions_json=NULL,
     charged_bytes=min(length(CAST(resources_json AS BLOB)),${OPERATION_IDEMPOTENCY_RECORD_BYTES}),updated_at=?,expires_at=? WHERE state<>'unknown'`)
