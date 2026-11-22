@@ -56,7 +56,10 @@ export interface IdempotencyRecord {
   state: IdempotencyState;
   /**
    * Retained result of a `completed` attempt: the internal result, or for a
-   * secret-bearing operation only its receipt. Structured-cloneable plain data.
+   * secret-bearing operation only its receipt. JSON-domain: it passes the
+   * strict release serializer (`serializeRelease`), which the runner applies
+   * before the first projection, so a first release and a replay project the
+   * same value.
    */
   result?: unknown;
   /**
@@ -74,9 +77,12 @@ export interface IdempotencyRecord {
  * thenable is a failed call (decision W): its rejection is absorbed and the
  * runner proceeds as if the call had thrown. The adapter stores copies, never
  * references; the runner validates and copies every record it reads back
- * (a malformed record is `internal`/`invalid_idempotency_record`). Adapter obligations (not implemented in this slice): bound
- * retention; after a controller restart, delete `reserved` records (their
- * effect never began) and turn `started` records into `unknown`.
+ * (a malformed record is `internal`/`invalid_idempotency_record`). The SQLite
+ * adapter (`adapters/sqlite-idempotency.ts`, D1b) bounds retention and, at each
+ * controller start, deletes `reserved` records (their effect never began) and
+ * turns `started` records into `unknown`. A typed error a call throws keeps its
+ * category and reason: a full store refuses a reservation as
+ * `busy`/`idempotency_capacity` with effect `not_started`.
  */
 export interface IdempotencyStore {
   get(key: IdempotencyKey): IdempotencyRecord | null;
@@ -1237,6 +1243,8 @@ export class OperationRunner {
       const settled = state.outcome;
       if (!settled) throw new OperationError("internal", "effect_not_settled");
       const effectResources = state.resources ?? initial.resources;
+      /** The value the first release projects: the effect's result, or its normalized copy once retained. */
+      let released: { value: R } | null = settled.ok ? { value: settled.value } : null;
 
       // 4. Mandatory completion of an effect that began, under reserved
       //    admission and without an authority check: finalization, the
@@ -1263,8 +1271,12 @@ export class OperationRunner {
               let retained: { value: unknown } | null = null;
               if (settled.ok && !failed && (!transitions || state.confirmed)) {
                 // A secret-bearing operation retains only its receipt; a receipt that fails retains nothing.
-                try { retained = { value: secret ? receiptValue(synchronous(secret.receipt(settled.value), "receipt_not_synchronous")) : settled.value }; }
-                catch { failed = true; }
+                // An ordinary result is normalized once (decision V's domain, `-0` is `0`): the store keeps
+                // and the first release projects the same copy, so a replay is equivalent to it.
+                try {
+                  if (secret) retained = { value: receiptValue(synchronous(secret.receipt(settled.value), "receipt_not_synchronous")) };
+                  else { const normalized = serializeRelease(settled.value) as R; released = { value: normalized }; retained = { value: normalized }; }
+                } catch { failed = true; }
               }
               try {
                 write(retained ? finalRecord("completed", effectResources, retained.value, state.confirmed ?? undefined) : finalRecord("unknown", effectResources));
@@ -1291,7 +1303,7 @@ export class OperationRunner {
           const prepared = this.prepare(context, gate);
           if (settled.ok && state.confirmed && state.effect !== "cleanup_unconfirmed") {
             const release = this.transitionRelease(prepared, gate, refs, effectResources, state.confirmed);
-            return releaseValue<P>(synchronous(operation.project(settled.value, release), "projection_not_synchronous"), operation.publicKeys);
+            return releaseValue<P>(synchronous(operation.project(released!.value, release), "projection_not_synchronous"), operation.publicKeys);
           }
           // Nothing about the outcome reaches a caller who lost access to what the effect was authorized against.
           this.decided(prepared, gate.requirement, effectResources);
@@ -1303,7 +1315,7 @@ export class OperationRunner {
         if (!sameResolution(effectResources, phase.resources)) throw new OperationError("conflict", "resource_changed");
         if (state.effect === "cleanup_unconfirmed") throw new OperationError("unavailable", "finalization_unconfirmed", { effect: state.effect });
         if (!settled.ok) throw settled.error;
-        return releaseValue<P>(synchronous(operation.project(settled.value, phase.release), "projection_not_synchronous"), operation.publicKeys);
+        return releaseValue<P>(synchronous(operation.project(released!.value, phase.release), "projection_not_synchronous"), operation.publicKeys);
       }, { reserved: true });
       return { ok: true, value, replayed: false };
     } catch (error) {

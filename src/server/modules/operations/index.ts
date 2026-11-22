@@ -52,4 +52,5 @@ export { AgentTokenVerifier, type AgentCredentialReader, type AgentCredentialRec
 export { CompositeCredentialVerifier, type CompositeCredentialVerifierOptions } from "./adapters/composite-credential-verifier";
 export { sqliteGrants, type AccountGrantsReader } from "./adapters/sqlite-grants";
 export { SqliteResourceResolver } from "./adapters/sqlite-resolver";
+export { fingerprintKeyId, IDEMPOTENCY_RECORD_BYTES, SqliteIdempotencyStore, type IdempotencyStorePort, type SqliteIdempotencyStoreOptions, type StoredIdempotencyRow } from "./adapters/sqlite-idempotency";
 export { ProviderSessionVerifier } from "./adapters/provider-session-verifier";
