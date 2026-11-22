@@ -168,6 +168,45 @@ export type ReadReleaseResult =
   | { status: "refused"; error: PublicOperationError }
   | { status: "commit_failed"; error: PublicOperationError };
 
+/**
+ * A mutation's request-scoped release (`OperationRunner.mutationRelease`).
+ * Callbacks are captured once, before the first admission, and called with
+ * this options object as receiver.
+ */
+export interface MutationReleaseOptions<P> extends RunOptions {
+  /** As in `ReadReleaseOptions`: only synchronous true allows release. */
+  eligible(): boolean;
+  /** As in `ReadReleaseOptions`: only synchronous true means the caller can still receive a response. */
+  connected(): boolean;
+  /** Absolute deadline in the runtime clock's milliseconds; equality is expired. Checked again before every write. */
+  deadline: number;
+  /** Synchronous write of the released value (a first release or a replay), inside admission. Never retried. */
+  commit(value: P): void;
+  /** Synchronous write of a refusal, inside the admitted phase that established it. Never retried. */
+  refuse(error: PublicOperationError): void;
+  /**
+   * Buffered success (MCP): prepares bytes from the released value outside
+   * admission and must not write to the caller. Called once and awaited until
+   * it settles or `signal` aborts (then `request_cancelled`, nothing written);
+   * the deadline does not interrupt it, so a transport that stages passes a
+   * signal and aborts it at its deadline. The write happens in `commit` inside
+   * a final admitted phase that reproduces the value.
+   */
+  stage?(value: P): Promise<void>;
+  /** Refused (`invalid_request`/`invalid_input`): a mutation's release always takes a fresh decision. */
+  expectedCanonical?: never;
+  /** Refused (`invalid_request`/`invalid_input`): a mutation's refusal is always written directly by `refuse`. */
+  refusal?: never;
+}
+/**
+ * `committed`: `commit` or `refuse` returned normally. `refused`: returned
+ * without any write (the release policy, a refused admission whose callback
+ * never ran, a failed `stage`, an invalid call without usable callbacks); the
+ * adapter may write it. `commit_failed`: the one delivery attempt threw or
+ * returned a thenable; the adapter ends the response and writes nothing more.
+ */
+export type MutationReleaseResult = ReadReleaseResult;
+
 export type StreamItem<T> = { event: T } | { error: PublicOperationError };
 
 /** Everything a phase reads before it resolves any reference (decision Y). */
@@ -188,6 +227,41 @@ interface Phase extends Prepared {
   resources: ResolvedResources;
   release: ReleaseContext;
 }
+
+/** A mutation's work before its first admitted phase (`mutationPlan`). */
+interface MutationPlan<I> {
+  plan: EffectPlan;
+  gate: Gate;
+  store: IdempotencyStore | null;
+  /** The fingerprint of a keyed request; empty otherwise. */
+  print: string;
+  secret: SecretHooks | null;
+  input: I;
+  refs: Readonly<Record<string, ResourceRef>>;
+  transitions: readonly string[] | null;
+}
+
+/** The captured release of one `mutationRelease` call and its one answer. */
+interface MutationDelivery<P> {
+  /** The options object, receiver of every callback. */
+  receiver: object;
+  commit: (value: P) => void;
+  refuse: (error: PublicOperationError) => void;
+  stage: ((value: P) => Promise<void>) | undefined;
+  /** The request's release policy (`releaseCheck`). */
+  check: (now: number) => void;
+  deadline: number;
+  signal: AbortSignal | undefined;
+  /** Refusals thrown by the policy, recognized by identity (their origin), never by reason. */
+  policy: WeakSet<object>;
+  /** Set before the one `commit` or `refuse` call; never cleared. */
+  attempted: boolean;
+  /** This call's answer once decided; nothing is written after it is set. */
+  outcome: ReadReleaseResult | null;
+}
+
+/** The release policy of one admitted phase; `passed` once it allowed this phase. */
+interface PhaseGuard { passed: boolean; check(now: number): void }
 
 /** What every decision point of one operation checks besides its resources. */
 interface Gate { requirement: OperationRequirement; excluded: readonly ListenerKind[] | undefined }
@@ -515,15 +589,15 @@ export class OperationRunner {
     return this.decided(prepared, gate.requirement, resources);
   }
 
-  /** Must run inside an admitted phase. Throws a typed denial. */
-  private admit(context: AuthenticationContext, gate: Gate, refs: Readonly<Record<string, ResourceRef>>): Phase {
-    return this.decideOn(this.prepare(context, gate), gate, refs);
+  /** Must run inside an admitted phase. Throws a typed denial. `check` is a release policy, applied as in `prepare`. */
+  private admit(context: AuthenticationContext, gate: Gate, refs: Readonly<Record<string, ResourceRef>>, check?: (now: number) => void): Phase {
+    return this.decideOn(this.prepare(context, gate, check), gate, refs);
   }
 
   /** A fresh decision that also requires an unchanged resolution and no abort. Must run inside an admitted phase. */
   private recheck(context: AuthenticationContext, gate: Gate, refs: Readonly<Record<string, ResourceRef>>,
-    expected: ResolvedResources, signal: AbortSignal | undefined): Phase {
-    const phase = this.admit(context, gate, refs);
+    expected: ResolvedResources, signal: AbortSignal | undefined, check?: (now: number) => void): Phase {
+    const phase = this.admit(context, gate, refs, check);
     if (!sameResolution(expected, phase.resources)) throw new OperationError("conflict", "resource_changed");
     if (signal?.aborted) throw cancelled();
     return phase;
@@ -981,6 +1055,54 @@ export class OperationRunner {
   }
 
   private async mutate<I, R, P extends object>(operation: MutationOperation<I, R, P>, context: AuthenticationContext, raw: unknown, options: RunOptions): Promise<RunResult<P>> {
+    // Read once, before planning: planning, its classification and every phase use this one plain snapshot.
+    const { signal, idempotencyKey } = options;
+    let planned: MutationPlan<I>;
+    try { planned = this.mutationPlan(operation, raw, idempotencyKey, false); } catch (error) {
+      return { ok: false, error: failure(error, "not_started", signal) };
+    }
+    // Without a delivery, `execute` always returns a result; `null` is only its hand-over to a delivery.
+    return await this.execute(operation, context, planned, { signal, idempotencyKey }, null) as RunResult<P>;
+  }
+
+  /**
+   * Everything of a mutation before its first admitted phase: the effect, the
+   * key, decision V's canonical input and its fingerprint, the secret hooks,
+   * the parsed input, its references and the transition slots. Throws a typed
+   * refusal. `admittedOnly` (for `mutationRelease`) also refuses an `acquire`
+   * and an idle effect as `internal`/`invalid_operation`.
+   */
+  private mutationPlan<I, R, P extends object>(operation: MutationOperation<I, R, P>, raw: unknown, idempotencyKey: string | undefined,
+    admittedOnly: boolean): MutationPlan<I> {
+    const plan = effectPlan(operation.effect);
+    if (admittedOnly && (plan.mode !== "admitted" || operation.acquire !== undefined)) throw new OperationError("internal", "invalid_operation");
+    const gate = gateOf(operation);
+    const store = this.idempotency(operation.retain === true, idempotencyKey);
+    // Decision V: an operation that declares retention accepts JSON-domain input only, with or
+    // without a key; `parse` sees its canonical copy. The fingerprint is a keyed digest of the
+    // canonical text (`29cf8fa5` delta 7), computed only for a request that carries a key.
+    let source: unknown = raw, canonical = "";
+    if (operation.retain === true) {
+      try { source = serializeRelease(raw); canonical = canonicalJson(source); } catch { throw new OperationError("invalid_request", "invalid_input"); }
+    }
+    const print = store && idempotencyKey !== undefined ? this.fingerprint(operation.id, canonical) : "";
+    canonical = "";
+    const secret = secretOf(operation);
+    const input = this.parse(operation.parse, source);
+    const refs = this.references(operation, input);
+    const transitions = transitionSlots(operation.transitions, refs);
+    return { plan, gate, store, print, secret, input, refs, transitions };
+  }
+
+  /**
+   * Phases 1 to 5 of a mutation. Without `delivery` (`run`) it returns the
+   * result. With one (`mutationRelease`) every answer is decided in
+   * `delivery.outcome`: committed or refused inside the admitted phase that
+   * established it, or returned from the fallback paths; it then returns
+   * `null`, or the result of a path that never reached an admitted callback.
+   */
+  private async execute<I, R, P extends object>(operation: MutationOperation<I, R, P>, context: AuthenticationContext, planned: MutationPlan<I>,
+    options: RunOptions, delivery: MutationDelivery<P> | null): Promise<RunResult<P> | null> {
     const { admission } = this.runtime;
     const { signal, idempotencyKey } = options;
     // Mutable holder: closures below update it, and TypeScript must not narrow it.
@@ -997,13 +1119,18 @@ export class OperationRunner {
        * to the store adapter. Only `pending` lets `finally` write.
        */
       final: "pending" | "written" | "unconfirmed";
+      /**
+       * The refusing admitted callback of a delivery already attempted to give
+       * the reservation back (confirmed or not), so `finally` never repeats it.
+       */
+      givenBack: boolean;
       /** Resources of the phase that admitted the effect (its commit point). */
       resources?: ResolvedResources;
       /** Results the handler reported for its declared transition slots. */
       reported: Map<string, TransitionResult>;
       /** Results confirmed by the resolver at completion; `null` when confirmation failed. */
       confirmed?: Readonly<Record<string, ResolvedResource | null>> | null;
-    } = { effect: "not_started", final: "pending", reported: new Map() };
+    } = { effect: "not_started", final: "pending", givenBack: false, reported: new Map() };
     /** Refusals produced by `recheck()` of this attempt, recognized by identity when a handler rethrows one. */
     const refusals = new WeakSet<object>();
     /**
@@ -1028,27 +1155,36 @@ export class OperationRunner {
         ...(status === "completed" ? { result } : {}), ...(status === "completed" && transitions ? { transitions } : {}),
       };
     };
-    try {
-      const plan = effectPlan(operation.effect);
-      const gate = gateOf(operation);
-      const store = this.idempotency(operation.retain === true, idempotencyKey);
-      // Decision V: an operation that declares retention accepts JSON-domain input only, with or
-      // without a key; `parse` sees its canonical copy. The fingerprint is a keyed digest of the
-      // canonical text (`29cf8fa5` delta 7), computed only for a request that carries a key.
-      let source: unknown = raw, canonical = "";
-      if (operation.retain === true) {
-        try { source = serializeRelease(raw); canonical = canonicalJson(source); } catch { throw new OperationError("invalid_request", "invalid_input"); }
+    /**
+     * Reservation before answer (delivery only): inside the admitted callback
+     * that refuses a fresh, owned attempt before its commit point, after the
+     * handler's own transaction unwound, the reservation is given back
+     * synchronously before the refusal is delivered. Attempted once; a release
+     * that throws or returns a thenable is unconfirmed (decision W) and the
+     * refusal stands. That includes a release the store refuses because a
+     * broken handler left its transaction open (`idempotency_in_transaction`):
+     * the runner cannot tell that refusal from any other, so it never falls
+     * back to the completion path; the record is left to the store's repair.
+     */
+    const giveBack = (): void => {
+      const reservation = state.reservation;
+      if (!reservation || state.effect !== "not_started" || state.final !== "pending" || state.givenBack) return;
+      state.givenBack = true;
+      try { synchronous(reservation.store.release({ ...reservation.key }, reservation.attempt), "idempotency_store_not_synchronous"); } catch {
+        // Unconfirmed: the record may stay `reserved` until the next start's repair; no immediate retry is promised.
       }
-      const print = store && idempotencyKey !== undefined ? this.fingerprint(operation.id, canonical) : "";
-      canonical = "";
-      const secret = secretOf(operation);
-      const input = this.parse(operation.parse, source);
-      const refs = this.references(operation, input);
-      const transitions = transitionSlots(operation.transitions, refs);
+    };
+    /** A delivery's refusal before the effect: the reservation back first, then the refusal inside this phase. */
+    const refuseBeforeEffect = (release: MutationDelivery<P>, guard: PhaseGuard, error: unknown): void => {
+      giveBack();
+      release.outcome = this.refuseIn(release, guard, error, "not_started");
+    };
+    try {
+      const { plan, gate, store, print, secret, input, refs, transitions } = planned;
 
-      // 1. Admission: authority, resources, requirement; the idempotency reservation or a replay.
-      const first = await admission.run(() => {
-        const prepared = this.prepare(context, gate);
+      type First = { kind: "replay"; value: P; record: IdempotencyRecord } | { kind: "fresh"; phase: Phase };
+      /** Phase 1 after `prepare`: the reservation, or an answer from an existing record. Must run inside an admitted phase. */
+      const admitFirst = (prepared: Prepared): First => {
         if (store && idempotencyKey !== undefined) {
           const key: IdempotencyKey = Object.freeze({ operationId: operation.id, principal: principalKey(prepared.authority), idempotencyKey });
           const lookup = () => readRecord(synchronous(store.get({ ...key }), "idempotency_store_not_synchronous"));
@@ -1068,7 +1204,7 @@ export class OperationRunner {
               // state is reported: a caller who lost access to what the attempt was authorized
               // against learns nothing about it, not even a conflict or an unknown outcome.
               this.decided(prepared, gate.requirement, record.resources);
-              return { kind: "replay" as const, value: existing(record, () => {
+              return { kind: "replay" as const, record, value: existing(record, () => {
                 if (!record.transitions) throw new OperationError("internal", "invalid_idempotency_record");
                 return this.projectRetained(operation, record.result, this.transitionRelease(prepared, gate, refs, record.resources, record.transitions));
               }) };
@@ -1077,7 +1213,13 @@ export class OperationRunner {
           } else {
             phase = this.decideOn(prepared, gate, refs);
             const record = lookup();
-            if (record) return { kind: "replay" as const, value: existing(record, () => this.replay(operation, phase, record)) };
+            if (record) {
+              // As above: decided on the resources the attempt was authorized against before the
+              // record is classified, so a caller who lost them learns nothing about it (no conflict,
+              // no request in progress, no unknown outcome). `replay()` repeats this decision.
+              this.decided(prepared, gate.requirement, record.resources);
+              return { kind: "replay" as const, record, value: existing(record, () => this.replay(operation, phase, record)) };
+            }
           }
           const attempt = randomUUID();
           // Owned before the write: a write that lands and then throws is still given back in `finally`.
@@ -1086,14 +1228,49 @@ export class OperationRunner {
           return { kind: "fresh" as const, phase };
         }
         return { kind: "fresh" as const, phase: this.decideOn(prepared, gate, refs) };
+      };
+
+      // 1. Admission: authority, resources, requirement; the idempotency reservation or a replay.
+      //    A delivery checks its release policy first and answers inside this phase.
+      const first = await admission.run((): First | { kind: "delivered" } => {
+        const guard = delivery ? this.guard(delivery) : undefined;
+        try {
+          const answer = admitFirst(this.prepare(context, gate, guard?.check));
+          if (delivery && guard && answer.kind === "replay" && !delivery.stage) {
+            delivery.outcome = this.deliver(delivery, delivery.commit, answer.value, "not_started");
+            return { kind: "delivered" };
+          }
+          return answer;
+        } catch (error) {
+          if (!delivery || !guard) throw error;
+          refuseBeforeEffect(delivery, guard, error);
+          return { kind: "delivered" };
+        }
       }, { signal });
-      if (first.kind === "replay") return { ok: true, value: first.value, replayed: true };
+      if (first.kind === "delivered") return null;
+      if (first.kind === "replay") {
+        if (!delivery) return { ok: true, value: first.value, replayed: true };
+        // Buffered replay: the final phase repeats the current and the historical decision on the
+        // validated record evidence captured here, and never reads the store again.
+        const record = first.record;
+        await this.staged(delivery, first.value, "not_started", guard => {
+          const prepared = this.prepare(context, gate, guard.check);
+          if (transitions) {
+            this.decided(prepared, gate.requirement, record.resources);
+            if (!record.transitions) throw new OperationError("internal", "invalid_idempotency_record");
+            return this.projectRetained(operation, record.result, this.transitionRelease(prepared, gate, refs, record.resources, record.transitions));
+          }
+          return this.replay(operation, this.decideOn(prepared, gate, refs), record);
+        });
+        return null;
+      }
       const initial = first.phase;
 
       // 2. Optional SQL-free wait (for example a project lock) outside admission.
       //    Ownership is recorded the moment the acquire resolves, inside the
       //    callback, so a failed re-admission still releases it exactly once.
-      if (operation.acquire) {
+      //    A delivery refused `acquire` before any admission.
+      if (!delivery && operation.acquire) {
         const acquire = operation.acquire.bind(operation);
         await admission.idle(async () => {
           const lease = await acquire(input, signal);
@@ -1185,61 +1362,71 @@ export class OperationRunner {
       };
       try {
         await admission.run(async () => {
-          const phase = this.recheck(context, gate, refs, initial.resources, signal);
-          state.resources = phase.resources;
-          if (plan.commitPoint === "entry") cross(phase.resources);
-          if (plan.mode === "admitted") {
-            // Synchronous: `commit()` marks the point in this same admitted phase, after this phase's decision.
-            const live: Liveness = { open: true };
-            const base: EffectScope = { ...this.scope(phase, signal, live), transition };
-            const scope = plan.commitPoint === "declared"
-              ? Object.freeze({ ...base, commit: (): void => { if (crossing.closed) throw closed(); if (!crossing.crossed) cross(phase.resources); } })
-              : Object.freeze(base);
-            let value: unknown;
-            try { value = plan.run(input, scope); } catch (error) { live.open = false; fail(error); return; }
-            live.open = false;
-            if (isThenable(value)) {
-              // Its continuation may still act: the outcome is unknown whatever the commit point.
-              absorb(value);
-              crossing.closed = true;
-              state.effect = "unknown";
-              state.outcome = { ok: false, error: new OperationError("internal", "admitted_effect_not_synchronous", { effect: "unknown" }) };
+          const guard = delivery ? this.guard(delivery) : undefined;
+          try {
+            const phase = this.recheck(context, gate, refs, initial.resources, signal, guard?.check);
+            state.resources = phase.resources;
+            if (plan.commitPoint === "entry") cross(phase.resources);
+            if (plan.mode === "admitted") {
+              // Synchronous: `commit()` marks the point in this same admitted phase, after this phase's decision.
+              const live: Liveness = { open: true };
+              const base: EffectScope = { ...this.scope(phase, signal, live), transition };
+              const scope = plan.commitPoint === "declared"
+                ? Object.freeze({ ...base, commit: (): void => { if (crossing.closed) throw closed(); if (!crossing.crossed) cross(phase.resources); } })
+                : Object.freeze(base);
+              let value: unknown;
+              try { value = plan.run(input, scope); } catch (error) { live.open = false; fail(error); return; }
+              live.open = false;
+              if (isThenable(value)) {
+                // Its continuation may still act: the outcome is unknown whatever the commit point.
+                absorb(value);
+                crossing.closed = true;
+                state.effect = "unknown";
+                state.outcome = { ok: false, error: new OperationError("internal", "admitted_effect_not_synchronous", { effect: "unknown" }) };
+                return;
+              }
+              settle(value as R);
               return;
             }
-            settle(value as R);
-            return;
+            // Idle: `commit()` always re-enters admission and decides again before crossing.
+            const commit = (): Promise<void> => {
+              if (crossing.closed) return Promise.reject(closed());
+              if (crossing.crossed) return Promise.resolve();
+              if (!crossing.pending) {
+                const pending = admission.run(() => {
+                  const fresh = this.recheck(context, gate, refs, initial.resources, signal);
+                  if (crossing.closed) throw closed();
+                  cross(fresh.resources);
+                }, { signal }).catch((error: unknown) => {
+                  crossing.refusal = classifyBeforeCommit(cancellationOr(error, "not_started", signal));
+                  throw crossing.refusal;
+                });
+                pending.catch(() => undefined);
+                crossing.pending = pending;
+              }
+              return crossing.pending;
+            };
+            // An idle effect runs outside admission: `authorizePrincipal` is closed from the start.
+            const base: IdleEffectScope = { ...this.scope(phase, signal, { open: false }), transition, recheck };
+            const scope = plan.commitPoint === "declared" ? Object.freeze({ ...base, commit }) : Object.freeze(base);
+            await idleWithCompletion(admission, async () => {
+              let value: R;
+              try { value = (await plan.run(input, scope)) as R; } catch (error) { fail(error); return; }
+              settle(value);
+            }, { deadlineMs: this.deadline });
+          } catch (error) {
+            if (!delivery || !guard) throw error;
+            // A delivery runs admitted effects only, so this is still the admitted phase that refused.
+            if (state.effect === "not_started") { refuseBeforeEffect(delivery, guard, error); return; }
+            // Past the commit point without a settled outcome: an unknown outcome, completed and released like any other.
+            if (!state.outcome) { crossing.closed = true; state.effect = "unknown"; state.outcome = { ok: false, error }; }
           }
-          // Idle: `commit()` always re-enters admission and decides again before crossing.
-          const commit = (): Promise<void> => {
-            if (crossing.closed) return Promise.reject(closed());
-            if (crossing.crossed) return Promise.resolve();
-            if (!crossing.pending) {
-              const pending = admission.run(() => {
-                const fresh = this.recheck(context, gate, refs, initial.resources, signal);
-                if (crossing.closed) throw closed();
-                cross(fresh.resources);
-              }, { signal }).catch((error: unknown) => {
-                crossing.refusal = classifyBeforeCommit(cancellationOr(error, "not_started", signal));
-                throw crossing.refusal;
-              });
-              pending.catch(() => undefined);
-              crossing.pending = pending;
-            }
-            return crossing.pending;
-          };
-          // An idle effect runs outside admission: `authorizePrincipal` is closed from the start.
-          const base: IdleEffectScope = { ...this.scope(phase, signal, { open: false }), transition, recheck };
-          const scope = plan.commitPoint === "declared" ? Object.freeze({ ...base, commit }) : Object.freeze(base);
-          await idleWithCompletion(admission, async () => {
-            let value: R;
-            try { value = (await plan.run(input, scope)) as R; } catch (error) { fail(error); return; }
-            settle(value);
-          }, { deadlineMs: this.deadline });
         }, { signal });
       } catch (error) {
         // A refused re-admission after a settled effect does not hide its outcome.
         if (!state.outcome) throw error;
       }
+      if (delivery?.outcome) return null;
       const settled = state.outcome;
       if (!settled) throw new OperationError("internal", "effect_not_settled");
       const effectResources = state.resources ?? initial.resources;
@@ -1253,7 +1440,8 @@ export class OperationRunner {
       //    release records `unknown`, never `completed`. Each step is
       //    confirmed only when its synchronous callback returned normally; a
       //    thenable is a failed step (decision W). An unconfirmed transition
-      //    or a failed receipt records `unknown` as well.
+      //    or a failed receipt records `unknown` as well. Never checks a
+      //    delivery's release policy: it completes when the caller is gone.
       const reservation = state.reservation;
       if (operation.finalize || reservation || (transitions && settled.ok)) {
         try {
@@ -1297,10 +1485,11 @@ export class OperationRunner {
       }
       releaseLease();
 
-      // 5. Release only after a fresh decision on current authority and resources.
-      const value = await admission.run(() => {
+      // 5. Release only after a fresh decision on current authority and resources. A delivery's
+      //    `check` runs after revalidation; the same projection input serves its final phase.
+      const releaseNow = (check?: (now: number) => void): P => {
         if (transitions) {
-          const prepared = this.prepare(context, gate);
+          const prepared = this.prepare(context, gate, check);
           if (settled.ok && state.confirmed && state.effect !== "cleanup_unconfirmed") {
             const release = this.transitionRelease(prepared, gate, refs, effectResources, state.confirmed);
             return releaseValue<P>(synchronous(operation.project(released!.value, release), "projection_not_synchronous"), operation.publicKeys);
@@ -1311,20 +1500,36 @@ export class OperationRunner {
           if (!settled.ok) throw settled.error;
           throw new OperationError("conflict", "transition_unconfirmed", { effect: "committed" });
         }
-        const phase = this.admit(context, gate, refs);
+        const phase = this.admit(context, gate, refs, check);
         if (!sameResolution(effectResources, phase.resources)) throw new OperationError("conflict", "resource_changed");
         if (state.effect === "cleanup_unconfirmed") throw new OperationError("unavailable", "finalization_unconfirmed", { effect: state.effect });
         if (!settled.ok) throw settled.error;
         return releaseValue<P>(synchronous(operation.project(released!.value, phase.release), "projection_not_synchronous"), operation.publicKeys);
+      };
+      if (!delivery) {
+        const value = await admission.run(() => releaseNow(), { reserved: true });
+        return { ok: true, value, replayed: false };
+      }
+      const staging = await admission.run((): { value: P } | null => {
+        const guard = this.guard(delivery);
+        let value: P;
+        try { value = releaseNow(guard.check); } catch (error) {
+          delivery.outcome = this.refuseIn(delivery, guard, error, state.effect);
+          return null;
+        }
+        if (!delivery.stage) { delivery.outcome = this.deliver(delivery, delivery.commit, value, state.effect); return null; }
+        return { value };
       }, { reserved: true });
-      return { ok: true, value, replayed: false };
+      if (staging) await this.staged(delivery, staging.value, state.effect, guard => releaseNow(guard.check));
+      return null;
     } catch (error) {
       return { ok: false, error: failure(error, state.effect, signal) };
     } finally {
       releaseLease();
       const reservation = state.reservation;
       // Only for attempts whose completion callback never ran: once it ran, it alone wrote (or failed to write) the final record.
-      if (reservation && state.final === "pending") {
+      // A delivery's refusing callback that already gave the reservation back is never repeated here.
+      if (reservation && state.final === "pending" && !state.givenBack) {
         try {
           if (state.effect === "not_started") {
             // An attempt that never crossed its commit point gives its reservation back, so a retry runs fresh.
@@ -1340,6 +1545,220 @@ export class OperationRunner {
           // The record stays as it was (`reserved` or `started`); later requests see `request_in_progress` until the adapter clears it.
         }
       }
+    }
+  }
+
+  /**
+   * Releases a mutation inside admission (D2b-1). Success and every refusal
+   * are written synchronously inside the admitted phase that established them:
+   * `refuse(error)` in phase 1 (decision, reservation, an existing record,
+   * capacity), in phase 3 (the final check, a changed resolution, a typed
+   * refusal before the commit point) and in step 5 (an outcome after the
+   * effect, a fresh denial); a refusal found before any admission (input,
+   * key, store, the definition) in one admitted phase that first revalidates
+   * the context and applies the release policy. A fresh owned attempt refused
+   * before its commit point gets its reservation back in the refusing phase,
+   * before the refusal is written. A request has at most one delivery attempt:
+   * a `commit` or `refuse` that throws or returns a thenable is
+   * `commit_failed`, terminal and never followed by another write. Only the
+   * release policy's refusals, a refused admission whose callback never ran
+   * and a failed `stage` are returned as `refused` without a write.
+   *
+   * Only an admitted effect without `acquire` is accepted; anything else is
+   * `internal`/`invalid_operation` before any reservation. With `stage`, a
+   * success (or replay) is projected, staged once outside admission and
+   * written only inside a final reserved admission that repeats the release
+   * decisions on the captured projection input, reads no record and compares
+   * the canonical DTO.
+   */
+  async mutationRelease<P extends object>(operation: AnyOperation, context: AuthenticationContext, raw: unknown,
+    options: MutationReleaseOptions<P>): Promise<MutationReleaseResult> {
+    let delivery: MutationDelivery<P>;
+    let idempotencyKey: string | undefined, commit: unknown, stage: unknown, unsupported: unknown;
+    try {
+      // Capture the call's policy and callbacks once, before the first admission.
+      const signal = options.signal;
+      const { eligible, connected, refuse, deadline } = options;
+      ({ commit, stage, idempotencyKey } = options);
+      unsupported = (options as { expectedCanonical?: unknown }).expectedCanonical !== undefined || (options as { refusal?: unknown }).refusal !== undefined;
+      // Without a usable refusal callback or policy nothing can be written: returned locally.
+      if (typeof eligible !== "function" || typeof connected !== "function" || typeof refuse !== "function" || !Number.isFinite(deadline)) {
+        throw new OperationError("invalid_request", "invalid_input");
+      }
+      delivery = {
+        receiver: options, commit: commit as (value: P) => void, refuse, stage: undefined, deadline, signal,
+        check: releaseCheck(options, eligible, connected, deadline, signal), policy: new WeakSet(), attempted: false, outcome: null,
+      };
+    } catch (error) {
+      return { status: "refused", error: failure(error, "not_started", undefined) };
+    }
+    let planned: MutationPlan<unknown>;
+    const mutation = operation as MutationOperation<unknown, unknown, P>;
+    try {
+      if (typeof commit !== "function" || (stage !== undefined && typeof stage !== "function") || unsupported) throw new OperationError("invalid_request", "invalid_input");
+      if (stage !== undefined) delivery.stage = stage as (value: P) => Promise<void>;
+      if (operation.kind !== "mutation") throw new OperationError("internal", "invalid_operation");
+      // The listener exclusion before the input is parsed, as in `run()`.
+      if (!this.registeredFor(mutation, context)) throw notRegistered();
+      planned = this.mutationPlan(mutation, raw, idempotencyKey, true);
+    } catch (error) {
+      return this.earlyRefusal(delivery, context, operation, error);
+    }
+    const result = await this.execute(mutation, context, planned, { signal: delivery.signal, idempotencyKey }, delivery);
+    if (delivery.outcome) return delivery.outcome;
+    // Only a path that never reached an admitted callback (a refused admission, the abort check between phases).
+    if (result && !result.ok) return { status: "refused", error: result.error };
+    return { status: "refused", error: failure(new OperationError("internal", "unexpected_failure"), "not_started", undefined) };
+  }
+
+  /**
+   * A refusal found before any admission (decision 2): one admitted phase
+   * revalidates the context and the listener and applies the release policy,
+   * then writes the refusal, or the revalidation's own answer instead. Never
+   * throws.
+   */
+  private async earlyRefusal<P>(delivery: MutationDelivery<P>, context: AuthenticationContext, operation: unknown, error: unknown): Promise<MutationReleaseResult> {
+    let excluded: unknown;
+    // An unreadable exclusion fails closed: the operation is registered nowhere.
+    try { excluded = (operation as { excludedListeners?: unknown }).excludedListeners; } catch { excluded = null; }
+    try {
+      await this.runtime.admission.run(() => {
+        const guard = this.guard(delivery);
+        let answer: unknown = error;
+        try {
+          const { authority } = currentAuthorityWithCredential(context);
+          if (!listenerAllowed({ excludedListeners: excluded as readonly ListenerKind[] | undefined }, authority.listener)) throw notRegistered();
+          guard.check(this.policyClock());
+        } catch (thrown) { answer = thrown; }
+        delivery.outcome = this.refuseIn(delivery, guard, answer, "not_started");
+      }, { signal: delivery.signal });
+    } catch (thrown) {
+      if (!delivery.outcome) delivery.outcome = { status: "refused", error: failure(thrown, "not_started", delivery.signal) };
+    }
+    return delivery.outcome ?? { status: "refused", error: failure(new OperationError("internal", "unexpected_failure"), "not_started", undefined) };
+  }
+
+  /**
+   * The runtime clock as a delivery's release policy reads it. A throw, or a
+   * thenable (absorbed, so its rejection is never unhandled), gives no answer:
+   * `NaN`, which the guard treats as an expired deadline. Never throws.
+   */
+  private policyClock(): number {
+    let now: unknown;
+    try { now = this.runtime.now(); } catch { return Number.NaN; }
+    if (isThenable(now)) { absorb(now); return Number.NaN; }
+    return typeof now === "number" ? now : Number.NaN;
+  }
+
+  /**
+   * The release policy of one admitted phase of a delivery; a refusal it
+   * throws is recognized by identity. A clock answer that is not a finite
+   * number is an expired deadline: the policy is applied at the deadline
+   * itself, so eligibility is still checked first and `release_timed_out`
+   * follows, never an operation error of the clock.
+   */
+  private guard<P>(delivery: MutationDelivery<P>): PhaseGuard {
+    const guard: PhaseGuard = {
+      passed: false,
+      check: (now: number) => {
+        const time = typeof now === "number" && Number.isFinite(now) ? now : delivery.deadline;
+        try { delivery.check(time); } catch (error) {
+          if (typeof error === "object" && error !== null) delivery.policy.add(error);
+          throw error;
+        }
+        guard.passed = true;
+      },
+    };
+    return guard;
+  }
+
+  /**
+   * The deadline check immediately before the write, then the one delivery
+   * attempt. Must run inside an admitted phase. Never throws. The attempt flag
+   * is set before the callback runs; a throw or thenable is `commit_failed`,
+   * classified with this invocation's effect state.
+   */
+  private deliver<P, T>(delivery: MutationDelivery<P>, write: (value: T) => void, value: T, effect: EffectState): MutationReleaseResult {
+    const failed = (): MutationReleaseResult => ({ status: "commit_failed", error: failure(new OperationError("internal", "release_commit_failed"), effect, undefined) });
+    if (delivery.attempted) return failed();
+    const now = this.policyClock();
+    if (!Number.isFinite(now) || now >= delivery.deadline) {
+      return { status: "refused", error: failure(new OperationError("unavailable", "release_timed_out", { retry: "retry" }), effect, undefined) };
+    }
+    delivery.attempted = true;
+    try {
+      synchronous(Reflect.apply(write, delivery.receiver, [value]), "release_commit_failed");
+      return { status: "committed" };
+    } catch {
+      // The write may have partially happened. Never retried, never followed by another envelope.
+      return failed();
+    }
+  }
+
+  /**
+   * Writes a refusal established in this admitted phase. A refusal of the
+   * release policy is only returned. Otherwise the policy is applied first when
+   * this phase has not passed it yet (a revalidation, or a clock read of
+   * `prepare`, that threw before it), then the deadline, then `refuse`. The
+   * retry reads the clock through `policyClock`, so a clock still broken is
+   * the policy's `release_timed_out`. Never throws.
+   */
+  private refuseIn<P>(delivery: MutationDelivery<P>, guard: PhaseGuard, error: unknown, effect: EffectState): MutationReleaseResult {
+    const returned = (thrown: unknown): MutationReleaseResult => ({ status: "refused", error: failure(thrown, effect, delivery.signal) });
+    if (typeof error === "object" && error !== null && delivery.policy.has(error)) return returned(error);
+    if (!guard.passed) {
+      try { guard.check(this.policyClock()); } catch (thrown) { return returned(thrown); }
+    }
+    return this.deliver(delivery, delivery.refuse, failure(error, effect, delivery.signal), effect);
+  }
+
+  /**
+   * Buffered success (decision 5): the canonical DTO is captured, `stage` is
+   * awaited once outside admission, and a final reserved admission repeats the
+   * release decisions through `again` (no store lookup, no side effect),
+   * compares the canonical DTO, checks the deadline and writes synchronously.
+   * A final denial or a changed value is refused directly, once. A rejected
+   * stage is `internal`/`release_stage_failed`, a cancellation during staging
+   * `request_cancelled`, both classified with `effect` and returned. An abort
+   * ends the wait even while `stage` is pending: no final phase follows, and a
+   * late settlement of that `stage` admits and writes nothing. The deadline
+   * does not interrupt a pending `stage`; the final phase checks it. Never throws.
+   */
+  private async staged<P>(delivery: MutationDelivery<P>, value: P, effect: EffectState, again: (guard: PhaseGuard) => P): Promise<void> {
+    const { admission } = this.runtime;
+    const stageFailed = (): MutationReleaseResult => ({ status: "refused", error: failure(new OperationError("internal", "release_stage_failed"), effect, undefined) });
+    let expected: string;
+    try { expected = canonicalJson(value); } catch { delivery.outcome = stageFailed(); return; }
+    const stage = delivery.stage!;
+    const signal = delivery.signal;
+    let rejected = false, abandoned = false;
+    try {
+      await admission.idle(async () => {
+        // Called once. With a signal, the wait ends at the abort even while `stage` is still pending:
+        // its late settlement is absorbed (`untilAbort`) and reaches nothing below.
+        let pending: Promise<unknown>;
+        try { pending = Promise.resolve(Reflect.apply(stage, delivery.receiver, [value])); } catch (error) { pending = Promise.reject(error); }
+        if (!signal) { await pending; return; }
+        if (await untilAbort(pending, signal) === null) abandoned = true;
+      });
+    } catch { rejected = true; }
+    if (abandoned || signal?.aborted) { delivery.outcome = { status: "refused", error: failure(cancelled(), effect, undefined) }; return; }
+    if (rejected) { delivery.outcome = stageFailed(); return; }
+    try {
+      await admission.run(() => {
+        const guard = this.guard(delivery);
+        let fresh: P;
+        try {
+          fresh = again(guard);
+          if (canonicalJson(fresh) !== expected) throw new OperationError("conflict", "release_payload_changed");
+        } catch (error) {
+          delivery.outcome = this.refuseIn(delivery, guard, error, effect);
+          return;
+        }
+        delivery.outcome = this.deliver(delivery, delivery.commit, fresh, effect);
+      }, { reserved: true });
+    } catch (error) {
+      if (!delivery.outcome) delivery.outcome = { status: "refused", error: failure(error, effect, delivery.signal) };
     }
   }
 

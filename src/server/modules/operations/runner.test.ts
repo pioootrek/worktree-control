@@ -7,8 +7,8 @@ import { admissionRefusal } from "./operations-fixture";
 import { allOf, onProject, type OperationRequirement } from "./requirements";
 import { OperationRunner } from "./runner";
 import {
-  collect, deferred, fakeStart, fakeStream, gatedAdmission, input, key, manualStream, projectA, projectB, REGISTRATION, setup, tick,
-  type EventOperation, type ProjectEvent, type StartInput, type StartInternal,
+  admittedWrite, collect, deferred, fakeStart, fakeStream, gatedAdmission, HISTORICAL_DENIAL, input, key, manualStream, moveAfterRecord, projectA, projectB,
+  RECORD_ANSWERS, RECORD_VARIANTS, REGISTRATION, setup, tick, type EventOperation, type ProjectEvent, type StartInput, type StartInternal,
 } from "./runner-fixture";
 
 describe("operation runner: effects", () => {
@@ -246,6 +246,23 @@ describe("operation runner: idempotency", () => {
     expect(JSON.stringify(replay)).not.toContain("project-a");
     expect(log.effects).toEqual(["start project-a"]);
   });
+
+  it.each(RECORD_VARIANTS.flatMap(variant => [false, true].map(keepA => [variant, keepA] as const)))(
+    "a retry meeting a %s record after its resource moved is decided on the record's resources first (C5; still sees project A: %s)",
+    async (variant, keepA) => {
+      const state = setup();
+      const { world, alice, runner, idempotency } = state;
+      const { operation, counts } = admittedWrite(world);
+      expect(await runner.run(operation, alice.context, { n: 1 }, key("k-1"))).toEqual({ ok: true, value: { value: 1 }, replayed: false });
+      const { raw, stored, current } = moveAfterRecord(state, variant, keepA);
+      const retry = await runner.run(operation, alice.context, raw, key("k-1"));
+      // Without project A the historical denial is the answer: nothing about the record, not even a conflict or an unknown outcome.
+      expect(retry).toEqual({ ok: false, error: keepA ? RECORD_ANSWERS[variant] : HISTORICAL_DENIAL });
+      expect(JSON.stringify(retry)).not.toContain("project-a");
+      expect(current()).toEqual(stored);
+      expect(idempotency.calls).toEqual(["get"]);
+      expect(counts.runs).toBe(1);
+    });
 
   it("runs one effect for two identical requests started together", async () => {
     const { world, alice, runner, idempotency } = setup();

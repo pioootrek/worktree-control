@@ -2,12 +2,12 @@
  * Shared operation doubles for the runner tests. Test-only; not exported from
  * the module's public API.
  */
-import type { DatabaseAdmission } from "@/server/database-admission";
-import type { ProjectId } from "@/shared/contracts/operations";
-import type { Lease, MutationOperation, PhaseScope, StreamOperation } from "./operation";
+import type { DatabaseAdmission, DatabaseAdmissionOptions } from "@/server/database-admission";
+import type { EffectState, ProjectId, PublicOperationError } from "@/shared/contracts/operations";
+import type { AdmittedCommitScope, Lease, MutationOperation, PhaseScope, StreamOperation } from "./operation";
 import { createWorld, MemoryIdempotency, P } from "./operations-fixture";
 import { onProject, type OperationRequirement } from "./requirements";
-import { OperationRunner, type StreamItem } from "./runner";
+import { OperationRunner, type MutationReleaseOptions, type StreamItem } from "./runner";
 
 export const projectA = P("project-a");
 export const projectB = P("project-b");
@@ -197,4 +197,143 @@ export async function unhandledDuring(body: () => Promise<void>): Promise<unknow
     process.off("unhandledRejection", listener);
   }
   return seen;
+}
+
+export interface WriteInput { n: number }
+export interface WriteResult { n: number; projectId: ProjectId | null }
+export type WriteOperation = MutationOperation<WriteInput, WriteResult, { value: number }>;
+
+/**
+ * An admitted write with a declared commit point (the shape `mutationRelease`
+ * accepts). `before` runs before `commit()`, `after` past it; both may throw.
+ * `counts.runs` counts handler invocations, `counts.inside` those that ran
+ * inside admission.
+ */
+export function admittedWrite(world: ReturnType<typeof createWorld>, hooks: {
+  before?: () => void; after?: () => void; finalize?: () => void; project?: (result: WriteResult) => { value: number };
+} = {}) {
+  const counts = { runs: 0, inside: 0, finalizes: 0, projections: 0 };
+  const operation: WriteOperation = {
+    id: "fixture.admitted_write", kind: "mutation",
+    requirement: { require: onProject("runtime:control", "registration") },
+    parse: raw => {
+      const n = (raw as { n?: unknown } | null)?.n;
+      if (typeof n !== "number") throw new Error("n must be a number");
+      return { n };
+    },
+    resources: () => ({ registration: { ...REGISTRATION } }),
+    effect: { mode: "admitted", commitPoint: "declared", run: (value: WriteInput, scope: AdmittedCommitScope) => {
+      counts.runs++;
+      if (world.admission.admitted) counts.inside++;
+      hooks.before?.();
+      scope.commit();
+      hooks.after?.();
+      return { n: value.n, projectId: scope.resources.registration.projectId };
+    } },
+    finalize: () => { counts.finalizes++; hooks.finalize?.(); },
+    retain: true, publicKeys: ["value"],
+    project: result => { counts.projections++; return hooks.project ? hooks.project(result) : { value: result.n }; },
+  };
+  return { operation, counts };
+}
+
+/** One write to the caller as `mutationRelease` made it: which callback, whether inside admission, during which admission. */
+export interface DeliveryWrite { kind: "commit" | "refuse"; value: unknown; admitted: boolean; admission: number }
+
+/**
+ * Release options that record every write. `admitted` is the fixture
+ * admission's flag at the moment of the write; `admission` is the number of
+ * admissions entered so far, so a test names the phase that wrote.
+ */
+export function recordingDelivery<P>(world: ReturnType<typeof createWorld>, extra: Partial<MutationReleaseOptions<P>> = {}) {
+  const writes: DeliveryWrite[] = [];
+  const record = (kind: DeliveryWrite["kind"], value: unknown) => {
+    writes.push({ kind, value, admitted: world.admission.admitted, admission: world.admission.events.filter(event => event.kind === "run").length });
+  };
+  const options: MutationReleaseOptions<P> = {
+    eligible: () => true, connected: () => true, deadline: Number.MAX_SAFE_INTEGER,
+    commit(value: P) { record("commit", value); },
+    refuse(error: PublicOperationError) { record("refuse", error); },
+    ...extra,
+  };
+  return { options, writes };
+}
+
+/** The five public fields of an answer. */
+export const answer = (category: string, status: number, reason: string, retry: string, effect: EffectState | null): PublicOperationError =>
+  ({ category, status, reason, retry, effect }) as PublicOperationError;
+
+/** The state of the record a C5 retry meets: as left, edited to another state, or met with a different input. */
+export type RecordVariant = "unknown" | "reserved" | "started" | "fingerprint" | "completed";
+export const RECORD_VARIANTS: readonly RecordVariant[] = Object.freeze(["unknown", "reserved", "started", "fingerprint", "completed"]);
+/** The record's answer to a caller who can still see the project the attempt was authorized against, after the move. */
+export const RECORD_ANSWERS: Readonly<Record<RecordVariant, PublicOperationError>> = Object.freeze({
+  unknown: answer("outcome_unknown", 409, "previous_attempt_outcome_unknown", "inspect_first", "unknown"),
+  reserved: answer("conflict", 409, "request_in_progress", "none", "not_started"),
+  started: answer("conflict", 409, "request_in_progress", "none", "not_started"),
+  fingerprint: answer("conflict", 409, "idempotency_conflict", "none", "not_started"),
+  completed: answer("conflict", 409, "resource_changed", "none", "not_started"),
+});
+/** The historical denial: project A, which the record names, is no longer visible. */
+export const HISTORICAL_DENIAL = answer("not_found", 404, "resource_not_found", "none", "not_started");
+
+/**
+ * Amendment C5's arrangement, after one keyed attempt of `admittedWrite` on
+ * project A left a `completed` record: puts the record in `variant`'s state,
+ * moves the registration to project B, gives the caller B and, unless
+ * `keepA`, takes A away. Clears the admission events and the store calls.
+ * Returns the retry's input, a copy of the record and a reader of the record
+ * as it is now.
+ */
+export function moveAfterRecord(state: ReturnType<typeof setup>, variant: RecordVariant, keepA: boolean) {
+  const { world, alice, idempotency } = state;
+  const [[storeKey, record]] = [...idempotency.entries];
+  if (variant === "unknown" || variant === "reserved" || variant === "started") { record.state = variant; delete record.result; }
+  world.resolver.move(REGISTRATION, projectB);
+  world.grants.grant({ accountId: alice.id, role: "operator", scope: { kind: "project", projectId: projectB } });
+  if (!keepA) {
+    world.grants.grants = world.grants.grants.filter(grant => grant.accountId !== alice.id || grant.scope.kind !== "project" || grant.scope.projectId !== projectA);
+  }
+  world.admission.events = [];
+  idempotency.calls.length = 0;
+  return { raw: { n: variant === "fingerprint" ? 2 : 1 }, stored: structuredClone(record), current: () => structuredClone(idempotency.entries.get(storeKey)) };
+}
+
+/**
+ * An admission that can delay a fresh `run` before it reaches `inner`, to
+ * arrange how two concurrent calls interleave. `hold` sees the call's options
+ * and returns a promise to wait for, or nothing. The wait happens before
+ * admission is requested, so it holds nothing of the gate.
+ */
+export function heldAdmission(inner: DatabaseAdmission, hold: (options: DatabaseAdmissionOptions | undefined) => Promise<unknown> | undefined): DatabaseAdmission {
+  return {
+    run: async (operation, options) => {
+      const wait = hold(options);
+      if (wait) await wait;
+      return inner.run(operation, options);
+    },
+    detached: (operation, options) => inner.detached(operation, options),
+    idle: (operation, options) => inner.idle(operation, options),
+    tryRun: operation => inner.tryRun(operation),
+    outside: operation => inner.outside(operation),
+  };
+}
+
+/**
+ * Two concurrent calls with one key, A and B, told apart by their signals
+ * (never aborted). "in progress": B's phase 1 runs while A waits between its
+ * phase 1 and its phase 3, so B meets A's reservation. "replay": B's phase 1
+ * waits until A has returned, so B meets A's completed record. Pass `hold` to
+ * `heldAdmission`, and call `settled.a` and `settled.b` when each call returns.
+ */
+export function interleaving(order: "in progress" | "replay") {
+  const a = new AbortController(), b = new AbortController();
+  const between = deferred(), aDone = deferred(), bDone = deferred();
+  const counts = { a: 0, b: 0 };
+  const hold = (options: DatabaseAdmissionOptions | undefined): Promise<unknown> | undefined => {
+    if (options?.signal === a.signal && ++counts.a === 2 && order === "in progress") { between.resolve(); return bDone.promise; }
+    if (options?.signal === b.signal && ++counts.b === 1) return order === "in progress" ? between.promise : aDone.promise;
+    return undefined;
+  };
+  return { signals: { a: a.signal, b: b.signal }, hold, settled: { a: () => aDone.resolve(), b: () => bDone.resolve() } };
 }
