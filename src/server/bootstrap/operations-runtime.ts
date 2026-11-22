@@ -145,9 +145,12 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
     availableOn: registry.availableOn.bind(registry),
     idsOn: registry.idsOn.bind(registry),
   });
-  // The runner copies the key at construction; nothing returned from here holds it.
-  const runner = new OperationRunner(options.retention
-    ? { ...runtime, idempotency: options.retention.idempotency, fingerprintKey: options.retention.fingerprintKey } : runtime);
+  // The runner copies the key at construction. It is given a copy that is zeroed right after, so
+  // nothing returned from here (the runner keeps its runtime argument) holds the key's bytes.
+  const fingerprintKey = options.retention ? new Uint8Array(options.retention.fingerprintKey) : null;
+  const runner = new OperationRunner(options.retention && fingerprintKey
+    ? { ...runtime, idempotency: options.retention.idempotency, fingerprintKey } : runtime);
+  fingerprintKey?.fill(0);
   const sessions = provider === null ? null : new ProviderSessionVerifier({
     providerId: provider.providerId, reader: provider.reader, now, eligible: admittedProviderSessionEligible,
     stagedCapacity: CONTROLLER_OPERATION_SESSION_POLICY.stagedCapacity,

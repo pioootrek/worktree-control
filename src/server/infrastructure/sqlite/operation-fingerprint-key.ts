@@ -96,8 +96,8 @@ function create(database: string): void {
 export function loadOperationKey(database: string, excludedRoots: readonly string[] = []): Buffer {
   const path = operationKeyPath(database);
   const excluded = [...excludedRoots, restoreRoot(database), securityFenceRoot(database)];
+  try { validateSensitivePath(path, excluded, true); } catch { throw new OperationKeyError("key_unsafe"); }
   try {
-    validateSensitivePath(path, excluded, true);
     removeInterrupted(database);
     let exists = true;
     try { lstatSync(path); } catch (error) {
