@@ -1,6 +1,6 @@
 ---
 audience: "contributors implementing the controller and user interface"
-last_reviewed: "2026-11-16"
+last_reviewed: "2026-11-22"
 source_of_truth: "runtime, persistence, configuration, and distribution decisions"
 status: "active"
 ---
@@ -1070,17 +1070,17 @@ migration remain release gates. The five historical factor negatives remain visi
 ### Upgrade marker, schema step 50 (integration branch only)
 
 This section describes `integration/auth-unification`, not a release. Steps 50
-to 52 are applied by default but may still change until the release candidate;
+to 53 are applied by default but may still change until the release candidate;
 a database an unreleased build migrated is disposable.
 
-`SUPPORTED_SCHEMA_VERSION` is 52: what this release creates, its default schema
+`SUPPORTED_SCHEMA_VERSION` is 53: what this release creates, its default schema
 target and recognition ceiling, and the highest step it knows.
 `initializeSchema`, `inspectSchema`, the owned database, offline fence
 maintenance, the quarantine, the upgrade and backup manifest validation take an
 optional target or ceiling that defaults to it. Each target and ceiling passes
-through `schemaTarget`, which accepts 49 to 52 and refuses 53 and above,
+through `schemaTarget`, which accepts 49 to 53 and refuses 54 and above,
 whichever alias, re-export or wrapper passes the value. The provisional switch
-of earlier integration builds is gone. Explicit lower targets (49, 50, 51)
+of earlier integration builds is gone. Explicit lower targets (49 to 52)
 remain for the steps themselves and for versioned test fixtures and snapshots.
 
 `schemaTarget` also refuses any value below `SECURITY_FENCE_SCHEMA_VERSION`
@@ -1278,8 +1278,9 @@ malformed, behind a stamp, or at its maximum) refuses with
 `security_fence_recovery_required` and rolls back everything, schema steps
 included. At target 49 the quarantine runs exactly the statements it ran
 before step 50; target 50 adds only the marker reset. The default target is the
-supported schema 52, so a default resume also runs this mapping quarantine and
-deletes every account grant (step 52). The explicit offline upgrade lists step
+supported schema 53, so a default resume also runs this mapping quarantine,
+deletes every account grant (step 52) and invalidates every idempotency record
+(step 53). The explicit offline upgrade lists step
 51 among its structural steps, and at target 51 and above its plan carries the
 project mapping acts.
 
@@ -1312,9 +1313,9 @@ quarantine. That is an obligation of the change that adds such a store.
 ### Grants storage, schema step 52 (integration branch only)
 
 This section describes `integration/auth-unification`, not a release. Step 52 is
-the supported version: applied by default and by an explicit target of 52, and
-it may still change until the release candidate. A step-52 database is refused
-like any unknown newer schema at ceilings 49 to 51.
+applied by default and by an explicit target of 52, and it may still change
+until the release candidate. A step-52 database is refused like any unknown
+newer schema at ceilings 49 to 51.
 
 Step 52 adds the table `account_grants`: one row per stored role assignment of
 the authorization contract (`StoredGrant`). A row names an account
@@ -1378,6 +1379,54 @@ bindings. Its test-run recovery now reads its input in a read-only preparation
 before it writes (see "Authority acts" below), and the recovery's writes are
 unchanged.
 
+### Operation idempotency records, schema step 53 (integration branch only)
+
+Step 53 (`operation-idempotency-migration.ts`) creates `operation_idempotency`,
+the storage of the operations runner's `IdempotencyStore`. One row is one
+record: the key (operation ID, principal namespace, the caller's idempotency
+key, together the primary key), the owning attempt, the fingerprint key's
+generation (`key_id`), the keyed input digest, the state, the resolved
+resources, the retained result and confirmed transitions of a `completed`
+record, the bytes the record is charged against the store's byte bound, and its
+creation, update and expiry times as integer milliseconds on the runtime clock.
+
+The table enforces non-null key components within the runner's grammars, the
+digest prefix and exactly 64 lower-case hex digits, a 32-digit key generation,
+a known state, JSON text wherever JSON is stored, a result only for
+`completed` (a retained JSON `null` is the text `null`, never SQL NULL),
+transitions only for `completed` (a removed slot is a JSON `null` inside the
+object), an expiry exactly for `completed` and `unknown`, integer times and a
+charge of at most 256 KiB. Persisted sizes are not bounded by the table: the
+adapter bounds them before it parses a value, so an oversized row refuses only
+its own key. Validation adds no row rule; `integrity_check` already refuses a
+row that breaks a `CHECK`.
+
+The table has no trigger and is not covered by the security fence: its writes
+publish no pending witness and change no checkpoint epoch. This is an accepted
+deviation of the [authorization contract](authorization-contract.md#accepted-deviations).
+Instead, the quarantine's transaction (at an effective target of 53 or more)
+and the upgrade's acts (at a target of 53 or more) invalidate it: expired
+records are deleted and every other record that is not `unknown` becomes
+`unknown` with its result and transitions dropped and a 24-hour expiry.
+Recognition at ceiling 53 compares the table's and its two indexes' `CREATE`
+text byte for byte, with the step's name and checksum. The step is DDL only.
+
+The explicit upgrade supports the released 49 as its source at a target of 53.
+A trusted database whose marker is `complete` at an intermediate schema (50 to
+52) was built only by an unreleased integration build; `upgrade inspect` and
+`upgrade apply` refuse it as `upgrade_intermediate_schema` (next step `none`)
+after recognition and before any proposal, plan file or backup, because the
+mapping and authority acts depend on the target alone and must not run twice.
+Such a database is disposable. A pending marker keeps its proposal and an
+untrusted fence its own next step.
+
+The controller composes the SQLite adapter once per database-owner lifetime
+(`src/server/bootstrap/operation-retention.ts`): it loads or creates the
+fingerprint key file `<database>.operation-key` and runs the restart repair in
+one admitted phase before any listener starts. The offline CLI and the
+unix-socket client compose no store and create no key. The adapter's contract
+is in [the authorization contract](authorization-contract.md#sqlite-idempotency-store-d1b).
+
 ### Explicit offline upgrade (integration branch only)
 
 This section describes `integration/auth-unification`, not a release. The
@@ -1386,7 +1435,7 @@ machinery is in `upgrade-plan.ts` and `upgrade-maintenance.ts` under
 `upgrade inspect [--decisions <file>]` and `upgrade apply --expect <plan hash>
 --backup-dir <dir>` (see [Composition and commands](#composition-and-commands)).
 Every entry point needs a schema target of at least 50 and at most the
-supported 52, and refuses others as unsupported before any lock or file. A
+supported 53, and refuses others as unsupported before any lock or file. A
 format-2 witness once written is read, verified and carried forward by ordinary
 fenced writes. The project mapping acts and the authority acts are described
 below.
@@ -1607,9 +1656,9 @@ the backup's schema ceiling (`createControllerBackup`'s optional
 `schemaCeiling`), so the backup recognises exactly the schemas the run
 recognises; a test run at a lower target cannot back up a newer source.
 Without the option every backup keeps the supported ceiling. Omitted, `target`
-is the supported schema 52: the default upgrade is the one the commands run,
-and a step-52 database whose marker a resume set to `pending` is its ordinary
-source.
+is the supported schema 53: the default upgrade is the one the commands run,
+and a step-53 database whose marker a resume set to `pending` is its ordinary
+source, beside the released 49.
 
 `src/cli/upgrade.ts` holds the runner of the `upgrade inspect [--decisions
 <file>]` and `upgrade apply --expect <plan hash> --backup-dir <dir>` commands,
@@ -1646,9 +1695,9 @@ The check reads, in this order:
    (`security_fence_establishment_required`, `security_fence_recovery_required`)
    win: a rolled-back, restored or pending database goes to recovery, never to
    the upgrade. A fresh, initialising database the fence accepts is admitted.
-2. The schema version must equal the target (the supported 52) and the upgrade
+2. The schema version must equal the target (the supported 53) and the upgrade
    marker must be `complete`; otherwise `UpgradeError("upgrade_required",
-   "upgrade inspect", false, "upgrade_needed")`. A schema-52 database without a
+   "upgrade inspect", false, "upgrade_needed")`. A schema-53 database without a
    marker row is corrupt and gets `validateDatabase`'s refusal, which ownership
    gave already.
 
@@ -2087,7 +2136,7 @@ per displayed name.
 
 This section describes `integration/auth-unification`, not a release. The acts
 run through the mounted `upgrade` commands. The authority domain needs target
-52, the supported version. The code is in `authority-upgrade-acts.ts` (the pass, the review and
+52 or more; the supported version is 53. The code is in `authority-upgrade-acts.ts` (the pass, the review and
 the act kinds) and `authority-reset.ts` (the reset statements it shares with
 the quarantine), under `src/server/infrastructure/sqlite/`.
 
@@ -2304,7 +2353,7 @@ NUL-free value, made absolute. Only the fence command calls the composition
 (`schema-entry-points.test.ts`). It shares the one implementation of
 `maintainSqliteSecurityFence`, which keeps its synchronous signature and
 behaviour for inspect and resume. At the supported target a non-fresh source
-reaches schema 52 with the upgrade marker `pending`. Every fence result carries
+reaches schema 53 with the upgrade marker `pending`. Every fence result carries
 `nextStep`, which is `upgrade inspect` once the fence is trusted. The order is:
 
 1. Both locks and ownership, the status, the `--expect` comparison, the

@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
-last_reviewed: "2026-11-20"
+last_reviewed: "2026-11-22"
 source_of_truth: "accepted disposition of every current operation under the unreleased authorization contract; Knowledge task 040062b4, discussion 8a2683b8, replies e06943b7, 42019833, ce8aa214 and 29cf8fa5"
 status: "active"
 ---
@@ -158,7 +158,7 @@ The mutation, stream and coordination extensions remain unmounted; each catalogu
 | 4 | Requirement kind `any_project(permission)` | `any_project` | Aggregates (`capacity.read`, `test_queue.read`, controller-wide events) require `project:read` on at least one project. Installation detail is a separate operation requiring `capacity:read`. | implemented, unmounted |
 | 5 | Predicate `schedule_owner` | `schedule_owner` | Durable account ownership of an export schedule, evaluated on a server-resolved schedule resource. | implemented, unmounted: resource kind `schedule` |
 | 6 | Resource kind `remote_request`, predicate `request_submitter`, two-principal evaluation | `remote_request`, `request_submitter` | Assignment evaluates the executor's context and, separately, the stored submitter's current grants through an application authorization interface. | implemented, unmounted: `decideForPrincipal` and `PhaseScope.authorizePrincipal` |
-| 7 | Secret-safe retention and once-only token delivery | `secret_safe_retention`, `token_delivery` | Keyed-digest fingerprints; ids-and-revisions receipts for secret-bearing operations; a token is delivered once. | implemented, unmounted; the key's source and rotation (D6) stay with the store adapter |
+| 7 | Secret-safe retention and once-only token delivery | `secret_safe_retention`, `token_delivery` | Keyed-digest fingerprints; ids-and-revisions receipts for secret-bearing operations; a token is delivered once. | implemented, unmounted; the key's source and rotation (D6) are implemented by the SQLite store adapter (D1b) |
 | 8 | Separate profile structure and literal-value operations | none | Catalogue structure only; the split operations use the implemented requirement forms. | nothing to implement in the contract |
 | 9 | Drop `projects:remove` | none | The permission leaves the closed vocabulary; code, documentation and fixtures change together in the first slice 4 pull request. | implemented: removed from the code, the tests and both authorization documents |
 | 10 | Predicate `intent_origin` | `intent_origin` | Original principal, credential, project, worktree, preset, key and the saved origin digest with its version, for `test_run.lookup_intent`. | implemented, unmounted: resource kind `test_intent`, digest version 1; the lookup query is not |
@@ -582,6 +582,11 @@ hazard for the integration, not a demonstrated leak from the contract module.
   only: never its input and never a secret output.
 - Replay of a secret-bearing operation is reauthorized as before and returns
   that receipt.
+- The digest key (D6, done in D1b) is 32 random bytes in a private file beside
+  the database, never in a backup. The HMAC protects input guesses, not the
+  confidentiality of results; a receipt therefore holds only ids and revisions,
+  and a test inspects a stored row and a copy of the database for the input and
+  the secret output.
 
 | Operation | Secret it carries | Receipt holds |
 | --- | --- | --- |
@@ -1641,7 +1646,7 @@ closed D7.
 | D3 | Restore admission and handoff adapter (OPEN-23): exact adapter, the specialized handoff's last check, post-shutdown completion authority | the backups slice |
 | D4 | `vault.recover_key`: read the Vault code in slice 4; the operation preserves encryption and cannot expose plaintext or resurrect grants; what a failed or interrupted recovery leaves | the Vault slice |
 | D5 | Exact field allowlists of every sensitive read (section 4.9 fixes categories) and the projector of `test_run.admin_inspect` | each family's pull request |
-| D6 | Secret-safe store details: the source and rotation of the digest key, protected storage of receipts (section 4.3). Keyed-digest fingerprints and receipt-only retention are implemented (#129) | the store adapter (item 2 of [section 10](#10-proposed-cut-of-slice-4)) |
+| D6 | Secret-safe store details: the source and rotation of the digest key, protected storage of receipts (section 4.3). Keyed-digest fingerprints and receipt-only retention are implemented (#129) | done in D1b: the key file `<database>.operation-key` (32 bytes, mode 0600, outside backups), rotation by replacing it while the controller is stopped, receipts stored as validated JSON in the step-53 table (see [the contract](authorization-contract.md#sqlite-idempotency-store-d1b)) |
 | D7 | Removal of `projects:remove` from code, documentation and fixtures together | done in the first pull request of slice 4 (#129) |
 | D8 | Source-reading residues from the matrix: the position inside `startRuntime` after readiness, which `restore-operations.ts` authorize calls run after awaits, the history, summary, metrics and comparison schemas, and the Hub import internals | the family pull request that touches them |
 
@@ -1792,7 +1797,10 @@ revision 3 in task 040062b4):
   that exist;
 - then the four reads of item 3 (`session.describe`, `project.list`,
   `project.status`, `project.worktrees`);
-- then the bounded synchronous idempotency store with restart repair;
+- then the bounded synchronous idempotency store with restart repair (D1b,
+  done: schema step 53, the SQLite adapter, the fingerprint key file, bounds
+  without early eviction, restart repair and the quarantine's invalidation; the
+  controller composes it and no mounted operation declares `retain`);
 - then the one retained Knowledge write of item 3;
 - the coordination-session lifecycle, before item 7 and before any cancel or
   worker report.
@@ -1805,7 +1813,10 @@ revision 3 in task 040062b4):
    snapshot, typed and versioned resolver, bounded synchronous idempotency store
    with restart repair, coordination-session lifecycle and the trusted TCP, unix,
    MCP and offline boundaries. Depends on slices 2 and 3; new RBAC and session
-   state is fenced and quarantined from its first migration.
+   state is fenced and quarantined from its first migration. The idempotency
+   store is done (D1b). Its records are quarantined (invalidated) but not
+   fenced until the fence repair `13e00db3`, an accepted deviation of
+   [the contract](authorization-contract.md#accepted-deviations).
 3. First vertical family: `session.describe` plus `project.list`,
    `project.status` and `project.worktrees`, through the shared HTTP adapter,
    unix, MCP and CLI. This proves zero-role visibility, per-item authorization,

@@ -1,6 +1,6 @@
 ---
 audience: "owner, implementers and reviewers of the authentication and authorization unification"
-last_reviewed: "2026-11-20"
+last_reviewed: "2026-11-22"
 source_of_truth: "authorization contract with session.describe mounted on API, unix, worker, MCP and lock-first CLI for the unreleased breaking auth unification; Knowledge task 040062b4"
 status: "active"
 ---
@@ -1083,6 +1083,11 @@ API, worker and unix session description.
   operation can name it; a lookup of such a project is `internal` for that
   project alone.
 
+D1b adds the idempotency store adapter, `SqliteIdempotencyStore`, over the
+step-53 table. Unlike the two read adapters it writes, and only the controller
+composes it, once per database-owner lifetime. Its contract is under
+[SQLite idempotency store](#sqlite-idempotency-store-d1b).
+
 A version is never reused for the same reference within one linear history of
 the database. Versions are not unique across references: every project has
 version 1, and a registration may share a value with another. A restore
@@ -1657,7 +1662,8 @@ requests see `request_in_progress`, never a replay. If the failed write was a
 it, while the original caller was told `cleanup_unconfirmed`. If a store
 returns a thenable and finishes the write later, that write can land after
 the runner's `unknown`. Store adapters must therefore be synchronous and must
-not report failure for a write that landed.
+not report failure for a write that landed, with the one exception described
+under [SQLite idempotency store](#sqlite-idempotency-store-d1b).
 
 A replay is a release of historical data. It requires a fresh decision on the
 current authority and current resolution. It is then decided again against
@@ -1670,9 +1676,112 @@ replays as described under [Expected transitions](#expected-transitions); a
 secret-bearing operation replays its receipt (see
 [Secret-bearing operations](#secret-bearing-operations)).
 
-Retained internal results must be structured-cloneable plain data. Store
-adapter obligations are listed under
-[Obligations of later slices](#obligations-of-later-slices).
+Retained values are JSON-domain: a retained internal result, a secret-bearing
+operation's receipt, the resolved resources and the confirmed transitions must
+pass the strict release serializer (see [Release and errors](#release-and-errors)):
+plain objects and arrays, strings, finite numbers, booleans and `null`. An
+operation whose internal result is outside that domain must not declare
+`retain`, and every retained operation proves its result's domain and size in
+its own tests. The runner normalizes an ordinary result once, when it retains
+it, and projects that normalized copy on the first release as well as on every
+replay, so the two are equivalent (`-0` releases as `0` both times). A
+secret-bearing operation keeps its own first response (see
+[Secret-bearing operations](#secret-bearing-operations)); the domain and size
+check applies to its receipt. A result the store refuses retains nothing: the
+record becomes `unknown` (decision Z).
+
+### SQLite idempotency store (D1b)
+
+The controller's store is `SqliteIdempotencyStore`
+(`src/server/modules/operations/adapters/sqlite-idempotency.ts`) over the
+step-53 table `operation_idempotency`
+(`src/server/infrastructure/sqlite/operation-idempotency-queries.ts`). It runs
+on the owner's core connection inside admitted phases, and every call is
+synchronous.
+
+- **Copies and decoding.** `put` serializes each value with the strict
+  serializer and refuses anything else before any change. `get` bounds the
+  stored bytes before it parses them, decodes fresh plain objects and checks
+  them against the same domain. A stored value that cannot be decoded is
+  `internal`/`invalid_idempotency_record` for that key, never a cache miss.
+  Connection, ownership and fence failures pass unchanged.
+- **Open transactions.** `put` and `release` refuse before any change while the
+  shared connection holds an open transaction
+  (`internal`/`idempotency_in_transaction`). Success is durable only at the
+  enclosing transaction's commit, so a declared handler must call `commit()`
+  outside a transaction of its own.
+- **Writes.** A reservation is inserted when the key has no record, or replaces
+  an expired one. Later writes are qualified by the owning attempt and the state
+  they follow (`started` after `reserved`, `completed` after `started`,
+  `unknown` after any state of the attempt) and check the changed row count in
+  their transaction. A release deletes only a live attempt of its owner; a
+  missing or foreign attempt is a no-op.
+- **Retention.** One horizon: 24 hours after the last write of a `completed` or
+  `unknown` record, on the runtime clock. `reserved` and `started` records never
+  expire while the controller runs. From its expiry instant a record reads as
+  absent. A reservation deletes at most 100 expired records; the restart repair
+  deletes all of them.
+- **Bounds, without early eviction.** At most 1,000 unexpired records per
+  principal namespace, 10,000 in all, 64 MiB of stored JSON in all and 256 KiB
+  per record. Each live attempt is charged 256 KiB from its reservation until
+  its final write, which replaces the charge with the record's actual size, so
+  a completion is never refused for capacity. When a bound is full, a new
+  reservation is refused before any change as `busy`/`idempotency_capacity`
+  with retry `retry` and effect `not_started`; the handler is not called.
+  Updates and owner releases always proceed.
+- **The fingerprint key (D6).** 32 random bytes in `<database file>.operation-key`
+  beside the database, bound to its canonical path, created through a private
+  temporary, a no-replace link and a directory sync, and read through the
+  private-storage validators (no-follow descriptor, private parent, owner, one
+  link, mode 0600, exactly 32 bytes). Each record stores the key's generation
+  (`key_id`, the first 32 hex digits of SHA-256 of `wtc-operation-key-id\0` and
+  the key). The key is not in backups, not in the composition returned to
+  transports and not in logs.
+- **Restart repair.** Once per controller database-owner lifetime, after the
+  ordinary admission accepted the store and before any listener starts, in
+  one admitted transaction: expired records are deleted, never resurrected;
+  unexpired records of another key generation become `unknown` without their
+  result, keeping a finite expiry or getting one horizon (kept on later
+  starts); then `reserved` records of this generation are deleted and `started`
+  ones become `unknown`. An `unknown` record's expiry is never extended. A
+  reservation left by a failed release is therefore cleared at the next
+  controller start, not earlier; until then its key answers
+  `conflict`/`request_in_progress`.
+- **Failure classes.** A key failure, or a repair failure local to the records,
+  disables only keyed requests (`unavailable`/`idempotency_unavailable`) with
+  one bounded diagnostic that names the class and no key, path or message. A
+  failed fence, a refused admission (lost ownership) or a file-level failure
+  refuses the start as any such store failure does.
+- **Offline and socket paths.** The offline CLI composes its runtime without a
+  store and key, so it never creates a key or rewrites records; a keyed request
+  there answers `idempotency_unavailable`. The unix-socket client composes no
+  runtime: a mounted unix mutation runs on the controller's runtime.
+- **Key replacement.** Losing or replacing the key file deletes nothing. At the
+  next start the records of the old generation become `unknown`; a retry of
+  such a key answers `idempotency_conflict` (the new key's digest of the same
+  input differs, which signals the key change, not different input) or
+  `outcome_unknown` until the record expires, never a fresh run. Rotation is
+  replacing the file while the controller is stopped; there is no command.
+- **Recovery.** The quarantine (`auth fence resume`, also after a restore, at a
+  target of 53 or more) and `upgrade apply` at such a target turn every
+  surviving record that is not `unknown` into `unknown` with one horizon and
+  delete expired ones. After any recovery a retry of a key that survived in the
+  recovered database answers `outcome_unknown` (or `idempotency_conflict`) until
+  it expires: never a replay of a pre-recovery result, never a fresh run. A key
+  first used after the restored snapshot was taken has no record there and runs
+  fresh; operators reconcile effects made after the snapshot before retrying.
+
+A synchronous write that lands and then throws at the owned boundary (the
+fence's post-commit image check) is the case decision Z describes. It is the one
+exception to "never reports failure for a write that landed": the adapter call
+throws after its transaction committed, the fence latches and refuses every
+later call of the process, no effect follows, decision Z leaves the record as
+described, and the next start (or the quarantine, when recovery is needed)
+settles it. The fault matrix in `src/server/bootstrap/operation-retention.faults.test.ts`
+injects before commit, at an inner statement's image check (the transaction
+rolls back) and at the outer transaction's post-commit check for every
+transition, then reopens and compares the first caller's answer, the durable
+record and the retry's answer.
 
 ## Release and errors
 
@@ -2026,6 +2135,7 @@ implementation.
 | Agent tokens on the better-auth TCP API | Correct. |
 | Run-origin comparison as a replacement for the I1 original-intent lookup | Wrong as stated; see below. |
 | Retention rule as a complete idempotency contract | Wrong as stated; replaced by [Idempotency](#idempotency). |
+| Idempotency records outside the security fence (D1b) | Accepted by the lead on the owner's general delegation, until the fence repair `13e00db3`; see below. |
 
 The `run_originating_session` predicate only compares the caller's
 coordination session with the run's recorded origin session and credential.
@@ -2033,6 +2143,15 @@ It is the rule for ordinary cancel from the originating session. It is **not**
 the I1 original-intent lookup. That lookup is the `intent_origin` predicate
 (see [Original intent](#original-intent)); the query operation that uses it is
 not implemented.
+
+Writes of the idempotency records publish no pending witness: the table has no
+fence trigger, because the fence repair (`13e00db3`) comes first. The
+quarantine and the upgrade invalidate the records instead. The rollback
+guarantee is therefore: a database file replaced by an older copy without
+detection by the fence loses the idempotency history written since that copy,
+and a retry of such a key runs fresh. A detected restore keeps the guarantee of
+[SQLite idempotency store](#sqlite-idempotency-store-d1b) for every record in
+the restored snapshot.
 
 ## Unmounted guard
 
@@ -2117,13 +2236,18 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   consumer goes away or stops reading (abandonment). The runner provides no
   `throw()`. A transport that needs one must map it to `return()` and must not
   forward a consumer error into the source.
-- **Store adapters.** The idempotency store stores and returns copies and
-  bounds retention. After a controller restart it deletes `reserved` records,
-  whose effect never crossed its commit point, and turns `started` records into
-  `unknown`. It also clears reservations left behind by a failed release. Its
-  calls are synchronous, and it never reports failure for a write that landed
-  (decision Z). The grants snapshot returns active grants only. The resolver keeps versions that
-  are never reused for one reference.
+- **Store adapters.** Done for the idempotency store in D1b (see
+  [SQLite idempotency store](#sqlite-idempotency-store-d1b)): it stores and
+  returns copies, bounds retention, and at each controller start deletes
+  `reserved` records, turns `started` records into `unknown` and clears
+  reservations left behind by a failed release. Its calls are synchronous. It
+  never reports failure for a write that landed, except a synchronous terminal
+  acknowledgement failure at the owned boundary (the fence's post-commit image
+  check): there the fence latches and refuses every later call, no late effect
+  follows, decision Z cleans up, and the fault matrix pins the reopen outcomes.
+  Still open: a retained operation's own proof of its result's domain and size,
+  and offline retention (D2b). The grants snapshot returns active grants only.
+  The resolver keeps versions that are never reused for one reference.
 - **Coordination sessions and leases.** Issuance, lease secret, renewal,
   expiry, generation changes, disconnect and restart. The module only compares
   a `CoordinationSessionRef` that a verifier returns.
@@ -2131,9 +2255,9 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   project exists and carries a `claim` relation with a `null` holder when no
   claim exists; its version changes with every claim change. `schedule`,
   `remote_request` and `test_intent` carry their stored principal or origin.
-- **Store adapter for transitions and receipts.** A `completed` record keeps
-  its confirmed transitions; the source and rotation of the fingerprint key
-  (D6) belong to the adapter.
+- **Store adapter for transitions and receipts.** Done in D1b: a `completed`
+  record keeps its confirmed transitions (a removed slot as a JSON `null`), and
+  the fingerprint key file and its rotation (D6) are the adapter's.
 - **Transports.** Register only operations that `availableOn` allows for the
   listener, and never register `claim.force_release` or `runtime.force_stop`
   on MCP.
@@ -2168,8 +2292,9 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   [SQLite adapters](#sqlite-adapters)): the grants snapshot, and a resolver for
   the `registration` and `project` kinds only. The store exposes their read
   ports; production wires them for the one mounted read. Every other resource kind has
-  no resolver and answers `internal`. The idempotency store exists only as a
-  port and an in-memory test double. The installation-token, anonymous,
+  no resolver and answers `internal`. The SQLite idempotency store (D1b) is
+  composed by the controller only; no mounted operation declares `retain` yet,
+  so no caller can reach it, and the offline CLI composes none. The installation-token, anonymous,
   agent-token and provider-session verifiers exist, with a composite that
   dispatches without fallback (see [Actors and authentication](#actors-and-authentication)
   and [Provider sessions](#provider-sessions)). The bootstrap
