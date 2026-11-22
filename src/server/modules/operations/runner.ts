@@ -186,8 +186,11 @@ export interface MutationReleaseOptions<P> extends RunOptions {
   refuse(error: PublicOperationError): void;
   /**
    * Buffered success (MCP): prepares bytes from the released value outside
-   * admission and must not write to the caller. Awaited once; the write
-   * happens in `commit` inside a final admitted phase that reproduces the value.
+   * admission and must not write to the caller. Called once and awaited until
+   * it settles or `signal` aborts (then `request_cancelled`, nothing written);
+   * the deadline does not interrupt it, so a transport that stages passes a
+   * signal and aborts it at its deadline. The write happens in `commit` inside
+   * a final admitted phase that reproduces the value.
    */
   stage?(value: P): Promise<void>;
   /** Refused (`invalid_request`/`invalid_input`): a mutation's release always takes a fresh decision. */
@@ -1052,12 +1055,14 @@ export class OperationRunner {
   }
 
   private async mutate<I, R, P extends object>(operation: MutationOperation<I, R, P>, context: AuthenticationContext, raw: unknown, options: RunOptions): Promise<RunResult<P>> {
+    // Read once, before planning: planning, its classification and every phase use this one plain snapshot.
+    const { signal, idempotencyKey } = options;
     let planned: MutationPlan<I>;
-    try { planned = this.mutationPlan(operation, raw, options.idempotencyKey, false); } catch (error) {
-      return { ok: false, error: failure(error, "not_started", options.signal) };
+    try { planned = this.mutationPlan(operation, raw, idempotencyKey, false); } catch (error) {
+      return { ok: false, error: failure(error, "not_started", signal) };
     }
     // Without a delivery, `execute` always returns a result; `null` is only its hand-over to a delivery.
-    return await this.execute(operation, context, planned, options, null) as RunResult<P>;
+    return await this.execute(operation, context, planned, { signal, idempotencyKey }, null) as RunResult<P>;
   }
 
   /**
@@ -1156,7 +1161,10 @@ export class OperationRunner {
      * handler's own transaction unwound, the reservation is given back
      * synchronously before the refusal is delivered. Attempted once; a release
      * that throws or returns a thenable is unconfirmed (decision W) and the
-     * refusal stands.
+     * refusal stands. That includes a release the store refuses because a
+     * broken handler left its transaction open (`idempotency_in_transaction`):
+     * the runner cannot tell that refusal from any other, so it never falls
+     * back to the completion path; the record is left to the store's repair.
      */
     const giveBack = (): void => {
       const reservation = state.reservation;
@@ -1686,7 +1694,10 @@ export class OperationRunner {
    * compares the canonical DTO, checks the deadline and writes synchronously.
    * A final denial or a changed value is refused directly, once. A rejected
    * stage is `internal`/`release_stage_failed`, a cancellation during staging
-   * `request_cancelled`, both classified with `effect` and returned. Never throws.
+   * `request_cancelled`, both classified with `effect` and returned. An abort
+   * ends the wait even while `stage` is pending: no final phase follows, and a
+   * late settlement of that `stage` admits and writes nothing. The deadline
+   * does not interrupt a pending `stage`; the final phase checks it. Never throws.
    */
   private async staged<P>(delivery: MutationDelivery<P>, value: P, effect: EffectState, again: (guard: PhaseGuard) => P): Promise<void> {
     const { admission } = this.runtime;
@@ -1694,9 +1705,19 @@ export class OperationRunner {
     let expected: string;
     try { expected = canonicalJson(value); } catch { delivery.outcome = stageFailed(); return; }
     const stage = delivery.stage!;
-    let rejected = false;
-    try { await admission.idle(async () => { await Reflect.apply(stage, delivery.receiver, [value]); }); } catch { rejected = true; }
-    if (delivery.signal?.aborted) { delivery.outcome = { status: "refused", error: failure(cancelled(), effect, undefined) }; return; }
+    const signal = delivery.signal;
+    let rejected = false, abandoned = false;
+    try {
+      await admission.idle(async () => {
+        // Called once. With a signal, the wait ends at the abort even while `stage` is still pending:
+        // its late settlement is absorbed (`untilAbort`) and reaches nothing below.
+        let pending: Promise<unknown>;
+        try { pending = Promise.resolve(Reflect.apply(stage, delivery.receiver, [value])); } catch (error) { pending = Promise.reject(error); }
+        if (!signal) { await pending; return; }
+        if (await untilAbort(pending, signal) === null) abandoned = true;
+      });
+    } catch { rejected = true; }
+    if (abandoned || signal?.aborted) { delivery.outcome = { status: "refused", error: failure(cancelled(), effect, undefined) }; return; }
     if (rejected) { delivery.outcome = stageFailed(); return; }
     try {
       await admission.run(() => {
