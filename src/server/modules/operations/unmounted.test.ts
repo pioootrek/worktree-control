@@ -59,6 +59,11 @@ const APPROVED_IMPORTERS: Readonly<Record<string, string>> = Object.freeze({
   "packages/auth-provider-better-auth-proof/test/cli-provider-lifecycle-operations-cookie.test.ts": "runs cookie listener proofs through production bootstrap and reuses the mounted boundary driver and exact conformance assertions",
   "src/server/bootstrap/operations-runtime.ts": "composes the runtime from the store owner's read ports and controller policies",
   "src/server/bootstrap/offline-operations-runtime.ts": "binds the real offline owner lock; offline CLI session describe uses the real owner lock",
+  "src/server/bootstrap/operation-retention.ts": "composes the controller's SQLite idempotency store and fingerprint key once per database owner (D1b)",
+  "src/server/bootstrap/operation-retention.test.ts": "retention initialization tests drive the real runner and composition over the real store; not a production importer",
+  "src/server/bootstrap/operation-retention.faults.test.ts": "fault injection drives the real runner over the real fenced store; not a production importer",
+  "src/server/infrastructure/sqlite/operation-fingerprint-key.test.ts": "checks the key file's generation with the adapter's own derivation; not a production importer",
+  "src/server/bootstrap/operation-retention.recovery.test.ts": "recovery tests drive the real runner over restored and quarantined stores; not a production importer",
   "src/server/transports/operations-mcp.ts": "mounted request adapter uses public release and error policy and receives the runtime as a value",
   "src/server/transports/operations-http.ts": "uses the public classifier and error serializer to avoid duplicating wire and failure policy; receives the runtime as a value",
 });
