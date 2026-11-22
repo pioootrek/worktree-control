@@ -54,7 +54,7 @@ async function fixture(failLoad = false, admission: { admissionTimeoutMs?: numbe
     maintenance: () => maintenance, loadProvider, holdLifetime: () => () => {} });
   // Same wiring as the production start command. Construct before loading.
   const operations = buildOperationsRuntime({ store, activeMode: authentication.mode(), now: () => NOW, logs: { controller() {} },
-    eligibility: admin, provider: admin.operationSessionAuthority(), requestBudget: admin.requestBudget,
+    eligibility: admin, provider: admin.operationSessionAuthority(), projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { listTrees: async () => [], worktreeDirty: async () => false } }, requestBudget: admin.requestBudget,
     listeners: { api: () => true, unix: () => true } });
   if (!operations.supported) throw new Error("expected supported mode");
   const agentToken = token("wts"), id = agentToken.slice(4, 40);

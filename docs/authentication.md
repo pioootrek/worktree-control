@@ -225,6 +225,117 @@ allocated fixture ports, paths and secrets. The scripts use Node HTTP/TLS client
 and the installed CLI, so the shell's curl executable itself is not under test.
 See the complete [gate evidence and artifact matrix](authorization-gate-evidence.md).
 
+## Read projects through each listener (integration branch)
+
+The first project read family (D2a) is `project.list`, `project.status` and
+`project.worktrees`. It is served on the API listener, the private unix socket,
+MCP and the CLI. The HTTPS worker listener does not serve it in any mode; such a
+request is refused with `operation_not_found` (404). Use the same synthetic installation,
+`WTC_API`, `WTC_MCP` and private header file as in the
+[previous section](#describe-authority-through-each-listener-integration-branch).
+A project is a Knowledge project; its registrations carry the port, runtime phase
+and worktree. A project with no registration has an empty list.
+
+```bash
+curl --fail-with-body "$WTC_API/api/operations/project.list" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' --data '{"limit":50}'
+curl --fail-with-body "$WTC_API/api/operations/project.status" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' --data '{"projectId":"example"}'
+curl --fail-with-body "$WTC_API/api/operations/project.worktrees" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' --data '{"projectId":"example"}'
+```
+
+`project.list` returns `{"items":[...],"nextCursor":null}`. It filters items before
+pagination; pass `nextCursor` back as `cursor` for the next page (`limit` 1 to 100,
+default 50). Each item has `projectId`, `name`, `status` (`active` or `archived`),
+up to 16 `registrations` sorted by ID and `registrationsTruncated`. A registration
+lists `registrationId`, `name`, `port`, `phase`, `worktreePath` and `claim`
+(`none` or `other`; see [limits](authorization-contract.md#project-reads-d2a)).
+A registration without a project appears only to full authority, as an item with
+`projectId: null`.
+
+`project.status` adds the project's Knowledge `revision`, whether the caller may
+write Knowledge there (`writable`), and per registration `selectedWorktreePath`,
+`startedAt` and `managedServer`. `launch` (executable and arguments) appears only
+with `config:read` on the project. `claimHolder` appears only with `claims:manage`
+and an active claim, and names only the holder (`kind`, `accountId`), never the
+claim's reason or times. `{"compact":true}` returns the list's registration
+entries instead. `project.worktrees` discovers Git worktrees on every call. For
+each registration it returns `discovery` (`complete`, `partial` when Git could
+not read a tree's status within 6 s of the call's start, or `unavailable`) and
+up to 64 worktrees in total with
+`path`, `branch`, `head`, `shortHead`, `detached`, `locked`, `prunable` and
+`dirty` (null when its status could not be read).
+
+An account with no role on any project gets an empty list. A hidden project and a
+missing project both refuse `resource_not_found` (404). A project visible only
+through `secrets` or `executor` refuses `permission_denied` (403). The installed
+RBAC script verifies this in `project-reads-${mode}` with the account-mode agent,
+which holds no role after the upgrade's authority reset. In the same lane the
+upgraded owner, signed in with a provider cookie, holds the installation `admin`
+role and reads every project, while the agent's read of the same project is
+refused.
+
+The script reads real Git repositories. In the released-baseline lane, 0.1.1
+registers two repositories, and its agent links each one to a Knowledge project
+with `link_runtime`. The first repository has `main` and a linked, modified
+`feature` worktree. The second belongs to a neighbouring project. Every
+`upgrade inspect` passes both links as accepted `links` decisions: the first
+upgrade, the repeated upgrade after a raw database rollback, and the upgrade
+after each 0.1.1 backup restore. The script then checks the registrations'
+parents. Permitted callers read each project's exact worktrees (path, branch,
+head and dirty state) and nothing of the other project: installation authority
+over HTTP and MCP, the local operator through the CLI socket, and the admin
+cookie. Callers without a role get, for both existing projects, the same
+refusal as for a missing project, and no answer contains a fixture path. In the
+fresh lane nothing gives a registration a parent: only an accepted upgrade link
+does. Both registrations therefore stay parentless. Only full authority lists
+them, as `projectId: null` items, and the owner cookie without a role reads
+nothing.
+
+The installed build cannot show a reader scoped to one project. Only the
+upgrade's `grant_admin` act writes `account_grants`, and no release command,
+endpoint or tool grants a project role. A direct database write is not an
+option: it would bypass the security fence, and `auth fence resume` discards
+grants written after the upgrade. The source test
+`project-reads-transports.test.ts` covers the scoped reader with real Git
+worktrees and a hidden neighbouring project over the API and MCP. The private
+unix socket is the local operator, with full authority, so it reads the same
+worktrees there but is no scoped reader. The installed admin and the zero-role
+agent do not replace that check.
+
+Over MCP, `tools/list` returns `project_list`, `project_status`,
+`project_worktrees` and `session_describe`. Call a project tool with the same
+arguments as the HTTP body:
+
+```bash
+curl --fail-with-body "$WTC_MCP/mcp/operations" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' --data-binary @- <<'JSON'
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"project_list","arguments":{"limit":50}}}
+JSON
+```
+
+A tool refusal is a tool result with `isError: true` and the public error as
+`structuredContent`, decided by the tool itself as on HTTP. If authority
+changes between the buffered answer and its write, the request answers a
+JSON-RPC error carrying the fresh public error instead. A project tool call
+reads neither `session describe` nor the full project list. A call the MCP SDK
+refuses, for example without `text/event-stream` in `Accept` or with an
+unsupported `Mcp-Protocol-Version`, gets the SDK's error and runs no project
+read or Git discovery. The local operator uses the CLI. Like `session describe`,
+it goes through the private socket while a controller owns the lock and reads
+offline otherwise. Offline, every registration reports `phase: "stopped"`:
+
+```bash
+worktree-control projects list --data-dir /tmp/wtc-example/data --state-dir /tmp/wtc-example/state
+worktree-control projects status example --data-dir /tmp/wtc-example/data --state-dir /tmp/wtc-example/state
+worktree-control projects worktrees example --data-dir /tmp/wtc-example/data --state-dir /tmp/wtc-example/state
+```
+
+The legacy `project list` command and the legacy MCP and HTTP project routes are
+unchanged until their families are migrated.
+
 ## What this release provides
 
 Implemented in `0.2.0`:

@@ -141,3 +141,99 @@ export class ProjectDirectoryQueries {
     return rows.map(row => mapping<Id>(row));
   }
 }
+
+/** The most registrations the catalog reads in one call; more is refused, never truncated. */
+export const PROJECT_CATALOG_REGISTRATION_LIMIT = 5000;
+
+/** A Knowledge project with its safe metadata, as stored. */
+export interface CatalogProjectRow {
+  readonly id: unknown;
+  readonly name: unknown;
+  readonly status: unknown;
+  readonly revision: unknown;
+}
+/** A registration with the facts the project reads release, as stored. */
+export interface CatalogRegistrationRow {
+  readonly id: unknown;
+  readonly projectId: unknown;
+  readonly mappingVersion: unknown;
+  readonly name: unknown;
+  readonly repositoryPath: unknown;
+  readonly port: unknown;
+  readonly launchPreset: unknown;
+  readonly executable: unknown;
+  readonly argsJson: unknown;
+  readonly selectedWorktreePath: unknown;
+  /** The active claim's holder identity, or null. Never its reason, owner, times, lease token or credential. */
+  readonly claim: {
+    readonly kind: unknown;
+    readonly principalId: unknown;
+  } | null;
+}
+
+type CatalogRegistrationSql = {
+  id: unknown; parent_project_id: unknown; mapping_version: unknown; name: unknown; repository_path: unknown; port: unknown;
+  launch_preset: unknown; executable: unknown; args_json: unknown; selected_worktree_path: unknown;
+  claim_id: unknown; claim_kind: unknown; claim_principal: unknown;
+};
+
+/*
+ * A registration's active claim, read without writing. It mirrors the expiry
+ * that `SqliteStateStore.expireReservations` applies before every claim read
+ * (an agent claim past `expires_at`, a provider-bound human claim without a live
+ * lease), so a claim that the next write would expire is never reported as
+ * held. Nothing here releases it: a read never writes.
+ */
+const ACTIVE_CLAIM = `r.released_at IS NULL
+  AND NOT (r.expires_at IS NOT NULL AND r.expires_at <= @now)
+  AND NOT (r.provider_bound=1 AND NOT EXISTS (SELECT 1 FROM human_runtime_leases h WHERE h.reservation_id=r.id AND h.expires_at>@now))`;
+
+/**
+ * Read-only facts for the operations module's project reads (`project.list`,
+ * `project.status`, `project.worktrees`): Knowledge projects with their safe
+ * metadata, and registrations with their placement and active claim. It
+ * borrows the owner's connection, never writes (expiry is applied in the
+ * predicate, not stored), and returns storage facts that its reader validates.
+ * Its construction checks step 51, whose parent and mapping version columns it reads.
+ */
+export class ProjectCatalogQueries {
+  constructor(private readonly database: Database.Database) {
+    schemaTarget(PROJECT_MAPPING_VERSION);
+  }
+
+  /** Every project, archived ones included, by ID. Throws above {@link PROJECT_LIST_LIMIT}. */
+  projects(): CatalogProjectRow[] {
+    const rows = this.database.prepare("SELECT id,name,status,revision FROM knowledge_projects ORDER BY id LIMIT ?")
+      .all(PROJECT_LIST_LIMIT + 1) as CatalogProjectRow[];
+    if (rows.length > PROJECT_LIST_LIMIT) throw new Error("Project listing exceeds its limit.");
+    return rows;
+  }
+
+  /** The project with this ID, or null. */
+  project(id: string): CatalogProjectRow | null {
+    return (this.database.prepare("SELECT id,name,status,revision FROM knowledge_projects WHERE id=?").get(text(id)) as CatalogProjectRow | undefined) ?? null;
+  }
+
+  /**
+   * Every registration, parentless ones included, by ID; or only the children
+   * of `projectId`. One statement, so placement and claims are one read.
+   * Throws above {@link PROJECT_CATALOG_REGISTRATION_LIMIT}.
+   */
+  registrations(now: string, projectId?: string): CatalogRegistrationRow[] {
+    const where = projectId === undefined ? "" : "WHERE p.parent_project_id=@project";
+    const rows = this.database.prepare(`SELECT p.id,p.parent_project_id,p.mapping_version,p.name,p.repository_path,p.port,p.launch_preset,
+        p.executable,p.args_json,p.selected_worktree_path,
+        c.id AS claim_id,c.kind AS claim_kind,c.principal_id AS claim_principal
+      FROM projects p LEFT JOIN (SELECT r.id,r.project_id,r.kind,r.principal_id FROM reservations r WHERE ${ACTIVE_CLAIM}) c ON c.project_id=p.id
+      ${where} ORDER BY p.id LIMIT @limit`)
+      .all({ now: text(now), limit: PROJECT_CATALOG_REGISTRATION_LIMIT + 1, ...(projectId === undefined ? {} : { project: text(projectId) }) }) as CatalogRegistrationSql[];
+    if (rows.length > PROJECT_CATALOG_REGISTRATION_LIMIT) throw new Error("Registration catalog exceeds its limit.");
+    // At most one unreleased claim per project is an invariant of acquisition; a second row is corruption.
+    if (new Set(rows.map(row => row.id)).size !== rows.length) throw new Error("A registration has more than one active claim.");
+    return rows.map(row => ({
+      id: row.id, projectId: row.parent_project_id, mappingVersion: row.mapping_version, name: row.name, repositoryPath: row.repository_path,
+      port: row.port, launchPreset: row.launch_preset, executable: row.executable, argsJson: row.args_json, selectedWorktreePath: row.selected_worktree_path,
+      claim: row.claim_id === null ? null : { kind: row.claim_kind, principalId: row.claim_principal },
+    }));
+  }
+}

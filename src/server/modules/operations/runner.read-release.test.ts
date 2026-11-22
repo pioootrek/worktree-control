@@ -3,7 +3,7 @@ import { FRESH_LOGIN_WINDOW_MS } from "@/shared/contracts/operations";
 import type { AuthenticationContext } from "./authentication-context";
 import { OperationError } from "./errors";
 import type { PhaseScope, QueryOperation, ReadOperation } from "./operation";
-import { admissionRefusal } from "./operations-fixture";
+import { admissionRefusal, P } from "./operations-fixture";
 import { canonicalJson, MAX_RELEASE_DEPTH, MAX_RELEASE_NODES } from "./release";
 import { authenticated, onProject } from "./requirements";
 import { OperationRunner, type ReadReleaseOptions, type RunOptions } from "./runner";
@@ -326,5 +326,105 @@ describe("read refusal parity", () => {
     expect(await f.runner.readRelease(f.operation, f.alice.context, row.raw ?? {}, options(commit, row.options)))
       .toEqual({ status: "refused", error: normal.error });
     expect(commit).not.toHaveBeenCalled();
+  });
+});
+
+describe("staged refusal delivery (D2a)", () => {
+  type ProjectRead = ReadOperation<{ projectId: string }, Value, Value>;
+  function projectRead() {
+    const f = fixture();
+    const read: ProjectRead = {
+      id: "fixture.project_read", kind: "read", requirement: { require: onProject("project:read", "project") },
+      parse: raw => {
+        const projectId = (raw as { projectId?: unknown } | null)?.projectId;
+        if (typeof projectId !== "string") throw new OperationError("invalid_request", "invalid_project_id");
+        return { projectId };
+      },
+      resources: input => ({ project: { kind: "project", id: input.projectId } }),
+      read: () => ({ value: 1, nested: { a: 2, b: 3 } }), project: value => value, publicKeys: ["value", "nested"],
+    };
+    const bob = f.world.human("bob");
+    return { ...f, read, bob };
+  }
+  const delivery = (world: ReturnType<typeof setup>["world"], during: () => void = () => undefined) => {
+    const log = { staged: [] as unknown[], committed: [] as unknown[], admittedStage: [] as boolean[], admittedCommit: [] as boolean[] };
+    return { log, refusal: {
+      async stage(error: unknown) { log.admittedStage.push(world.admission.admitted); log.staged.push(error); during(); },
+      commit(error: unknown) { log.admittedCommit.push(world.admission.admitted); log.committed.push(error); },
+    } };
+  };
+
+  it("stages a refusal outside admission and commits it inside a fresh phase that reproduces it", async () => {
+    const f = projectRead(), { log, refusal } = delivery(f.world), commit = vi.fn();
+    expect(await f.runner.readRelease(f.read, f.bob.context, { projectId: "project-a" }, options(commit, { refusal }))).toEqual({ status: "committed" });
+    expect(log).toEqual({ staged: [publicError("not_found", 404, "resource_not_found")], committed: [publicError("not_found", 404, "resource_not_found")],
+      admittedStage: [false], admittedCommit: [true] });
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["rejected promise", () => Promise.reject(new Error("private"))],
+    ["rejecting thenable", (): unknown => ({ then(_resolve: unknown, reject: (err: Error) => void): void { reject(new Error("private")); } })],
+    ["throwing then getter", (): unknown => ({ get then(): never { throw new Error("private"); } })],
+  ] as const)("rejects a refusal commit returning a %s without retrying", async (_name, result) => {
+    const f = projectRead();
+    const { log, refusal } = delivery(f.world);
+    const commit = vi.fn(() => result());
+    const success = vi.fn();
+    const released = await f.runner.readRelease(f.read, f.bob.context, { projectId: "project-a" },
+      options(success, { refusal: { stage: refusal.stage, commit } }));
+    expect(released).toEqual({ status: "commit_failed", error: publicError("internal", 500, "release_commit_failed") });
+    expect(log.staged).toEqual([publicError("not_found", 404, "resource_not_found")]);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(success).not.toHaveBeenCalled();
+  });
+
+  it("commits the same refusal when only unrelated authority changed while staging", async () => {
+    const f = projectRead();
+    const { log, refusal } = delivery(f.world, () => { f.world.grants.grant({ accountId: f.bob.id, role: "reader", scope: { kind: "project", projectId: P("project-b") } }); });
+    expect(await f.runner.readRelease(f.read, f.bob.context, { projectId: "project-a" }, options(vi.fn(), { refusal }))).toEqual({ status: "committed" });
+    expect(log.committed).toEqual([publicError("not_found", 404, "resource_not_found")]);
+  });
+
+  it("commits nothing when the fresh phase answers differently: a success is a payload change, another refusal is returned", async () => {
+    const granted = projectRead();
+    const allowed = delivery(granted.world, () => { granted.world.grants.grant({ accountId: granted.bob.id, role: "reader", scope: { kind: "project", projectId: projectA } }); });
+    expect(await granted.runner.readRelease(granted.read, granted.bob.context, { projectId: "project-a" }, options(vi.fn(), { refusal: allowed.refusal })))
+      .toEqual({ status: "refused", error: publicError("conflict", 409, "release_payload_changed") });
+    expect(allowed.log.committed).toEqual([]);
+
+    const visible = projectRead();
+    const other = delivery(visible.world, () => { visible.world.grants.grant({ accountId: visible.bob.id, role: "secrets", scope: { kind: "project", projectId: projectA } }); });
+    expect(await visible.runner.readRelease(visible.read, visible.bob.context, { projectId: "project-a" }, options(vi.fn(), { refusal: other.refusal })))
+      .toEqual({ status: "refused", error: publicError("forbidden", 403, "permission_denied") });
+    expect(other.log.committed).toEqual([]);
+  });
+
+  it("stages an input refusal after the authority checks, and never stages a release-policy refusal", async () => {
+    const f = projectRead(), input = delivery(f.world);
+    expect(await f.runner.readRelease(f.read, f.bob.context, {}, options(vi.fn(), { refusal: input.refusal }))).toEqual({ status: "committed" });
+    expect(input.log.committed).toEqual([publicError("invalid_request", 400, "invalid_project_id")]);
+    for (const extra of [{ eligible: () => false }, { connected: () => false }, { deadline: f.world.clock.now - 1 }]) {
+      const policy = delivery(f.world);
+      const result = await f.runner.readRelease(f.read, f.bob.context, { projectId: "project-a" }, options(vi.fn(), { ...extra, refusal: policy.refusal }));
+      expect(result.status, JSON.stringify(Object.keys(extra))).toBe("refused");
+      expect(policy.log.staged).toEqual([]);
+    }
+  });
+
+  it("refuses a malformed delivery or one combined with expectedCanonical before any phase", async () => {
+    const f = projectRead(), { refusal } = delivery(f.world);
+    for (const extra of [{ refusal: { stage: async () => undefined } }, { refusal, expectedCanonical: "{}" }]) {
+      expect(await f.runner.readRelease(f.read, f.alice.context, { projectId: "project-a" }, options(vi.fn(), extra as never)))
+        .toEqual({ status: "refused", error: publicError("invalid_request", 400, "invalid_input") });
+    }
+  });
+
+  it("reports a failing stage as its own refusal and commits nothing", async () => {
+    const f = projectRead(), committed = vi.fn();
+    const refusal = { stage: async () => { throw new OperationError("payload_too_large", "response_too_large"); }, commit: committed };
+    expect(await f.runner.readRelease(f.read, f.bob.context, { projectId: "project-a" }, options(vi.fn(), { refusal })))
+      .toMatchObject({ status: "refused", error: { reason: "response_too_large" } });
+    expect(committed).not.toHaveBeenCalled();
   });
 });

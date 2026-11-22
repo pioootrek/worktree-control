@@ -131,7 +131,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
   }
   const logs = { controller: vi.fn() };
   const built = buildOperationsRuntime({ store, activeMode: mode, now: () => Date.now() + clock.offset, logs,
-    eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), provider: mode === "better-auth" ? provider : null, listeners: { mcp: () => state.mcpOpen, worker: () => state.workerOpen, api: () => apiOpen, unix: () => unixOpen } });
+    eligibility, projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { listTrees: async () => [], worktreeDirty: async () => false } }, requestBudget: new AuthenticationRequestBudget(16, 4), provider: mode === "better-auth" ? provider : null, listeners: { mcp: () => state.mcpOpen, worker: () => state.workerOpen, api: () => apiOpen, unix: () => unixOpen } });
   const hooks: { beforeMint?: (signal: AbortSignal | undefined) => void; afterMint?: () => void | Promise<void>; legacy?: (body: unknown) => unknown } = {};
   const runtime = { ...built, mint: async (...args: Parameters<Extract<typeof built, { supported: true }>["mint"]>) => {
     hooks.beforeMint?.(args[3].signal);
@@ -1638,7 +1638,7 @@ describe("MCP listener boundary conformance", () => {
 
   it.each(["open", "token", "better-auth"])("%s SDK sequential initialize/list/call has no session authority", async mode => {
     const f = await mcpFixture(mode), client = await f.client(false, mode === "token" ? f.installation : mode === "better-auth" ? f.agent : undefined);
-    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["session_describe"]);
+    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["project_list", "project_status", "project_worktrees", "session_describe"]);
     expect((await client.callTool({ name: "session_describe", arguments: {} })).structuredContent).toMatchObject({ listener: "mcp", mode });
     expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
   });

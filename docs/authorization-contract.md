@@ -7,10 +7,13 @@ status: "active"
 
 # Authorization contract
 
-**Status: unreleased breaking change.** Only `session.describe` is mounted,
-through `POST /api/operations/session.describe` on the API listener, private
-unix socket and configured HTTPS worker listener, through the MCP operations
-namespace, and through lock-first `session describe` on the CLI. Only the exact raw operation path can succeed. Aliases entering
+**Status: unreleased breaking change.** Four reads are mounted. `session.describe`
+is served through `POST /api/operations/session.describe` on the API listener,
+private unix socket and configured HTTPS worker listener, through the MCP
+operations namespace, and through lock-first `session describe` on the CLI. The
+[project reads](#project-reads-d2a) `project.list`, `project.status` and
+`project.worktrees` are served on the same surfaces except the worker listener, and
+through the CLI as `projects list|status|worktrees`. Only the exact raw operation path can succeed. Aliases entering
 `/api/operations` or `/mcp/operations` through dot segments, encoded path syntax,
 backslashes or duplicate slashes receive the new not-found envelope on all three
 listeners through normal request dispatch, for every method. On unix and worker the fixed
@@ -1264,9 +1267,10 @@ requirements with unknown permissions, predicates or slot names, empty
 conjunctions, invalid public keys, malformed effects, transition lists,
 secret hooks, wait bounds and listener exclusions. It registers a frozen copy
 whose requirement, allowlist, effect, transition list, wait bounds and
-exclusions are frozen. The only real operation is `session.describe`, which is
-frozen and mounted on API, worker, private unix, MCP and the local CLI. Every other operation in the tests is a
-fixture.
+exclusions are frozen. The real operations are `session.describe`, mounted on
+API, worker, private unix, MCP and the local CLI, and the three
+[project reads](#project-reads-d2a), mounted on the same surfaces except the
+worker listener. Every other operation in the tests is a fixture.
 
 `OperationRunner` runs a mutation as these admitted phases, built on
 `src/server/database-admission.ts`:
@@ -1357,6 +1361,167 @@ once per call. Failed commit confirms no successful release, though it may
 have written some bytes. Admission never spans asynchronous SDK work or
 network drain. Committing bytes to Node promises neither client receipt nor
 revocation of bytes already committed. API, worker and unix session descriptions use the direct commit shape.
+
+`OperationRunner.queryRelease` gives a query the same release. It applies the
+same eligibility, connection, deadline and signal checks at step 1 and step 3,
+and calls `commit` synchronously inside the admitted phase of step 3, after the
+fresh decision on an unchanged resolution. `expectedCanonical` is refused there.
+Its `stage` option is the buffered shape: see [Project reads](#project-reads-d2a).
+A read passed to `queryRelease`, or a query passed to `readRelease`, is
+`internal`/`invalid_operation`.
+
+Both `readRelease` and `queryRelease` take an optional `refusal` delivery
+(`stage`, `commit`) for a buffered refusal. Without it a refusal is only
+returned. With it, the operation's own refusal is staged outside admission and
+committed only inside a fresh admitted phase of the same operation and input
+that reproduces the identical public error. The fresh phase repeats the step
+that refused: the read, the plan of step 1, the decision on the same resolution
+after a failed or timed-out work, or step 3. Input refusals repeat the
+authority and policy checks first. When the fresh phase answers anything else,
+nothing staged is committed and the fresh answer is returned: another refusal
+as itself, a success as `conflict`/`release_payload_changed`. The release
+policy's own refusals (`release_not_eligible`, `release_timed_out`,
+`request_cancelled`) are never staged, a query never stages a refusal after it
+staged a value, and the work never runs again. A delivery combined with
+`expectedCanonical`, or without both functions, is `invalid_request`/`invalid_input`.
+
+### Project reads (D2a)
+
+`project.list`, `project.status` and `project.worktrees` are the first product
+reads (`src/server/modules/operations/project-reads.ts`). Bootstrap builds them
+over three ports and registers them beside `session.describe`. The ports are the
+store's write-free project catalog (`projectCatalogReader()`), the process
+manager's in-memory placement, and a bounded, coalescing worktree discovery over
+the controller's Git reader. Offline, placement is always `stopped`, because no
+controller runs managed servers, and the CLI command uses its own Git reader.
+
+| Operation | Kind | Requirement | Surfaces |
+| --- | --- | --- | --- |
+| `project.list` | read | `collection(project:read)` | API, unix, MCP (`project_list`), CLI `projects list` |
+| `project.status` | read | `project:read` on `project` | API, unix, MCP (`project_status`), CLI `projects status` |
+| `project.worktrees` | query | `project:read` on `project` | API, unix, MCP (`project_worktrees`), CLI `projects worktrees` |
+
+All three declare `excludedListeners: ["worker"]`. `H` in the dispositions is
+the API on TCP and the unix socket, never the worker listener, so the worker path
+parser refuses them as `not_found`/`operation_not_found` and the runner refuses
+a worker context as `operation_not_registered`. In `legacy` or another unknown
+mode no registry is built, so the project paths answer
+`not_found`/`operation_not_found` on every listener and only
+`session.describe` answers `unauthenticated`/`unknown_mode`; the CLI commands
+refuse `unknown_mode`. No transport adds policy: each
+one dispatches a registry operation by kind and passes the raw input to its
+`parse`.
+
+**Projects and registrations.** A project is a `knowledge_projects` row. Its
+registrations are the `projects` rows whose parent it is, sorted by ID. A
+project may have none or several. Archived projects are read like active ones
+and release their `status`. A parentless registration is its own
+`project.list` item with `projectId: null`. Because `projectOf` is `null`, it is
+released to full authority only. No project-addressed read reaches it. A project
+or registration whose stored ID the contract grammar cannot carry is left out,
+as the resolver's listing does, and so are the registrations of such a project.
+
+**Field allowlists (D5 for these operations).** Every holder of `project:read`
+receives the project's `projectId`, `name` and `status`. Each registration has
+`registrationId`, `name`, `port`, `phase` and `worktreePath` (running, otherwise
+selected, otherwise null), plus `claim`. `project.status` adds `revision`,
+`writable` (`knowledge:write` on the project) and `compact`. Its detailed
+registrations add `selectedWorktreePath`, `startedAt` and `managedServer`. Gated
+fields are absent, never null, when not released:
+
+- `launch` (`executable`, `args`): only with `config:read` on the project.
+- `claimHolder` (`kind`, `accountId`): the holder's identity only, with
+  `claims:manage`, and only for an active claim. `accountId` is the claim's
+  stored principal when it is a contract ID, otherwise null. The claim's
+  reason, owner string, times, lease token hash, credential and idempotency key
+  are never read into the operation (the catalog query does not select them).
+
+`compact: true` returns the summary registration entries. `project.worktrees`
+releases per registration `discovery` and the worktree allowlist `path`,
+`branch`, `head`, `shortHead`, `detached`, `locked`, `prunable` and `dirty`.
+`discovery` is `complete` when every released tree has its status, `partial`
+when Git listed the trees but could not read the status of at least one, or
+not within the call's status budget of 6 s (its `dirty` is null), and
+`unavailable` when the listing failed or was malformed.
+Nothing about a cause is released.
+
+**Claim relation.** The relation is `none` without an active claim and `other`
+with one. `own` needs the caller's coordination session as the holder. Stored
+claims carry none, and coordination sessions do not exist yet (D1c), so no
+caller of this surface sees `own`, and no session adopts a claim. The active
+claim is evaluated in the read's own predicate, with the expiry rules that
+`expireReservations` applies before a write, without writing.
+
+**Bounds.** Page size 1 to 100, default 50; the cursor is the release context's
+opaque key cursor (`p:<project>` or `r:<registration>`), at most 512 characters.
+Each project releases at most 16 registrations (`registrationsTruncated`), and one
+`project.worktrees` call at most 64 worktrees (`worktreesTruncated`). The catalog
+refuses more than 1000 projects or 5000 registrations as `internal`, never
+truncated. One call lists every repository of the project first, with no status
+read. It then assigns its budget of 64 status reads in registration order, so
+the first registration's trees come first, and runs `git status` only on the
+assigned trees. Trees past the budget are never read and set
+`worktreesTruncated`. Discovery keeps at most 16 distinct listings and 64
+distinct status reads in flight and at most 64 trees from one listing. A call
+that would exceed a bound starts nothing new and is refused as
+`busy`/`discovery_capacity` with retry, as is a call whose Git command admission
+is full; neither is reported as a failed discovery. The query bound is 8000 ms,
+below the 10 s transport deadline, so slow Git answers
+`unavailable`/`query_timed_out` with retry.
+
+**Discovery and release.** Concurrent callers share the one Git listing of a
+repository, and the one status read of a worktree, while it is in flight.
+Nothing is cached after it settles, so every call discovers. A caller's
+cancellation detaches only that caller. When the last caller of a shared read
+leaves before it settles, the read is aborted: Git command admission drops it
+from its queue or stops its process. Release of `project.worktrees`
+follows [Queries](#queries) through `OperationRunner.queryRelease`. The commit
+runs inside the admitted phase of step 3, after a fresh decision on an unchanged
+resolution, as `readRelease` does for reads. A `project` resolution keeps its
+version when a registration moves, so the projection also re-reads the project's
+registrations in that phase. A registration added, removed, moved (mapping
+version) or repointed (repository path) since the plan answers
+`conflict`/`resource_changed` and releases nothing. With `stage`, used by MCP,
+step 3 decides twice: the first decision projects a value that the SDK buffers
+outside admission, and the second re-projects the same work result, requires
+the same canonical value and only then writes. Discovery runs once.
+
+**MCP.** Descriptors are explicit, sorted by operation ID and checked against
+`registry.idsOn("mcp")`. Their JSON Schemas only advertise input. The decision
+deferred from the D1a plan is made: no machine-readable schema lives on the
+operation, and its `parse` is the only validation. A project tool's release
+refusal is a tool result with `isError: true` and the public error. A project
+tool's answer is released by that tool alone, never under the
+`session.describe` witness, so a change of unrelated authority cannot replace
+it, and neither `session.describe` nor the global project list is read for it.
+A targeted `project_status` or `project_worktrees` call, and its hidden or
+missing refusal, therefore still answers when the installation holds more
+projects than the resolver lists.
+
+The SDK decides the protocol first. The request's one SDK pair receives the
+body before any project work. Only the SDK's dispatch of that tool's call, with
+the arguments it parsed, starts the tool's release, and from then on a refusal
+is a JSON-RPC error carrying the request ID. The handler waits for this
+request's own answer and runs no application work; the adapter settles an
+unanswered handler before SDK disposal. A body the SDK answers without
+dispatching the tool, such as a negotiation, protocol-version or parameter
+refusal or a notification, runs no project work and is written under the
+`session.describe` witness like initialize.
+
+A project tool's refusal uses the `refusal` delivery: the SDK envelope is built
+outside admission and written inside a fresh phase of the same tool that
+reproduces the same error. A successful read is written only after a fresh
+`readRelease` of the same tool matches the buffered value
+(`expectedCanonical`); a query re-projects it as described above. When that
+final decision differs, the request answers a JSON-RPC error whose `data` is the
+fresh public error, for example `resource_not_found` after a revocation.
+Initialize, listing, notifications and `session_describe` remain written under
+the `session.describe` witness, captured before SDK dispatch.
+
+**CLI.** `projects list|status|worktrees` share `session describe`'s lock-first
+selection: the private socket while a controller owns the lock, otherwise one
+offline store under the lock. The CLI validates socket replies against strict
+schemas of these DTOs.
 
 ### Commit point
 
@@ -1580,7 +1745,8 @@ replay and every stream error item. `run` never rejects.
 ## Contract extensions of slice 4
 
 These implement the planned deltas of `29cf8fa5` and the two additions of the
-same reply (`intent_origin`; coordination sessions are not part of this). Queries, mutations and streams remain unmounted.
+same reply (`intent_origin`; coordination sessions are not part of this). One query is
+mounted, `project.worktrees` ([Project reads](#project-reads-d2a)); mutations and streams remain unmounted.
 
 ### Queries
 
@@ -2009,7 +2175,7 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   and [Provider sessions](#provider-sessions)). The bootstrap
   `buildOperationsRuntime` composes those adapters, one clock, the store's own
   admission, a fresh grants factory, disposal diagnostics and a registry pinned
-  to `session.describe`, exposed through a frozen read-only view with bound read
+  to `session.describe` and the three [project reads](#project-reads-d2a), exposed through a frozen read-only view with bound read
   methods and no registration method. Its explicit active mode fixes both
   installation verification and each served listener boundary. Unknown modes, including
   `legacy`, construct no boundary or verifier and answer `unauthenticated` /
@@ -2111,7 +2277,9 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   not remap them, and the grammar is not widened.
 - Coordination-session issuance and storage (`coordination.*`), any
   transport, and every product operation of the catalogue except
-  `session.describe`. The extensions of slice 4 are exercised by test
+  `session.describe`, `project.list`, `project.status` and `project.worktrees`.
+  `project.wait` and the removal of the legacy project reads they replace
+  (rows 1.1 to 1.4 and 1.R) are not done. The extensions of slice 4 are exercised by test
   fixtures only.
 - Moving the 204 current operations onto the registry, as decided in the
   accepted [authorization operation dispositions](authorization-operation-dispositions.md).

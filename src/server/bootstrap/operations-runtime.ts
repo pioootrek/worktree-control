@@ -3,10 +3,11 @@ import type { SqliteStateStore } from "../sqlite-store";
 import type { LogWriter } from "../log-writer";
 import { AuthenticationProviderError, type VerifiedProviderSession } from "../modules/authentication";
 import {
-  AgentTokenVerifier, CompositeCredentialVerifier, createListenerBoundary, InstallationVerifier,
+  AgentTokenVerifier, CoalescingWorktreeDiscovery, CompositeCredentialVerifier, createListenerBoundary, createProjectReads, InstallationVerifier,
   OperationError, OperationRegistry, OperationRunner, ProviderSessionVerifier, sessionDescribe,
   sqliteGrants, SqliteResourceResolver, admissionFailureOf, classify, mintOfflineContext, publicError, resolveAcceptance,
-  type AuthenticationContext, type ListenerBoundary, type OperationRuntime, type PresentedCredentials,
+  type AuthenticationContext, type ListenerBoundary, type OperationRuntime, type PresentedCredentials, type RegistrationPlacementReader,
+  type WorktreeGit,
 } from "../modules/operations";
 import { authenticationModes, type AuthenticationMode, type ListenerKind, type PublicOperationError } from "../../shared/contracts/operations";
 import { CONTROLLER_OPERATION_SESSION_POLICY, ControllerOperationSessionResolutionError, type ControllerOperationSessionAuthority, type ProviderSessionEligibility, type createControllerOperationEligibility } from "./authentication-provider-lifetime";
@@ -26,6 +27,12 @@ export interface OperationsRuntimeOptions {
   /** Administration-owned stable accessor; offline callers may supply null. */
   provider: ControllerOperationSessionAuthority | null;
   requestBudget: AuthenticationRequestBudget;
+  /**
+   * Runtime facts of the project reads. The controller passes its process
+   * manager's in-memory placement and its Git reader; offline callers pass a
+   * stopped placement (no controller runs managed servers) and their own reader.
+   */
+  projectReads: { placement: RegistrationPlacementReader; git: WorktreeGit };
 }
 
 function holds(call: () => unknown): boolean {
@@ -113,6 +120,16 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   });
   const registry = new OperationRegistry();
   registry.register(sessionDescribe);
+  // The first project read family (D2a). The catalog is the store's write-free
+  // reader on its core connection; discovery is coalesced per repository.
+  const projectReads = createProjectReads({
+    catalog: store.projectCatalogReader(),
+    placement: options.projectReads.placement,
+    discovery: new CoalescingWorktreeDiscovery(options.projectReads.git),
+  });
+  registry.register(projectReads.list);
+  registry.register(projectReads.status);
+  registry.register(projectReads.worktrees);
   const registryView = Object.freeze({
     get: registry.get.bind(registry),
     ids: registry.ids.bind(registry),

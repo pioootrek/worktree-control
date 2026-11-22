@@ -182,3 +182,98 @@ export interface SessionDescription {
   projectsTruncated: boolean;
   freshLogin: { state: FreshLoginState; validUntil: string | null };
 }
+
+/** Runtime phase of a registration's managed server (`RuntimePhase` of the runtime contract). */
+export type RegistrationPhase = "stopped" | "starting" | "running" | "stopping" | "failed";
+/**
+ * Claim relation of the caller. `own` means a claim held by the caller's
+ * coordination session; until coordination sessions exist (D1c) no caller of
+ * the operations surface holds one, so an active claim is `other`.
+ */
+export type ClaimRelation = "none" | "own" | "other";
+
+/** Registration fields every holder of `project:read` on its project receives. */
+export interface RegistrationSummary {
+  registrationId: RegistrationId;
+  name: string;
+  port: number;
+  phase: RegistrationPhase;
+  /** The running worktree, otherwise the selected one, otherwise null. */
+  worktreePath: string | null;
+  claim: ClaimRelation;
+}
+
+/** One `project.list` item: a project, or (full authority only) a parentless registration with `projectId` null. */
+export interface ProjectListItem {
+  projectId: ProjectId | null;
+  /** The project's name; for a parentless item, the registration's name. */
+  name: string;
+  /** Knowledge status of the project; null for a parentless item. */
+  status: "active" | "archived" | null;
+  /** Sorted by registration ID, at most `MAX_PROJECT_REGISTRATIONS`. */
+  registrations: RegistrationSummary[];
+  registrationsTruncated: boolean;
+}
+export interface ProjectListResult { items: ProjectListItem[]; nextCursor: string | null }
+
+/**
+ * Holder identity of another claim (dispositions 4.9), released only with
+ * `claims:manage` on the project. Identity only: never the claim's reason,
+ * owner string, times, lease or credential.
+ */
+export interface ClaimHolder {
+  kind: "human" | "agent";
+  /** The holder's account, when the claim is bound to one that the contract can name; otherwise null. */
+  accountId: AccountId | null;
+}
+/** `project.status` detail of one registration. Gated fields are absent, never null, when not released. */
+export interface RegistrationStatus extends RegistrationSummary {
+  selectedWorktreePath: string | null;
+  startedAt: string | null;
+  managedServer: boolean;
+  /** Only with `config:read` on the project. */
+  launch?: { executable: string; args: string[] };
+  /** Only with `claims:manage` on the project, and only when a claim exists. */
+  claimHolder?: ClaimHolder;
+}
+export interface ProjectStatusResult {
+  projectId: ProjectId;
+  name: string;
+  status: "active" | "archived";
+  /** Safe Knowledge metadata (OPEN-13): revision and whether the caller may write Knowledge there. Never content. */
+  revision: number;
+  writable: boolean;
+  compact: boolean;
+  /** Detail entries, or summary entries when `compact`. */
+  registrations: Array<RegistrationStatus | RegistrationSummary>;
+  registrationsTruncated: boolean;
+}
+
+/** Field allowlist of one discovered worktree (dispositions, row `project.worktrees`). */
+export interface DiscoveredWorktree {
+  path: string;
+  branch: string | null;
+  head: string;
+  shortHead: string;
+  detached: boolean;
+  locked: boolean;
+  prunable: boolean;
+  /** Null when Git could not read the tree's status (its registration is then `partial`). */
+  dirty: boolean | null;
+}
+export interface RegistrationWorktrees {
+  registrationId: RegistrationId;
+  /**
+   * `complete`: every released tree has its status. `partial`: Git listed the
+   * trees but could not read the status of at least one (`dirty: null`).
+   * `unavailable`: the listing failed; nothing about the failure is released.
+   */
+  discovery: "complete" | "partial" | "unavailable";
+  worktrees: DiscoveredWorktree[];
+  worktreesTruncated: boolean;
+}
+export interface ProjectWorktreesResult {
+  projectId: ProjectId;
+  registrations: RegistrationWorktrees[];
+  registrationsTruncated: boolean;
+}

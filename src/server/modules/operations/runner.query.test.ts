@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ProjectId } from "@/shared/contracts/operations";
 import { OperationError } from "./errors";
 import { OperationRegistry, type QueryOperation, type StreamOperation } from "./operation";
@@ -182,6 +182,72 @@ function wait(fixture: ReturnType<typeof createWorld>, options: { maxWaiters?: n
   };
   return { operation, state };
 }
+
+describe("query refusal delivery (D2a)", () => {
+  const release = (fixture: ReturnType<typeof createWorld>, extra: object = {}) => {
+    const log = { staged: [] as unknown[], committed: [] as unknown[], values: [] as unknown[], during: undefined as (() => void) | undefined };
+    return { log, options: { eligible: () => true, connected: () => true, deadline: fixture.clock.now + 60_000, commit: (value: unknown) => { log.values.push(value); },
+      refusal: { async stage(error: unknown) { log.staged.push(error); log.during?.(); }, commit(error: unknown) { log.committed.push(error); } }, ...extra } };
+  };
+
+  it("stages the refusal of step 3 and commits it in a fresh phase; the work runs once", async () => {
+    const { world: fixture, alice } = world();
+    const { operation, log: work } = worktrees(fixture, async () => { fixture.grants.revokeAll(alice.id); });
+    const { log, options } = release(fixture);
+    expect(await new OperationRunner(fixture.runtime()).queryRelease(operation, alice.context, { registrationId: REG.id }, options)).toEqual({ status: "committed" });
+    expect(log).toMatchObject({ staged: [notFound], committed: [notFound], values: [] });
+    expect(work).toMatchObject({ works: 1, projected: 0 });
+  });
+
+  it("stages a refusal of step 1 and a failure of the work, reproduced by the same step", async () => {
+    const { world: fixture } = world();
+    const stranger = fixture.human("stranger");
+    const denied = worktrees(fixture), first = release(fixture);
+    expect(await new OperationRunner(fixture.runtime()).queryRelease(denied.operation, stranger.context, { registrationId: REG.id }, first.options)).toEqual({ status: "committed" });
+    expect(first.log.committed).toEqual([notFound]);
+    expect(denied.log.works).toBe(0);
+
+    const { world: other, alice } = world();
+    const timedOut = { category: "unavailable", status: 503, reason: "query_timed_out", retry: "retry", effect: null };
+    const slow = worktrees(other, signal => new Promise((_resolve, reject) => { signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); }));
+    const second = release(other);
+    expect(await new OperationRunner(other.runtime({ queryDeadlineMs: 20 })).queryRelease(slow.operation, alice.context, { registrationId: REG.id }, second.options)).toEqual({ status: "committed" });
+    expect(second.log.committed).toEqual([timedOut]);
+    expect(slow.log.works).toBe(1);
+  });
+
+  it("reports a rejected refusal commit once without running the denied query", async () => {
+    const { world: fixture } = world();
+    const stranger = fixture.human("stranger");
+    const { operation, log: work } = worktrees(fixture);
+    const { log, options } = release(fixture);
+    const commit = vi.fn(async () => { throw new Error("private"); });
+    const result = await new OperationRunner(fixture.runtime()).queryRelease(operation, stranger.context,
+      { registrationId: REG.id }, { ...options, refusal: { ...options.refusal, commit } });
+    expect(result).toEqual({ status: "commit_failed", error: { category: "internal", status: 500, reason: "release_commit_failed", retry: "none", effect: null } });
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(log).toMatchObject({ staged: [notFound], values: [] });
+    expect(work.works).toBe(0);
+  });
+
+  it("returns the fresh answer and commits nothing when authority changes while the refusal is staged", async () => {
+    const { world: fixture } = world();
+    const stranger = fixture.human("stranger");
+    const { operation } = worktrees(fixture), { log, options } = release(fixture);
+    log.during = () => { fixture.grants.grant({ accountId: stranger.id, role: "reader", scope: { kind: "project", projectId: projectA } }); };
+    expect(await new OperationRunner(fixture.runtime()).queryRelease(operation, stranger.context, { registrationId: REG.id }, options))
+      .toEqual({ status: "refused", error: { category: "conflict", status: 409, reason: "release_payload_changed", retry: "none", effect: null } });
+    expect(log.committed).toEqual([]);
+  });
+
+  it("never stages a refusal once a value was staged", async () => {
+    const { world: fixture, alice } = world();
+    const { operation } = worktrees(fixture);
+    const { log, options } = release(fixture, { stage: async () => { fixture.grants.revokeAll(alice.id); } });
+    expect(await new OperationRunner(fixture.runtime()).queryRelease(operation, alice.context, { registrationId: REG.id }, options)).toEqual({ status: "refused", error: notFound });
+    expect(log).toMatchObject({ staged: [], committed: [], values: [] });
+  });
+});
 
 describe("waits: bounded one-event streams", () => {
   it("delivers at most one event and disposes the source", async () => {

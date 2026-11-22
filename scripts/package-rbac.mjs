@@ -166,6 +166,14 @@ async function stop() {
 }
 const observe = read => { const database = new native.Database(join(directoryArgs[1], "state.sqlite3"), { readonly: true }); try { return read(database); } finally { database.close(); } };
 let currentCli, currentRoot, endpoint, mcpURL, workerPort, workerCa, storedWorker;
+/**
+ * The real Git repositories of the fixture (set while seeding): the linked registration's repository (`main`) with one
+ * linked worktree (`feature`, dirty), and the neighbouring registration's repository. After an upgrade `projectId` and
+ * `neighbourProjectId` are the projects the operator's accepted links attach them to; in the fresh lane both stay null.
+ */
+let repositories = null;
+/** Every caller and surface that read the real repositories, and whether it was permitted. */
+const repositoryEvidence = [];
 async function start(cli = currentCli, assets = currentRoot) {
   const port = await freePort(), mcpPort = await freePort(); endpoint = `http://127.0.0.1:${port}`; mcpURL = `http://127.0.0.1:${mcpPort}/mcp`;
   const workerArgs = [];
@@ -247,6 +255,14 @@ async function operationSocket(mode) {
     assert.equal(reply.status, 200); assert.equal(reply.body.actor.kind, "operator"); assert.equal(reply.body.listener, "unix"); assert.equal(reply.body.mode, mode);
     const success = await command(currentCli, ["session", "describe"]);
     assert.equal(success.code, 0); assert.equal(success.stdout, `${JSON.stringify(reply.body, null, 2)}\n`);
+    // D2a through the private socket: the operator lists every project; the CLI prints the same released DTO.
+    const ids = observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id").all().map(row => row.id));
+    const projects = await json(currentCli, ["projects", "list", "--limit", "100"]);
+    assert.deepEqual(projects.items.filter(item => item.projectId !== null).map(item => item.projectId), ids);
+    const projectStatus = await json(currentCli, ["projects", "status", ids[0]]); assert.equal(projectStatus.projectId, ids[0]); assert.equal(projectStatus.writable, true);
+    const projectWorktrees = await json(currentCli, ["projects", "worktrees", ids[0]]); assert.equal(projectWorktrees.projectId, ids[0]);
+    assert.deepEqual(await refusal(currentCli, ["projects", "status", "missing-project"]), operationRefusal("resource_not_found", "not_found", 404, "none"));
+    await repositoryReads(`cli-socket/${mode}`, cliRead, true);
     for (const closedStderr of [false, true]) await step(`session-describe-unix-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
       () => closedSessionOutput("socket", closedStderr));
     const socket = join(directoryArgs[3], "admin.sock"), hidden = socket + ".hidden";
@@ -266,6 +282,11 @@ async function operationOffline(mode) {
     assert.equal(dto.listener, "offline"); assert.equal(dto.mode, mode);
     assert.equal(dto.freshLogin.state, "exempt");
     assert(!JSON.stringify(dto).match(/sessionId|credentialId|verifierHash/));
+    // D2a offline: the same operator reads under the controller lock; no managed server runs offline.
+    const projects = await json(currentCli, ["projects", "list"]);
+    for (const item of projects.items) for (const registration of item.registrations) assert.equal(registration.phase, "stopped");
+    assert.deepEqual(projects.items.filter(item => item.projectId !== null).map(item => item.projectId),
+      observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id").all().map(row => row.id)).slice(0, 50));
     for (const closedStderr of [false, true]) await step(`session-describe-offline-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
       () => closedSessionOutput("offline", closedStderr));
     matrixCell("cli-offline", mode, "operator", "offline", "not applicable: no credential input; mode-independent upgrade-required-offline-session-describe step covers the released-baseline refusal once", `operations-offline-${mode}`);
@@ -304,19 +325,28 @@ async function operationMcp(mode, secret) {
       const response = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: JSON.stringify(message) });
       assert.equal(response.status, 200); const reply = await response.json(); assert.equal(reply.id, message.id); assert.equal(reply.error, undefined);
       if (message.method === "initialize") assert.equal(reply.result.protocolVersion, "2025-03-26");
-      if (message.method === "tools/list") assert.deepEqual(reply.result.tools.map(tool => tool.name), ["session_describe"]);
+      if (message.method === "tools/list") assert.deepEqual(reply.result.tools.map(tool => tool.name), ["project_list", "project_status", "project_worktrees", "session_describe"]);
       if (message.method === "tools/call") { assert.equal(reply.result.structuredContent.listener, "mcp"); assert.equal(reply.result.structuredContent.mode, mode); assert.equal(reply.result.structuredContent.actor.kind, mode === "better-auth" ? "agent" : "installation"); }
     }
     const { Client, StreamableHTTPClientTransport } = operationsSdk;
     const client = new Client({ name: "installed-operations", version: "1" }); clients.push(client);
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL + "/operations"), { requestInit: { headers: secret ? { Authorization: `Bearer ${secret}` } : {} } }));
-      assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ["session_describe"]);
+      assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ["project_list", "project_status", "project_worktrees", "session_describe"]);
       const result = await client.callTool({ name: "session_describe", arguments: {} });
       const denied = await client.callTool({ name: "session_describe", arguments: { actor: "operator" } });
       assert.equal(denied.isError, true); assert.deepEqual(denied.structuredContent, operationRefusal("unexpected_input", "invalid_request", 400, "none"));
       assert(!result.isError); const dto = result.structuredContent;
       assert.equal(dto.mode, mode); assert.equal(dto.listener, "mcp"); assert.equal(dto.actor.kind, mode === "better-auth" ? "agent" : "installation");
+      // D2a: the agent of the installed fixture holds no role after the authority reset; installation authority lists every project.
+      const listed = await client.callTool({ name: "project_list", arguments: {} });
+      assert(!listed.isError); assert.deepEqual(listed.structuredContent, await projectReadsExpected(mode, secret));
+      const hidden = await client.callTool({ name: "project_status", arguments: { projectId: firstProjectId() } });
+      if (mode === "better-auth") { assert.equal(hidden.isError, true); assert.deepEqual(hidden.structuredContent, operationRefusal("resource_not_found", "not_found", 404, "none")); }
+      else { assert(!hidden.isError); assert.equal(hidden.structuredContent.projectId, firstProjectId()); }
+      const worktrees = await client.callTool({ name: "project_worktrees", arguments: { projectId: "missing-project" } });
+      assert.equal(worktrees.isError, true); assert.deepEqual(worktrees.structuredContent, operationRefusal("resource_not_found", "not_found", 404, "none"));
+      await repositoryReads(`mcp/${mode}`, toolRead(client), mode !== "better-auth");
     } finally { await client.close(); }
     for (const name of ["X-Worktree-Control-Token", "X-Worktree-Switcher-Token"]) {
       const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", [name]: secret ?? storedWorker },
@@ -340,6 +370,7 @@ async function operationMcp(mode, secret) {
 async function operationApi(mode, secret) {
   await operationWorker(mode, secret);
   await operationMcp(mode, secret);
+  await operationProjectReads(mode, secret);
   await step(`operations-api-${mode}`, async () => {
     const denied = await fetch(endpoint + "/api/operations/session.describe", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${storedOwner}` }, body: "{}" });
     assert.equal(denied.status, 401); const reason = mode === "better-auth" ? "invalid_credential" : mode === "open" ? "credential_in_open_mode" : "credential_not_accepted_here";
@@ -353,6 +384,191 @@ async function operationApi(mode, secret) {
     matrixCell("api-bearer", mode, mode === "better-auth" ? "agent" : "installation", "api", reason, `operations-api-${mode}`);
   });
 }
+/** The first stored Knowledge project, read from the installed database. */
+const firstProjectId = () => observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id LIMIT 1").get().id);
+/** What project.list releases on this fixture: nothing to a zero-role agent, every project (sorted) to installation authority. */
+async function projectReadsExpected(mode, secret) {
+  if (mode === "better-auth") return { items: [], nextCursor: null };
+  const ids = observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id").all().map(row => row.id));
+  const reply = await fetch(endpoint + "/api/operations/project.list", { method: "POST", headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: "{}" });
+  const body = await reply.json(); assert.deepEqual(body.items.filter(item => item.projectId !== null).map(item => item.projectId), ids);
+  return body;
+}
+async function operationProjectReads(mode, secret) {
+  return step(`project-reads-${mode}`, async () => {
+    const call = async (id, body, base = endpoint, extra = {}) => {
+      const reply = await fetch(base + `/api/operations/${id}`, { method: "POST", headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: JSON.stringify(body), ...extra });
+      return { status: reply.status, body: await reply.json() };
+    };
+    const projectId = firstProjectId();
+    const listed = await call("project.list", {});
+    assert.equal(listed.status, 200); assert.deepEqual(listed.body, await projectReadsExpected(mode, secret));
+    const status = await call("project.status", { projectId }), worktrees = await call("project.worktrees", { projectId });
+    const missingStatus = await call("project.status", { projectId: "missing-project" }), missingWorktrees = await call("project.worktrees", { projectId: "missing-project" });
+    for (const missing of [missingStatus, missingWorktrees]) { assert.equal(missing.status, 404); assert.deepEqual(missing.body, operationRefusal("resource_not_found", "not_found", 404, "none")); }
+    if (mode === "better-auth") {
+      // A zero-role agent cannot tell an existing project from a missing one.
+      assert.deepEqual(status, missingStatus); assert.deepEqual(worktrees, missingWorktrees);
+    } else {
+      assert.equal(status.status, 200); assert.equal(status.body.projectId, projectId); assert.equal(typeof status.body.revision, "number");
+      assert.equal(worktrees.status, 200); assert.deepEqual(Object.keys(worktrees.body).sort(), ["projectId", "registrations", "registrationsTruncated"]);
+    }
+    const invalid = await call("project.list", { limit: 0 });
+    assert.equal(invalid.status, 400); assert.deepEqual(invalid.body, operationRefusal("invalid_limit", "invalid_request", 400, "none"));
+    // Project reads are not served on the worker listener in any mode.
+    const worker = await new Promise((accept, reject) => {
+      const request = httpsRequest({ hostname: "127.0.0.1", port: workerPort, ca: workerCa, path: "/api/operations/project.list", method: "POST",
+        headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) } }, response => {
+        const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
+        response.on("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
+      });
+      request.setTimeout(10000, () => request.destroy(new Error("Worker operations deadline"))); request.on("error", reject); request.end("{}");
+    });
+    assert.equal(worker.status, 404); assert.deepEqual(worker.body, operationRefusal("operation_not_found", "not_found", 404, "none"));
+    await repositoryReads(`api-bearer/${mode}`, bearerRead(secret), mode !== "better-auth");
+  });
+}
+/**
+ * D2a with a provider cookie: the human's project reads follow their stored roles. After an upgrade the owner holds
+ * the installation `admin` role and reads every project; the zero-role agent of the same request matrix sees none of them.
+ */
+async function projectReadsAsHuman(browser, accountId, agentToken) {
+  const ids = observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id").all().map(row => row.id));
+  const admin = observe(db => db.prepare("SELECT count(*) n FROM account_grants WHERE account_id=? AND role='admin' AND scope_kind='installation'").get(accountId).n) === 1;
+  const projectId = ids[0];
+  const listed = await browser.call("/api/operations/project.list", {});
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.body.items.filter(item => item.projectId !== null).map(item => item.projectId), admin ? ids : []);
+  for (const id of ["project.status", "project.worktrees"]) {
+    const reply = await browser.call(`/api/operations/${id}`, { projectId }), missing = await browser.call(`/api/operations/${id}`, { projectId: "missing-project" });
+    assert.equal(missing.status, 404); assert.deepEqual(missing.body, operationRefusal("resource_not_found", "not_found", 404, "none"));
+    if (!admin) { assert.deepEqual(reply, missing); continue; }
+    assert.equal(reply.status, 200, `${id} as the installation admin`); assert.equal(reply.body.projectId, projectId);
+    if (id === "project.status") { assert.equal(typeof reply.body.revision, "number"); assert.equal(typeof reply.body.writable, "boolean"); }
+    else for (const entry of reply.body.registrations) assert(["complete", "partial", "unavailable"].includes(entry.discovery));
+  }
+  const viaAgent = await fetch(endpoint + "/api/operations/project.status", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentToken}` }, body: JSON.stringify({ projectId }) });
+  assert.equal(viaAgent.status, 404, "The zero-role agent cannot see the project the admin reads.");
+  // The admin cookie reads the real repositories; without a role (the fresh lane's owner) the same cookie reads nothing.
+  await repositoryReads(admin ? "api-cookie/better-auth/admin" : "api-cookie/better-auth/no-role", (operation, input) => browser.call(`/api/operations/${operation}`, input), admin);
+}
+/**
+ * Two registrations of real Git repositories, made with the seeding version's own interfaces only: the linked registration
+ * (its repository on `main` and one linked worktree on `feature`, whose tracked file is modified) and its neighbour.
+ */
+async function gitRepositories() {
+  const gitEnv = { ...env, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@invalid.test", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@invalid.test" };
+  const git = (args, cwd) => bounded("git", args, { cwd, env: gitEnv });
+  const make = async name => {
+    const directory = join(root, name); await mkdir(directory);
+    // A dev script: the seeding version resolves a Node.js launch command when the repository is registered.
+    await writeFile(join(directory, "package.json"), JSON.stringify({ scripts: { dev: "node server.mjs" } }));
+    await writeFile(join(directory, "tracked.txt"), "one\n");
+    for (const args of [["init", "-q", "-b", "main"], ["add", "."], ["commit", "-q", "-m", "real repository fixture"]]) await git(args, directory);
+    return realpath(directory);
+  };
+  const main = await make("linked-repo"), neighbour = await make("neighbour-repo");
+  await git(["worktree", "add", "-q", "-b", "feature", join(root, "linked-feature")], main);
+  const feature = await realpath(join(root, "linked-feature"));
+  await writeFile(join(feature, "tracked.txt"), "changed\n");
+  const head = (await git(["rev-parse", "HEAD"], main)).stdout.trim(), neighbourHead = (await git(["rev-parse", "HEAD"], neighbour)).stdout.trim();
+  return { main, feature, neighbour, head, neighbourHead, linked: null, neighbourRegistration: null, projectId: null, neighbourProjectId: null };
+}
+/** The operator's accepted link decisions of every upgrade inspect in the released-baseline lane. */
+const linkDecisions = () => [{ registrationId: repositories.linked, projectId: repositories.projectId }, { registrationId: repositories.neighbourRegistration, projectId: repositories.neighbourProjectId }];
+async function decisionsArgs() {
+  if (!repositories.projectId) return [];
+  const file = join(root, "mapping-decisions.json");
+  await writeFile(file, JSON.stringify({ links: linkDecisions() }), { mode: 0o600 });
+  return ["--decisions", file];
+}
+/** The review accepts both links into the existing projects; the stored parents after apply are checked by {@link assertLinkedParents}. */
+function assertLinkedReview(inspection) {
+  for (const { registrationId, projectId } of linkDecisions()) {
+    const row = inspection.review.mapping.registrations.find(entry => entry.id === registrationId);
+    assert(row, `The mapping review lists registration ${registrationId}.`);
+    assert.deepEqual(row.outcome, { projectId, basis: "accepted_link", created: false, existing: true });
+    assert.equal(row.link.projectId, projectId); assert.equal(row.link.accepted, true);
+  }
+  assert.deepEqual(inspection.decisions.mapping.links, [...linkDecisions()].sort((a, b) => a.registrationId < b.registrationId ? -1 : 1));
+}
+function assertLinkedParents() {
+  for (const { registrationId, projectId } of linkDecisions()) {
+    assert.equal(observe(db => db.prepare("SELECT parent_project_id p FROM projects WHERE id=?").get(registrationId).p), projectId, "The accepted link is the registration's parent.");
+  }
+}
+const fixturePaths = () => [repositories.main, repositories.feature, repositories.neighbour];
+/** No fixture path, nor the repository directory names, appears anywhere in a denied or foreign answer. */
+function assertWithoutPaths(value, paths, what) {
+  const text = JSON.stringify(value);
+  for (const path of paths) assert(!text.includes(path), `${what} must not contain ${path}`);
+}
+const tree = (path, branch, head, dirty) => ({ path, branch, head, shortHead: head.slice(0, 8), detached: false, locked: false, prunable: false, dirty });
+/**
+ * Project reads of one caller over the fixture's real repositories. `read(operation, input)` answers `{ status, body }`.
+ * Permitted (installation authority, the local operator, the installation admin): the linked project releases exactly its
+ * registration's two worktrees with path, branch, head and dirty state, and nothing of the neighbour; the neighbouring
+ * project releases only its own. Denied (a caller without a project role): both existing projects answer exactly like a
+ * missing one, and no answer contains a fixture path. In the fresh lane no registration has a parent (only the upgrade's
+ * accepted links create parenthood), so only the parentless listing items of full authority carry the paths.
+ */
+async function repositoryReads(label, read, permitted) {
+  repositoryEvidence.push({ label, permitted, lane: repositories.projectId ? "linked" : "parentless" });
+  const listed = await read("project.list", { limit: 50 });
+  assert.equal(listed.status, 200, `${label}: project.list`);
+  if (!permitted) { assert.deepEqual(listed.body, { items: [], nextCursor: null }); assertWithoutPaths(listed.body, fixturePaths(), `${label} listing`); }
+  if (!repositories.projectId) {
+    if (!permitted) return;
+    for (const [registrationId, path] of [[repositories.linked, repositories.main], [repositories.neighbourRegistration, repositories.neighbour]]) {
+      const item = listed.body.items.find(entry => entry.projectId === null && entry.registrations[0]?.registrationId === registrationId);
+      assert(item, `${label}: the parentless registration is its own item for full authority`);
+      assert.equal(item.registrations.length, 1); assert.equal(item.registrations[0].worktreePath, path);
+    }
+    return;
+  }
+  const missing = { worktrees: await read("project.worktrees", { projectId: "missing-project" }), status: await read("project.status", { projectId: "missing-project" }) };
+  for (const value of Object.values(missing)) { assert.equal(value.status, 404); assert.deepEqual(value.body, operationRefusal("resource_not_found", "not_found", 404, "none")); }
+  const projects = [
+    { projectId: repositories.projectId, registrationId: repositories.linked, own: [repositories.main, repositories.feature], foreign: [repositories.neighbour],
+      worktrees: [tree(repositories.main, "main", repositories.head, false), tree(repositories.feature, "feature", repositories.head, true)] },
+    { projectId: repositories.neighbourProjectId, registrationId: repositories.neighbourRegistration, own: [repositories.neighbour], foreign: [repositories.main, repositories.feature],
+      worktrees: [tree(repositories.neighbour, "main", repositories.neighbourHead, false)] },
+  ];
+  for (const project of projects) {
+    const worktrees = await read("project.worktrees", { projectId: project.projectId }), status = await read("project.status", { projectId: project.projectId });
+    if (!permitted) {
+      assert.deepEqual(worktrees, missing.worktrees, `${label}: an existing project's worktrees are refused like a missing project`);
+      assert.deepEqual(status, missing.status, `${label}: an existing project's status is refused like a missing project`);
+      assertWithoutPaths([worktrees, status], fixturePaths(), `${label} refusal`);
+      continue;
+    }
+    assert.equal(worktrees.status, 200, `${label}: project.worktrees`);
+    assert.deepEqual(worktrees.body, { projectId: project.projectId, registrationsTruncated: false,
+      registrations: [{ registrationId: project.registrationId, discovery: "complete", worktreesTruncated: false, worktrees: project.worktrees }] });
+    assert.equal(status.status, 200, `${label}: project.status`);
+    assert.deepEqual(status.body.registrations.map(entry => [entry.registrationId, entry.selectedWorktreePath ?? entry.worktreePath]), [[project.registrationId, project.own[0]]]);
+    const item = listed.body.items.find(entry => entry.projectId === project.projectId);
+    assert.deepEqual(item.registrations.map(entry => [entry.registrationId, entry.worktreePath]), [[project.registrationId, project.own[0]]]);
+    assertWithoutPaths([worktrees.body, status.body, item], project.foreign, `${label} ${project.projectId}`);
+  }
+}
+/** HTTP project reads with a bearer credential (or none, in open mode). */
+const bearerRead = secret => async (operation, input) => {
+  const reply = await fetch(endpoint + `/api/operations/${operation}`, { method: "POST", headers: { "Content-Type": "application/json", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: JSON.stringify(input) });
+  return { status: reply.status, body: await reply.json() };
+};
+/** MCP project reads through the installed SDK client: a tool error carries the same refusal body as HTTP. */
+const toolRead = client => async (operation, input) => {
+  const result = await client.callTool({ name: operation.replace(".", "_"), arguments: input });
+  return result.isError ? { status: result.structuredContent.error.status, body: result.structuredContent } : { status: 200, body: result.structuredContent };
+};
+/** Project reads of the local operator through the installed CLI and the private socket. */
+const cliRead = async (operation, input) => {
+  const verb = operation.split(".")[1];
+  const result = await command(currentCli, verb === "list" ? ["projects", "list", "--limit", String(input.limit)] : ["projects", verb, input.projectId]);
+  if (result.code === 0) return { status: 200, body: JSON.parse(result.stdout) };
+  const body = JSON.parse(result.stderr.trim().split("\n").at(-1)); return { status: body.error.status, body };
+};
 const cookieJar = () => {
   const cookies = new Map();
   return { cookies, async call(path, body, headers = {}, method = body === undefined ? "GET" : "POST") {
@@ -454,6 +670,9 @@ try {
   const knowledge = (await json(seedCli, ["identity", "create-knowledge-project", "--name", "Preserved knowledge"], ownerEnv)).project;
   const oldAgent = (await json(seedCli, ["identity", "create-agent"], ownerEnv)).principal;
   await json(seedCli, ["identity", "grant-knowledge", "--principal-id", oldAgent.id, "--project-id", knowledge.id, "--permissions", "knowledge:read,knowledge:write"], ownerEnv);
+  // The neighbouring project of the real-repository reads; the agent links its registration as released versions allowed.
+  const neighbourKnowledge = (await json(seedCli, ["identity", "create-knowledge-project", "--name", "Neighbour knowledge"], ownerEnv)).project;
+  await json(seedCli, ["identity", "grant-knowledge", "--principal-id", oldAgent.id, "--project-id", neighbourKnowledge.id, "--permissions", "knowledge:read,knowledge:write"], ownerEnv);
   const oldAgentCredential = await json(seedCli, ["identity", "issue-agent-token", "--principal-id", oldAgent.id, "--label", "old narrow client"], ownerEnv);
   const revokedBefore = await json(seedCli, ["identity", "issue-agent-token", "--principal-id", oldAgent.id, "--label", "revoked before upgrade"], ownerEnv);
   const revokedAfter = await json(seedCli, ["identity", "issue-agent-token", "--principal-id", oldAgent.id, "--label", "revoked after backup"], ownerEnv);
@@ -461,6 +680,25 @@ try {
   const installation = await json(seedCli, ["auth", "token", "generate"]);
   await start(seedCli, seedRoot);
   const task = await json(seedCli, ["knowledge", "create_task", "--json", JSON.stringify({ projectId: knowledge.id, title: "Old history", description: "Preserved", idempotencyKey: "seed" })], { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: oldAgentCredential.token });
+  repositories = await step(fresh ? "fresh-real-git-registrations" : "old-release-real-git-registrations-and-runtime-links", async () => {
+    const value = await gitRepositories();
+    const register = async (name, repositoryPath) => {
+      const response = await fetch(endpoint + "/api/projects", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${installation.token}` },
+        body: JSON.stringify({ name, repositoryPath, port: await freePort(), launchPreset: "node" }) });
+      assert.equal(response.status, 201, `The seeding version registers ${name}.`); return (await response.json()).project.id;
+    };
+    value.linked = await register("Linked registration", value.main); value.neighbourRegistration = await register("Neighbour registration", value.neighbour);
+    // Only the upgrade's accepted links create parenthood; a fresh installation keeps both registrations parentless.
+    if (fresh) return value;
+    const agentEnv = { WORKTREE_CONTROL_KNOWLEDGE_TOKEN: oldAgentCredential.token };
+    for (const [projectId, runtimeProjectId] of [[knowledge.id, value.linked], [neighbourKnowledge.id, value.neighbourRegistration]]) {
+      const read = await json(seedCli, ["knowledge", "project", "--json", JSON.stringify({ projectId })], agentEnv), revision = (read.value ?? read).revision;
+      await json(seedCli, ["knowledge", "link_runtime", "--json", JSON.stringify({ projectId, runtimeProjectId, expectedRevision: revision, idempotencyKey: `link-${runtimeProjectId}` })], agentEnv);
+    }
+    assert.deepEqual(observe(db => db.prepare("SELECT knowledge_project_id p, runtime_project_id r FROM knowledge_project_runtime_links WHERE unlinked_at IS NULL ORDER BY knowledge_project_id").all()),
+      [{ p: knowledge.id, r: value.linked }, { p: neighbourKnowledge.id, r: value.neighbourRegistration }].sort((a, b) => a.p < b.p ? -1 : 1));
+    return { ...value, projectId: knowledge.id, neighbourProjectId: neighbourKnowledge.id };
+  });
   await stop();
   const continuity = () => observe(db => ({ schema: db.prepare("SELECT max(version) n FROM schema_migrations").get().n,
     principal: db.prepare("SELECT id,kind,status FROM remote_principals WHERE id=?").get(oldOwner.principalId),
@@ -523,8 +761,9 @@ try {
       assert.deepEqual((await readdir(maintenanceBackups)).sort(), copies, "A refused opening takes no backup.");
     });
     const inspection = await step("upgrade-inspect-reviews-the-reset", async () => {
-      const value = await json(currentCli, ["upgrade", "inspect"]);
+      const value = await json(currentCli, ["upgrade", "inspect", ...await decisionsArgs()]);
       assert.equal(value.state, "upgrade_needed"); assert.equal(value.nextStep, "upgrade apply"); assert.equal(value.marker, "pending");
+      assertLinkedReview(value);
       assert.equal(value.schemaVersion, CURRENT_SCHEMA); assert.equal(value.target, CURRENT_SCHEMA); assert.match(value.planHash, /^[0-9a-f]{64}$/);
       const authority = value.review.authority, active = kind => before.credentials.filter(row => row.kind === kind && row.status === "active").length;
       assert.deepEqual(authority.admin, { decision: "grant", accountId: oldOwner.principalId });
@@ -550,6 +789,7 @@ try {
       assert.match(result.backup, new RegExp(`/pre-upgrade-v${CURRENT_SCHEMA}-[0-9a-f-]{36}$`));
       assert.equal(JSON.parse(await readFile(join(result.backup, "manifest.json"), "utf8")).database.schemaVersion, CURRENT_SCHEMA);
       assert.deepEqual(marker(), { state: "complete", plan_hash: inspection.planHash });
+      assertLinkedParents();
       planHash = inspection.planHash;
     });
   }
@@ -689,6 +929,7 @@ try {
     matrixCell("api-cookie", "better-auth", "human", "api", "invalid_credential", "public-packaged-login-and-transport-denial-matrix");
     assert.equal((await browser.call("/api/operations/session.describe", {}, { Authorization: `Bearer ${installation.token}` })).body.error.reason, "mixed_credentials");
     await operationApi("better-auth", currentAgentCredential.token); await operationSocket("better-auth");
+    await projectReadsAsHuman(browser, oldOwner.principalId, currentAgentCredential.token);
     const session = await browser.call("/api/auth/get-session"); assert.equal(session.body.principal.id, oldOwner.principalId);
     assert.equal((await browser.call("/api/runtime/read", { operation: "list-projects" })).status, 200);
     for (const path of ["/api/dashboard", "/api/events", "/api/backups", "/api/identity/bootstrap", "/api/dev-vault", "/api/auth/sign-up/email", "/api/auth/revoke-sessions"]) assert.equal((await browser.call(path, {})).status, 401);
@@ -790,8 +1031,11 @@ try {
     await json(currentCli, ["auth", "fence", "resume", "--expect", inspected.preflight, "--mode", "better-auth"]);
     // The resumed database needs the upgrade again before any credential recovery.
     assert.deepEqual(await refusal(currentCli, ["auth", "status"]), UPGRADE_REQUIRED);
-    const upgrade = await json(currentCli, ["upgrade", "inspect"]); assert.equal(upgrade.state, "upgrade_needed"); assert.equal(upgrade.marker, "pending");
+    // The quarantine cleared every parent; the operator accepts the same links again (link rows are never changed).
+    const upgrade = await json(currentCli, ["upgrade", "inspect", ...await decisionsArgs()]); assert.equal(upgrade.state, "upgrade_needed"); assert.equal(upgrade.marker, "pending");
+    if (repositories.projectId) assertLinkedReview(upgrade);
     await json(currentCli, ["upgrade", "apply", "--expect", upgrade.planHash, "--backup-dir", maintenanceBackups]);
+    if (repositories.projectId) assertLinkedParents();
     observe(db => {
       assert.equal(db.prepare("SELECT count(*) n FROM principal_credentials WHERE status='active'").get().n, 0);
       for (const table of ["knowledge_project_grants", "runtime_delegations", "runtime_human_memberships"]) assert.equal(db.prepare(`SELECT count(*) n FROM ${table} WHERE revoked_at IS NULL`).get().n, 0);
@@ -802,6 +1046,11 @@ try {
     const login = await recovered.call("/api/auth/sign-in/email", { email: "owner@fixture.invalid", password: replacement }); assert.equal(login.status, 200);
     assert.equal((await recovered.call("/api/auth/get-session")).body.principal.id, oldOwner.principalId);
     const empty = await recovered.call("/api/runtime/read", { operation: "list-projects" }); assert.equal(empty.status, 200); assert.deepEqual(empty.body.projects, []);
+    if (repositories.projectId) {
+      // The repeated upgrade grants the installation admin again; the recovered session reads the re-attached repositories.
+      assert.equal(observe(db => db.prepare("SELECT count(*) n FROM account_grants WHERE account_id=? AND role='admin' AND scope_kind='installation'").get(oldOwner.principalId).n), 1);
+      await repositoryReads("api-cookie/better-auth/admin-after-rollback-recovery", (operation, input) => recovered.call(`/api/operations/${operation}`, input), true);
+    }
     for (const agent of new Set([oldAgentCredential, currentAgentCredential])) await knowledgeCredentialRejected(agent.token, knowledge.id);
     await stop();
     const principals = observe(db => db.prepare("SELECT id,kind,status FROM remote_principals WHERE kind='owner'").all()); assert.deepEqual(principals, [before.principal]);
@@ -825,10 +1074,12 @@ try {
         assert.equal(resumed.nextStep, "upgrade inspect");
         // After a restore: resume, inspect and apply, then credentials.
         assert.deepEqual(await refusal(currentCli, ["auth", "status"]), UPGRADE_REQUIRED);
-        const upgrade = await json(currentCli, ["upgrade", "inspect"]); assert.equal(upgrade.state, "upgrade_needed"); assert.equal(upgrade.marker, "pending");
-        assert.equal(upgrade.schemaVersion, CURRENT_SCHEMA);
+        // The 0.1.1 backup holds both registrations and their current links; the operator accepts the links again.
+        const upgrade = await json(currentCli, ["upgrade", "inspect", ...await decisionsArgs()]); assert.equal(upgrade.state, "upgrade_needed"); assert.equal(upgrade.marker, "pending");
+        assert.equal(upgrade.schemaVersion, CURRENT_SCHEMA); assertLinkedReview(upgrade);
         const applied = await json(currentCli, ["upgrade", "apply", "--expect", upgrade.planHash, "--backup-dir", join(root, `${label}-maintenance-backups`)]);
         assert.equal(applied.state, "current"); assert.deepEqual(marker(), { state: "complete", plan_hash: upgrade.planHash });
+        assertLinkedParents();
       });
       await step(`${label}-restored-data-preserved-and-authority-quarantined`, async () => {
         const after = continuity(); assert.equal(after.schema, CURRENT_SCHEMA); assert.deepEqual(after.principal, before.principal);
@@ -855,6 +1106,11 @@ try {
         const renewed = await connect(renewedAgent.token);
         const restoredTask = await renewed.callTool({ name: "knowledge_task", arguments: { projectId: knowledge.id, taskId: task.value.id } });
         assert(!restoredTask.isError, "An explicitly regranted new credential must read the restored task.");
+        // The restored registrations read their real worktrees under the new installation token, over HTTP and MCP.
+        await repositoryReads(`${label}-restore/api-bearer/token`, bearerRead(freshToken.token), true);
+        const operations = new operationsSdk.Client({ name: "restored-operations", version: "1" }); clients.push(operations);
+        await operations.connect(new operationsSdk.StreamableHTTPClientTransport(new URL(mcpURL + "/operations"), { requestInit: { headers: { Authorization: `Bearer ${freshToken.token}` } } }));
+        await repositoryReads(`${label}-restore/mcp/token`, toolRead(operations), true);
         await stop();
       });
     };
@@ -869,6 +1125,9 @@ try {
     : { upgrade: { planHash, ...resetEvidence }, preUpgradeCredentialsRejected: true, newCredentialDeniedWithoutGrant: true, explicitGrantRestoresAccess: true, installationTokenKept: true };
   const snapshot = { baseline, oldSchema: before.schema, currentSchema: CURRENT_SCHEMA, communityWithoutProvider: ["token", "open"], ownerContinuity: true, authority,
     oldCredentialsNotWidened: true, restorationQuarantinesAuthority: true, publicBackupRestore: oldBackup ? ["existing-installation", "empty-installation"] : [],
+    realRepositories: { lane: repositories.projectId ? "linked registrations by accepted upgrade links" : "parentless registrations (no parent writer outside the upgrade)",
+      worktrees: { linked: 2, neighbour: 1 }, reads: repositoryEvidence,
+      scopedReader: "not provisionable in an installed package: no supported interface writes a project-scoped account grant; covered by src/server/modules/operations/project-reads-transports.test.ts" },
     durationMs: steps.reduce((sum, entry) => sum + (entry.ms ?? 0), 0) };
   assert.deepEqual([...new Set(operationsMatrix.map(cell => `${cell.surface}/${cell.mode}`))].sort(), [...EXPECTED_OPERATIONS_MATRIX_KEYS].sort());
   report = { result: "passed", steps, source: (await bounded("git", ["rev-parse", "HEAD"], { cwd: repository })).stdout.trim(),

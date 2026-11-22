@@ -82,7 +82,7 @@ async function fixture(mode = "better-auth", withProvider = false, admissionTime
   const logs = { controller: vi.fn() };
   const options: OperationsRuntimeOptions = { store, activeMode: mode, now: () => clock.now, logs,
     listeners: { api: () => true, mcp: () => true, worker: () => true, unix: () => true },
-    eligibility, requestBudget: new AuthenticationRequestBudget(16, 4), provider: withProvider ? {
+    eligibility, projectReads: { placement: { statusSummary: () => ({ phase: "stopped", worktreePath: null, startedAt: null }) }, git: { listTrees: async () => [], worktreeDirty: async () => false } }, requestBudget: new AuthenticationRequestBudget(16, 4), provider: withProvider ? {
       ...providerRuntime, providerId: "better-auth", reader: store.authenticationProviderStorage(),
       resolveRequest: () => ({ result: Promise.resolve(null), settled: Promise.resolve() }),
     } : null };
@@ -483,7 +483,8 @@ describe("real operations composition under strict admission", () => {
 
   it("pins the production registry and logs disposal failures without thrown values or credential facts", async () => {
     const f = await fixture("open"), c = f.composition!;
-    expect(c.registry.ids()).toEqual(["session.describe"]);
+    const all = ["project.list", "project.status", "project.worktrees", "session.describe"];
+    expect(c.registry.ids()).toEqual(all);
     expect(Object.isFrozen(c.registry)).toBe(true);
     expect("register" in c.registry).toBe(false);
     const another = { ...sessionDescribe, id: "session.another" };
@@ -492,9 +493,11 @@ describe("real operations composition under strict admission", () => {
     const { get, ids, idsOn, availableOn } = c.registry;
     expect(get("session.describe")?.id).toBe("session.describe");
     expect(get("session.another")).toBeUndefined();
-    expect(ids()).toEqual(["session.describe"]);
+    expect(ids()).toEqual(all);
     for (const listener of ["api", "mcp", "worker", "unix", "offline"] as const) {
-      expect(idsOn(listener)).toEqual(["session.describe"]);
+      // Project reads are HTTP (API and unix), MCP and CLI operations; the worker listener serves describe only.
+      expect(idsOn(listener)).toEqual(listener === "worker" ? ["session.describe"] : all);
+      for (const id of all) expect(availableOn(id, listener)).toBe(id === "session.describe" || listener !== "worker");
       expect(availableOn("session.describe", listener)).toBe(true);
       expect(availableOn("session.another", listener)).toBe(false);
     }

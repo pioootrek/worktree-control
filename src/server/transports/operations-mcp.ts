@@ -9,11 +9,56 @@ import { OPERATIONS_HTTP_LIMITS, operationsFailure, operationsRequestFailure, pr
   writeOperationsResponse, type OperationsHttpRuntime } from "./operations-http";
 import { parseOperationsPath } from "./operations-path";
 
-/** Explicit descriptors, checked against registry.idsOn("mcp") in conformance. */
-export const OPERATIONS_MCP_TOOLS = Object.freeze([Object.freeze({
-  name: "session_describe", operation: "session.describe", description: "Describe your current authority.",
-  inputSchema: Object.freeze({ type: "object" as const, properties: Object.freeze({}), additionalProperties: false }),
-})]);
+const PROJECT_ID_SCHEMA = Object.freeze({ type: "string" as const, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$" });
+/**
+ * Explicit descriptors, sorted by operation ID and checked against
+ * registry.idsOn("mcp") in conformance. The schema only advertises the input;
+ * the registered operation's parse is the one validation on every transport.
+ */
+export const OPERATIONS_MCP_TOOLS = Object.freeze([
+  Object.freeze({
+    name: "project_list", operation: "project.list",
+    description: "List the projects you can read, with their registrations' port, runtime phase, worktree and claim relation. Paginated.",
+    inputSchema: Object.freeze({ type: "object" as const, additionalProperties: false, properties: Object.freeze({
+      limit: Object.freeze({ type: "integer" as const, minimum: 1, maximum: 100 }),
+      cursor: Object.freeze({ type: "string" as const, minLength: 1, maxLength: 512 }),
+    }) }),
+  }),
+  Object.freeze({
+    name: "project_status", operation: "project.status",
+    description: "Read one project's status: Knowledge revision, writability and each registration's placement and claim. compact omits the detail.",
+    inputSchema: Object.freeze({ type: "object" as const, additionalProperties: false, required: Object.freeze(["projectId"]),
+      properties: Object.freeze({ projectId: PROJECT_ID_SCHEMA, compact: Object.freeze({ type: "boolean" as const }) }) }),
+  }),
+  Object.freeze({
+    name: "project_worktrees", operation: "project.worktrees",
+    description: "Discover the Git worktrees of each registration of one project. Every call discovers.",
+    inputSchema: Object.freeze({ type: "object" as const, additionalProperties: false, required: Object.freeze(["projectId"]),
+      properties: Object.freeze({ projectId: PROJECT_ID_SCHEMA }) }),
+  }),
+  Object.freeze({
+    name: "session_describe", operation: "session.describe", description: "Describe your current authority.",
+    inputSchema: Object.freeze({ type: "object" as const, properties: Object.freeze({}), additionalProperties: false }),
+  }),
+]);
+type ToolDescriptor = typeof OPERATIONS_MCP_TOOLS[number];
+type ToolResult = { readonly ok: true; readonly serialized: string; readonly canonical: string } | { readonly ok: false; readonly error: PublicOperationError };
+
+/**
+ * Routes a body that names a project tool away from the describe witness. Only a
+ * routing hint: the SDK stays the protocol authority, and project work starts
+ * only when the SDK dispatches that tool's call. Session describe keeps its own path.
+ */
+function projectToolHint(body: Record<string, unknown>): ToolDescriptor | null {
+  const own = (value: unknown, key: string): unknown => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  };
+  if (own(body, "method") !== "tools/call") return null;
+  const name = own(own(body, "params"), "name");
+  return OPERATIONS_MCP_TOOLS.find(each => each.name === name && each.operation !== "session.describe") ?? null;
+}
 
 /**
  * SDK Protocol adds { result, jsonrpc, id }; JSON response mode serializes that
@@ -48,6 +93,8 @@ export function createOperationsMcp(options: {
   const execute = async (request: IncomingMessage, response: ServerResponse) => {
     const abort = new AbortController();
     let timedOut = false, server: Server | undefined;
+    // Settles a project tool's handler left unanswered by its release, so the SDK's work stays finite.
+    let abandon: (() => void) | undefined;
     let engaged = false, rpcId: string | number | undefined;
     const cancelled = new Promise<never>((_, reject) => {
       abort.signal.addEventListener("abort", () => reject(new OperationError("unavailable", timedOut ? "request_timed_out" : "request_cancelled", { retry: "retry" })), { once: true });
@@ -104,87 +151,191 @@ export function createOperationsMcp(options: {
       const operation = runtime.registry.get("session.describe");
       if (!operation) { refuse(failure("not_found", "operation_not_found")); return; }
       const releaseOptions = { eligible: () => !closing && runtime.eligible(), connected, deadline, signal: abort.signal };
-      // This witness also gates initialize, listing and notifications. It is never
-      // sent for those methods, but must still match at the real Node commit.
-      let snapshot: { readonly serialized: string; readonly canonical: string } | undefined;
-      const initial = await runtime.runner.readRelease(operation, minted.context, {}, { ...releaseOptions,
-        commit(dto) {
-          const serialized = JSON.stringify(dto);
-          if (Buffer.byteLength(serialized) > limits.responseBytes) {
-            // Match HTTP: commit one refusal inside admission, before SDK dispatch.
-            // Throwing here would be remapped to release_commit_failed by the runner.
-            operationsFailure(response, failure("payload_too_large", "response_too_large")); return;
-          }
-          snapshot = Object.freeze({ serialized, canonical: canonicalJson(dto) });
-        } });
-      if (initial.status !== "committed") { refuse(initial.error); return; }
-      if (!snapshot) return;
-      const context = Object.freeze({ authentication: minted.context, ...snapshot });
-      const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-      server = new Server({ name: "worktree-control-operations", version: "1" }, { capabilities: { tools: {} } });
-      server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: OPERATIONS_MCP_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) }));
-      server.setRequestHandler(CallToolRequestSchema, async call => {
-        try {
-          if (call.params.name !== "session_describe") throw new OperationError("not_found", "operation_not_found");
-          // Delegate input validation to the registered operation, not a transport schema.
-          operation.parse(call.params.arguments);
-          return { content: [{ type: "text", text: context.serialized }], structuredContent: JSON.parse(context.serialized) };
-        } catch (error) {
-          const payload = { error: publicError(error) };
-          return { isError: true, content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
-        }
-      });
-      // Bound messages sent via send before Response allocation. SDK protocol
-      // errors bypass send, so also bound the buffered Response. This is NOT release.
-      let rejectOutput!: (error: unknown) => void;
-      const outputFailure = new Promise<never>((_, reject) => { rejectOutput = reject; });
-      void outputFailure.catch(() => undefined);
-      const send = transport.send.bind(transport);
-      transport.send = async (...args) => {
-        if (Buffer.byteLength(JSON.stringify(args[0])) > envelopeBytes) {
-          const error = new OperationError("payload_too_large", "response_too_large"); rejectOutput(error); throw error;
-        }
-        return send(...args);
-      };
-      await Promise.race([server.connect(transport), cancelled]);
       const message = body as Record<string, unknown>;
-      rpcId = typeof message.id === "string" || typeof message.id === "number" ? message.id : undefined;
-      engaged = true;
-      // Do not forward identity/session/resumption headers to the SDK. Version and
-      // media negotiation are the only request headers it needs in stateless mode.
-      const headers = new Headers({ "content-type": "application/json", accept: request.headers.accept ?? "" });
-      if (request.headers["mcp-protocol-version"]) headers.set("mcp-protocol-version", String(request.headers["mcp-protocol-version"]));
-      const sdk = await Promise.race([transport.handleRequest(new Request("http://operations.invalid/mcp/operations", { method: "POST", headers, signal: abort.signal }), { parsedBody: body }), outputFailure, cancelled]);
-      const chunks: Uint8Array[] = [];
-      let bytes = 0;
-      const reader = sdk.body?.getReader();
-      if (reader) {
-        try {
-          for (;;) {
-            const chunk = await Promise.race([reader.read(), cancelled]);
-            if (chunk.done) break;
-            bytes += chunk.value.byteLength;
-            if (bytes > envelopeBytes) { await reader.cancel(); throw new OperationError("payload_too_large", "response_too_large"); }
-            chunks.push(chunk.value);
+      // From here a refusal is a JSON-RPC error carrying the request's ID.
+      const engage = () => { rpcId = typeof message.id === "string" || typeof message.id === "number" ? message.id : undefined; engaged = true; };
+      // The one CallTool handler asks this for the called tool's released result. It
+      // never runs application work: the request's own release supplies the answer.
+      let answer: (name: string, args: unknown) => Promise<ToolResult> = async () => { throw new OperationError("not_found", "operation_not_found"); };
+      let dispatched = false;
+      /** Opens this request's one SDK pair and hands it the body. Resolves with the SDK's Response, bounded at send. */
+      const dispatch = async (engageOnConnect: boolean): Promise<Response> => {
+        if (dispatched) throw new OperationError("internal", "invalid_operation");
+        dispatched = true;
+        const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+        server = new Server({ name: "worktree-control-operations", version: "1" }, { capabilities: { tools: {} } });
+        server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: OPERATIONS_MCP_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) }));
+        server.setRequestHandler(CallToolRequestSchema, async call => {
+          try {
+            const result = await answer(call.params.name, call.params.arguments);
+            if (!result.ok) {
+              const payload = { error: result.error };
+              return { isError: true, content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
+            }
+            return { content: [{ type: "text", text: result.serialized }], structuredContent: JSON.parse(result.serialized) };
+          } catch (error) {
+            const payload = { error: publicError(error) };
+            return { isError: true, content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
           }
-        } finally { reader.releaseLock(); }
+        });
+        // Bound messages sent via send before Response allocation. SDK protocol
+        // errors bypass send, so also bound the buffered Response. This is NOT release.
+        let rejectOutput!: (error: unknown) => void;
+        const outputFailure = new Promise<never>((_, reject) => { rejectOutput = reject; });
+        void outputFailure.catch(() => undefined);
+        const send = transport.send.bind(transport);
+        transport.send = async (...args) => {
+          if (Buffer.byteLength(JSON.stringify(args[0])) > envelopeBytes) {
+            const error = new OperationError("payload_too_large", "response_too_large"); rejectOutput(error); throw error;
+          }
+          return send(...args);
+        };
+        await Promise.race([server.connect(transport), cancelled]);
+        if (engageOnConnect) engage();
+        // Do not forward identity/session/resumption headers to the SDK. Version and
+        // media negotiation are the only request headers it needs in stateless mode.
+        const headers = new Headers({ "content-type": "application/json", accept: request.headers.accept ?? "" });
+        if (request.headers["mcp-protocol-version"]) headers.set("mcp-protocol-version", String(request.headers["mcp-protocol-version"]));
+        return Promise.race([transport.handleRequest(new Request("http://operations.invalid/mcp/operations", { method: "POST", headers, signal: abort.signal }), { parsedBody: body }), outputFailure, cancelled]);
+      };
+      /** Buffers the SDK's Response within the envelope bound. */
+      const collect = async (sdk: Response): Promise<{ status: number; buffer: Buffer }> => {
+        const chunks: Uint8Array[] = [];
+        let bytes = 0;
+        const reader = sdk.body?.getReader();
+        if (reader) {
+          try {
+            for (;;) {
+              const chunk = await Promise.race([reader.read(), cancelled]);
+              if (chunk.done) break;
+              bytes += chunk.value.byteLength;
+              if (bytes > envelopeBytes) { await reader.cancel(); throw new OperationError("payload_too_large", "response_too_large"); }
+              chunks.push(chunk.value);
+            }
+          } finally { reader.releaseLock(); }
+        }
+        return { status: sdk.status, buffer: Buffer.concat(chunks) };
+      };
+      // No await, SDK send, or network drain inside admission. SDK security or
+      // session headers cannot replace this boundary's response headers.
+      const write = (output: { status: number; buffer: Buffer }) => () => { writeOperationsResponse(response, output.status, output.buffer.toString("utf8")); };
+      /**
+       * The describe witness: the current public DTO, captured in an admitted phase.
+       * Initialize, listing, notifications, session_describe and every body the SDK
+       * answers without dispatching a project tool are written only after a final
+       * readRelease reproduces it. An oversized DTO commits one refusal here, as on HTTP.
+       */
+      const witness = async (): Promise<{ readonly serialized: string; readonly canonical: string } | undefined> => {
+        let snapshot: { readonly serialized: string; readonly canonical: string } | undefined;
+        const initial = await runtime.runner.readRelease(operation, minted.context, {}, { ...releaseOptions,
+          commit(dto) {
+            const serialized = JSON.stringify(dto);
+            if (Buffer.byteLength(serialized) > limits.responseBytes) {
+              // Throwing here would be remapped to release_commit_failed by the runner.
+              operationsFailure(response, failure("payload_too_large", "response_too_large")); return;
+            }
+            snapshot = Object.freeze({ serialized, canonical: canonicalJson(dto) });
+          } });
+        if (initial.status !== "committed") { refuse(initial.error); return undefined; }
+        return snapshot;
+      };
+      const releaseWitnessed = async (snapshot: { readonly canonical: string }, output: { status: number; buffer: Buffer }) => {
+        const released = await runtime.runner.readRelease(operation, minted.context, {}, {
+          ...releaseOptions, expectedCanonical: snapshot.canonical, commit: write(output) });
+        if (released.status !== "committed") refuse(released.error);
+      };
+      const hint = projectToolHint(message);
+      const tool = hint ? runtime.registry.get(hint.operation) : undefined;
+      if (!hint || !tool) {
+        // Initialize, listing, notifications and session_describe: the witness precedes SDK dispatch.
+        const snapshot = await witness();
+        if (!snapshot) return;
+        answer = async (name, args) => {
+          if (name !== "session_describe") throw new OperationError("not_found", "operation_not_found");
+          // Delegate input validation to the registered operation, not a transport schema.
+          operation.parse(args);
+          return Object.freeze({ ok: true as const, ...snapshot });
+        };
+        await releaseWitnessed(snapshot, await collect(await dispatch(true)));
+        return;
       }
-      const buffer = Buffer.concat(chunks);
-      const released = await runtime.runner.readRelease(operation, context.authentication, {}, {
-        ...releaseOptions, expectedCanonical: context.canonical,
-        commit() {
-          // No await, SDK send, or network drain inside admission. SDK security or
-          // session headers cannot replace this boundary's response headers.
-          writeOperationsResponse(response, sdk.status, buffer.toString("utf8"));
-        },
-      });
+      // A project tool. The SDK decides first: only its dispatch of this tool's call,
+      // with the arguments it parsed, starts the tool's release. Neither the describe
+      // witness nor any project work precedes that, so a describe failure cannot
+      // refuse a targeted read and a protocol rejection never reaches Git.
+      let settle: { resolve(result: ToolResult): void; reject(error: unknown): void } | undefined;
+      let enter!: (args: unknown) => void;
+      const entered = new Promise<{ arguments: unknown }>(resolve => { enter = args => resolve({ arguments: args }); });
+      answer = (name, args) => {
+        if (name !== hint.name || settle) return Promise.reject(new OperationError("not_found", "operation_not_found"));
+        return new Promise<ToolResult>((resolve, reject) => {
+          settle = { resolve, reject };
+          abandon = () => { reject(new OperationError("unavailable", "request_cancelled", { retry: "retry" })); };
+          engage(); enter(args);
+        });
+      };
+      const sdk = dispatch(false);
+      void sdk.catch(() => undefined);
+      const first = await Promise.race([entered, sdk.then(answered => ({ answered }))]);
+      if ("answered" in first) {
+        // The SDK answered without dispatching the tool (negotiation, protocol or
+        // parameter refusal, or a notification): no project work, describe witness.
+        const snapshot = await witness();
+        if (!snapshot) return;
+        engage();
+        await releaseWitnessed(snapshot, await collect(first.answered));
+        return;
+      }
+      // A project tool's answer, success or refusal, is released by that tool alone: its envelope is
+      // built outside admission and written only inside a fresh admitted phase of the same tool and
+      // arguments that reproduces it. The describe witness plays no part, so a change of unrelated
+      // authority never replaces the tool's own answer.
+      let output: { status: number; buffer: Buffer } | undefined, staged = false;
+      const stageTool = async (result: ToolResult) => {
+        // One envelope per request: the handler is answered once, by this request's own release.
+        if (!settle || staged) throw new OperationError("internal", "invalid_operation");
+        staged = true;
+        settle.resolve(result);
+        output = await collect(await sdk);
+      };
+      const commitTool = () => { if (!output) throw new OperationError("internal", "invalid_operation"); write(output)(); };
+      // The DTO alone may not exceed the response ceiling; the envelope bound applies after the SDK.
+      const toolValue = (dto: object): { result: ToolResult; canonical: string } => {
+        const serialized = JSON.stringify(dto), canonical = canonicalJson(dto);
+        return Buffer.byteLength(serialized) > limits.responseBytes
+          ? { result: Object.freeze({ ok: false as const, error: failure("payload_too_large", "response_too_large") }), canonical }
+          : { result: Object.freeze({ ok: true as const, serialized, canonical }), canonical };
+      };
+      const refusal = { stage: (error: PublicOperationError) => stageTool(Object.freeze({ ok: false as const, error })), commit: commitTool };
+      if (tool.kind === "query") {
+        // Discovery runs once. The envelope is built from the value of a fresh decision and
+        // written only after another fresh decision re-projects it unchanged.
+        const released = await runtime.runner.queryRelease(tool, minted.context, first.arguments, {
+          ...releaseOptions, refusal, async stage(value: object) { await stageTool(toolValue(value).result); }, commit: commitTool });
+        if (released.status !== "committed") refuse(released.error);
+        return;
+      }
+      // A holder, not a local: the commit closure sets it, and narrowing must not assume undefined.
+      const first$: { value?: { result: ToolResult; canonical: string } } = {};
+      const read = await runtime.runner.readRelease(tool, minted.context, first.arguments, {
+        ...releaseOptions, refusal, commit(dto) { first$.value = toolValue(dto); } });
+      if (read.status !== "committed") { refuse(read.error); return; }
+      // Committed without a value: the tool's refusal was written.
+      const value = first$.value;
+      if (!value) return;
+      await stageTool(value.result);
+      // A fresh read of the same tool must project exactly the value the envelope carries.
+      const released = await runtime.runner.readRelease(tool, minted.context, first.arguments, {
+        ...releaseOptions, expectedCanonical: value.canonical, commit: commitTool });
       if (released.status !== "committed") refuse(released.error);
     } catch (error) {
       refuse(operationsRequestFailure(error, abort.signal, timedOut));
     } finally {
-      // All application reads are awaited before SDK dispatch. SDK handlers are
-      // finite and perform no async work. close aborts its protocol bookkeeping;
-      // notably SDK close does not settle an abandoned JSON response promise.
+      // All application reads are awaited by this function, never by the SDK. A
+      // project tool's handler waits only for this request's own answer, settled
+      // here at the latest. close aborts its protocol bookkeeping; notably SDK
+      // close does not settle an abandoned JSON response promise.
+      abandon?.();
       try { await server?.close(); }
       catch { /* Disposal errors are contained; the committed response cannot be replaced. */ }
       finally {
