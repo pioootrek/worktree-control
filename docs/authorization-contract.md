@@ -1301,6 +1301,8 @@ worker listener. Every other operation in the tests is a fixture.
    the callback writes `unknown` before it returns, even when the failed write
    was a `completed` one that landed.
 5. Revalidate, re-resolve and decide, then release through the projector.
+   `mutationRelease` writes this answer, and every refusal of the earlier
+   phases, inside the admitted phase that established it.
 
 Finalization, audit and owned cleanup of an effect that began complete even
 after revocation. The result is then withheld.
@@ -1315,7 +1317,9 @@ unhandled rejection.
 ### Release inside admission
 
 Transports must use `OperationRunner.readRelease` for every successful read
-response. `run()` still returns a value without committing a response.
+response. `run()` still returns a value without committing a response. A
+mutation's success and refusals are released through
+`OperationRunner.mutationRelease` (see [Mutation release](#mutation-release-d2b-1)).
 `ReadOperation` is unchanged. The new entry point accepts reads only; another
 kind is `internal`/`invalid_operation`.
 
@@ -1389,6 +1393,175 @@ policy's own refusals (`release_not_eligible`, `release_timed_out`,
 `request_cancelled`) are never staged, a query never stages a refusal after it
 staged a value, and the work never runs again. A delivery combined with
 `expectedCanonical`, or without both functions, is `invalid_request`/`invalid_input`.
+
+#### Mutation release (D2b-1)
+
+`OperationRunner.mutationRelease` releases a mutation inside admission. It is
+unmounted: no transport calls it yet, and the production registry still holds
+the four reads. `run()` keeps its behaviour and still returns a mutation's
+value or error without writing anything. An error can disclose project state
+(`not_found` against `forbidden`, `project_archived`, `request_in_progress`) or
+tell a client whether to repeat a write. A transport therefore writes the
+success and every refusal of a mutation only through this entry point.
+
+**Scope.** It accepts a mutation with an `admitted` effect and no `acquire`,
+with or without `transitions` and `secret`. An operation with `acquire` or an
+`idle` effect is `internal`/`invalid_operation` before any reservation, parse
+or handler call (see [Obligations of later slices](#obligations-of-later-slices)).
+A read or query passed to `mutationRelease` is `internal`/`invalid_operation`,
+as is a mutation passed to `readRelease` or `queryRelease`. The listener
+exclusion is checked before the input is parsed, as in `run()`.
+
+**Options.** `eligible`, `connected`, `deadline` and `commit(value)` as for
+`readRelease`, a required `refuse(error)`, an optional `stage(value)`, and
+`signal` and `idempotencyKey`. The runner captures the callbacks once, before
+the first admission, and calls them with the options object as receiver.
+`expectedCanonical` and a buffered `refusal` are `invalid_request`/`invalid_input`:
+a mutation's release always takes a fresh decision, and its refusal is always
+written by `refuse`. Invalid options are returned locally when `eligible`,
+`connected`, `refuse` or a finite `deadline` is missing, because nothing can be
+written through a callback that was never supplied. Otherwise they are refused
+like any other refusal found before admission.
+
+**Every refusal is written inside admission.** `refuse(error)` runs
+synchronously inside the admitted phase that establishes the refusal:
+
+- Phase 1: the decision, the reservation, an answer from an existing record
+  (conflict, in progress, previous outcome unknown) and a capacity refusal.
+- Phase 3: the final check, a changed resolution and a typed refusal of the
+  handler before its commit point.
+- Refusals found before any admission (malformed input, a malformed key, a key
+  on an operation that cannot take one, a missing store or fingerprint key, an
+  invalid definition or option): the runner enters one admitted phase,
+  revalidates the context and the listener and applies the release policy,
+  then writes the refusal. A caller whose context no longer validates receives
+  that answer instead.
+- Outcomes after the effect (`outcome_unknown`, `cleanup_unconfirmed`, an
+  unconfirmed transition, a withheld result): step 5 writes them in its own
+  admitted callback after its fresh revalidation and decision. When that
+  decision refuses the caller, only the fresh refusal is written, classified
+  with the observed effect state.
+
+No phase is entered a second time to reproduce a refusal, no handler runs
+again, no key is reserved again, and a resource-specific refusal is never
+carried across an admission gap for later delivery. The runner records, per
+admitted phase, whether the release policy passed, and recognizes a policy
+refusal by its origin (the policy check that threw it), not by its reason.
+When revalidation throws before the phase reached its policy check, the policy
+is checked before the revalidation's denial is written.
+
+**Release policy.** Phase 1 and phase 3 check eligibility, the deadline, the
+connection and the signal on entry, after revalidation; a refusal there has
+effect `not_started`, and an owned reservation is given back. Completion
+(step 4) never checks the policy and does not depend on caller cancellation:
+finalization and the record write complete even when the caller is gone.
+Step 5 checks the policy after revalidation. The deadline is checked again
+immediately before **every** write: a direct replay, a success and a refusal.
+A thenable, throwing or non-finite clock answer at that check refuses as
+`release_timed_out` without a write.
+
+**One delivery attempt.** A successful `commit` or `refuse` returns
+`committed`. The runner sets its delivery-attempt flag before it invokes either
+callback. A throw or thenable returns `commit_failed` to the adapter for local
+handling only. The adapter ends or destroys the response as necessary and
+writes no further envelope, including from an outer catch. The failure may
+have happened before any byte or after a partial write; both are terminal. The
+failed callback neither releases nor rewrites a record.
+
+**Returned, never written.** Only a `refused` result may take the adapter's
+fallback write outside admission, and only these paths return one: an
+admission refused or cancelled before its callback ran, the release-policy
+refusals (`release_not_eligible`, `release_timed_out`, `request_cancelled`),
+the fixed staging failure `internal`/`release_stage_failed`, and invalid
+options without usable callbacks. Each carries this invocation's effect and
+retry information. The adapter forwards exactly what the runner returned and
+nothing it saved earlier.
+
+**Reservation before answer.** For a fresh, owned attempt refused before its
+commit point, the refusing admitted callback releases the reservation
+synchronously and only then writes the refusal. The handler's own transaction
+has unwound by then, and admission opens none, so the release runs outside any
+SQL transaction. The callback records that it attempted the release, so
+`finally` never repeats it. An immediate retry after a confirmed release runs
+fresh. Further rules:
+
+- If the refusing callback never ran (its admission was refused), the reserved
+  completion path of `finally` releases the reservation, retrying admission
+  only while its callback has never run.
+- A release that throws or returns a thenable is unconfirmed (decision W). The
+  original refusal is still written, and no immediate retry is promised: a
+  release can land and then throw with the row already absent, a failed
+  `started` write can land and survive as `started` until the next start, and
+  a latched fence refuses every later store call.
+- Decision Z is unchanged: once the completion callback attempts the final
+  write and its repair, it alone owns the record.
+- Only an owned attempt is cleaned up. An answer from an existing record leaves
+  that record alone.
+
+**The five public fields.** The existing classifier gives every answer
+(`defaultRetry`, `categoryFor`, the `OperationError` invariants,
+`classifyBeforeCommit`); the status follows the normalized category. The
+record column is the durable state the answer leaves.
+
+| Situation | Category / status / reason / retry / effect | Record |
+| --- | --- | --- |
+| A fresh declared handler throws before its commit point | as `classifyBeforeCommit` gives it, effect `not_started` | the owned reservation is released |
+| Input error | as `run()` | none; there may be no reservation |
+| Key conflict or request in progress | as `run()` | the existing record is left alone |
+| A matching `unknown` record | `outcome_unknown` / 409 / `previous_attempt_outcome_unknown` / `inspect_first` / `unknown`, although this invocation performed no effect | left alone |
+| Policy refusal before the effect | `unavailable` / 503 / the policy reason / `none` for `release_not_eligible`, `retry` for `release_timed_out` and `request_cancelled` / `not_started` | an owned reservation is released |
+| Fresh denial or policy refusal after a confirmed success | the fresh reason classified with `committed`, retry `none`; `busy` becomes `unavailable` | no change (`completed` for a keyed attempt) |
+| The same with an `unknown` effect | `outcome_unknown` / 409 / the classified reason / `inspect_first` / `unknown` | no change |
+| The same with `cleanup_unconfirmed` | the fresh reason, retry `inspect_first`, effect `cleanup_unconfirmed` | no change |
+| Cleanup unconfirmed | `unavailable` / 503 / `finalization_unconfirmed` / `inspect_first` / `cleanup_unconfirmed` | usually `unknown`; decision Z's failed repair can leave `started`, or a landed `completed` that replays after a reopen |
+| Unknown effect | `outcome_unknown` / 409 / the classified reason / `inspect_first` / `unknown` | as the row above |
+| Unconfirmed transition | `conflict` / 409 / `transition_unconfirmed` / `none` / `committed` | `unknown` |
+| Failed delivery, effect `not_started` or `committed` | `internal` / 500 / `release_commit_failed` / `none` / that effect | neither released nor rewritten by the failure |
+| Failed delivery with `cleanup_unconfirmed` | `internal` / 500 / `release_commit_failed` / `inspect_first` / `cleanup_unconfirmed` | unchanged |
+| Failed delivery with `unknown` | `outcome_unknown` / 409 / `release_commit_failed` / `inspect_first` / `unknown` | unchanged |
+| Replay of a `completed` record: an ordinary denial or a failed delivery | this invocation's `not_started` state | untouched |
+
+Failed-delivery answers are local terminal results for the adapter and are
+never written. A failed callback that was reporting a previous-unknown lookup
+is a delivery failure of the current invocation. An attempt without a key has
+no record, so the contract promises no replay for it.
+
+**Two shapes.** Direct: `commit(value)` writes the released value inside step 5
+for a first release, or inside phase 1 for a replay of a `completed` record.
+Buffered (`stage`, for MCP):
+
+- The runner captures the canonical DTO before it passes the value to `stage`.
+  It keeps the first execution's projection input private: the normalized
+  retained ordinary result when there is one, otherwise the actual
+  first-release value (also for a secret-bearing operation and for a call
+  without a key). For a replay it keeps the validated record evidence (the
+  stored resources, result and transitions).
+- `stage(value)` is awaited once, outside admission. It may prepare bytes only.
+  There is no restaging and no retry of the effect.
+- The final phase is a reserved admission without side effects and without
+  any store lookup. It repeats the applicable release logic: for an ordinary
+  first release the current decision and the comparison of the current
+  resolution with the commit point; for an ordinary replay the current **and**
+  the historical decision on the stored resources; for confirmed transitions
+  `transitionRelease`, with its historical and resulting requirements. It then
+  applies the same projector (the first-result projector or the receipt
+  projector) and the public allowlist, compares the canonical DTOs, checks the
+  deadline and writes synchronously with `commit`.
+- A different value is `conflict`/`release_payload_changed`, classified with
+  this invocation's effect. A final denial discards the buffer and is written
+  by `refuse`, once.
+- A rejected `stage` discards the bytes and returns
+  `internal`/`release_stage_failed`, classified with this invocation's effect.
+  A cancellation during staging returns `request_cancelled` with that effect.
+- A replay answered in phase 1 with `stage` projects there; the final phase
+  commits it. A record that expires or is replaced during staging cannot cause
+  a second reservation or effect, because the final phase reads no record.
+
+The tests are `runner.mutation-release.test.ts` and
+`runner.mutation-stage.test.ts` over the fixture store, and the
+`mutationRelease` matrices in `src/server/bootstrap/operation-retention.faults.test.ts`
+over the real SQLite store, which assert each first answer, the durable record
+before a reopen and after its repair, and the retry.
 
 ### Project reads (D2a)
 
@@ -2261,7 +2434,19 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   the fingerprint key file and its rotation (D6) are the adapter's.
 - **Transports.** Register only operations that `availableOn` allows for the
   listener, and never register `claim.force_release` or `runtime.force_stop`
-  on MCP.
+  on MCP. A transport that mounts a mutation releases it through
+  `mutationRelease` and, on `commit_failed`, ends the response without a
+  further envelope.
+- **Mutation release with `acquire` or an idle effect.** `mutationRelease`
+  refuses both as `internal`/`invalid_operation` before any reservation. A
+  rejected `acquire`, an invalid lease, the abort check after the wait, a
+  failed re-admission and an idle `commit()` happen outside an admitted phase,
+  and D2b-1 defines no delivery for them. The first consumer that needs either
+  must define that delivery, apply the pre-effect policy at the admitted
+  `commit()` recheck of an idle declared effect, and extend the tests.
+- **Read and query refusals on HTTP.** Reads and queries on HTTP still
+  write their refusals after the runner returns, outside admission. D2b fixes
+  this for mutations only.
 - **Background authorization specifications.** Queued or scheduled work keeps
   an immutable authorization specification and an owner reference, never a
   closure over a request.
