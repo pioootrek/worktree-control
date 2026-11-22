@@ -1429,6 +1429,9 @@ synchronously inside the admitted phase that establishes the refusal:
 
 - Phase 1: the decision, the reservation, an answer from an existing record
   (conflict, in progress, previous outcome unknown) and a capacity refusal.
+  Before an existing record answers, phase 1 decides on the resources stored
+  with it, as described under [Idempotency](#idempotency); its denial is the
+  answer, and the record is left alone.
 - Phase 3: the final check, a changed resolution and a typed refusal of the
   handler before its commit point.
 - Refusals found before any admission (malformed input, a malformed key, a key
@@ -1458,8 +1461,20 @@ effect `not_started`, and an owned reservation is given back. Completion
 finalization and the record write complete even when the caller is gone.
 Step 5 checks the policy after revalidation. The deadline is checked again
 immediately before **every** write: a direct replay, a success and a refusal.
-A thenable, throwing or non-finite clock answer at that check refuses as
-`release_timed_out` without a write.
+Wherever the release policy reads the clock (the check at the entry of each
+admitted phase, the policy check before an early refusal, the policy check
+that a phase repeats when revalidation threw before it, and the check before
+each write), a clock answer that is not a finite number, a clock that throws
+and a clock that returns a thenable are an expired deadline: the policy's own
+`release_timed_out`, returned without a write and classified with this
+invocation's effect. A thenable is absorbed, so its rejection is never
+unhandled. Eligibility is still checked first, so an ineligible caller with a
+broken clock receives `release_not_eligible`. A clock that throws or returns a
+thenable when the phase first reads it, before its policy check, is an error
+of the operation: the phase repeats its policy check, which writes that error
+through `refuse` when the clock answers again and returns `release_timed_out`
+when it is still broken. `readRelease`, `queryRelease` and `run()` keep their
+own clock handling.
 
 **One delivery attempt.** A successful `commit` or `refuse` returns
 `committed`. The runner sets its delivery-attempt flag before it invokes either
@@ -1588,7 +1603,22 @@ the record through the gate from inside each callback, which shows the
 reservation already released when a refusal is written.
 `runner.mutation-release.test.ts` and both SQLite suites have a negative
 control: a callback called after the runner returned observes no admission. Only SQLite has reopen and repair evidence; the fixture store
-has none.
+has none. The historical decision before a record's answer is covered for
+`run()` (`runner.test.ts`), for the direct and the buffered shape and over the
+real store: a keyed attempt on one project whose resource moved to another
+that the caller keeps, for an `unknown`, `reserved` and `started` record, a
+fingerprint mismatch against a `completed` record and a `completed` replay,
+each with a caller who lost the first project and one who did not. A broken
+clock (`NaN`, `Infinity`, a non-number, a throw, a thenable, broken for good or
+once) is covered at the entry of phase 1, phase 3, the early refusal, step 5
+and the final staged phase, including an ineligible caller.
+Two concurrent calls with one key run through the real gate over the fixture
+store and over the SQLite store, in both interleavings (the second call meets
+the reservation, or the completed record). The suites also cover a failed
+delivery of a buffered replay, a secret-bearing staged release whose caller
+loses access during staging, option accessors that throw or change their
+answer, an `OperationError` whose fields were redefined as accessors, and the
+deadline crossed immediately before a final staged refusal.
 
 ### Project reads (D2a)
 
@@ -1830,7 +1860,19 @@ internal result, or `unknown`, in the completion phase, after the lease was
 released. The runner validates and copies every record it reads back. A
 malformed record is `internal`/`invalid_idempotency_record`.
 
-A later request with the same key gets:
+A later request with the same key is first decided on the current authority
+and the current resolution, then the record is read. An operation without
+expected transitions then decides on the resources stored with the record
+(its commit-point resolution once started) before the record answers; an
+operation with expected transitions reads the record first and decides on its
+resources the same way (see [Expected transitions](#expected-transitions)). A
+caller who lost access to what the attempt was authorized against receives
+that denial, for example `not_found` when its project is no longer visible,
+and learns nothing about the record: no conflict, no request in progress, no
+unknown outcome and no replay. The rule is in the first phase shared by `run()`
+and `mutationRelease`. For `run()` it is a deliberate tightening: a caller who
+could still see the current resolution but not the stored one used to receive
+the record's answer. Otherwise the request gets:
 
 | Existing record | Answer |
 | --- | --- |
