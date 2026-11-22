@@ -7,7 +7,7 @@ import type Database from "better-sqlite3";
  * upgrade marker (`ordinary-admission.ts`); an older one goes through the
  * explicit offline upgrade.
  */
-export const SUPPORTED_SCHEMA_VERSION = 52;
+export const SUPPORTED_SCHEMA_VERSION = 53;
 /**
  * The schema the security fence was introduced at (step 49, a released fact
  * that never moves): the lowest source the explicit upgrade accepts and the
@@ -22,7 +22,7 @@ export const SECURITY_FENCE_SCHEMA_VERSION = 49;
  * supported version; an omitted target is the supported version. Every target
  * and ceiling passes through here, so a value above SUPPORTED_SCHEMA_VERSION is
  * refused whichever alias, re-export or wrapper passed it. Explicit lower
- * targets (49 to 51) remain for the steps themselves and for versioned
+ * targets (49 to 52) remain for the steps themselves and for versioned
  * fixtures and snapshots.
  */
 export function schemaTarget(target?: number): number {

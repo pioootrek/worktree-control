@@ -18,6 +18,8 @@ import {
 } from "./upgrade-plan";
 import { readUpgradeMarker, UPGRADE_NEXT_STEP, upgradeState, type UpgradeMarkerState } from "./upgrade-state";
 import { inspectProjectIds, type ProjectIdReport } from "./upgrade-project-ids";
+import { SECURITY_FENCE_SCHEMA_VERSION } from "./migration-registry";
+import { invalidateOperationIdempotency, OPERATION_IDEMPOTENCY_VERSION } from "./operation-idempotency-migration";
 
 /**
  * The explicit offline upgrade: `upgrade inspect` writes the plan the operator
@@ -108,6 +110,21 @@ function recognize(path: string, database: Database.Database, schemaVersion: num
   const state = upgradeState(fence, marker, schemaVersion, target);
   return { state, nextStep: UPGRADE_NEXT_STEP[state], schemaVersion, target, preflight: fence.preflight, marker, appliedPlan };
 }
+/**
+ * The supported sources of an upgrade to step 53 or above are the released 49
+ * and a database whose marker a quarantine or establishment set to pending. A
+ * trusted database completed at an intermediate schema (50 to 52) was built by
+ * an unreleased integration build: it is disposable, and the target-only
+ * mapping and authority acts must not run on it a second time. It is refused
+ * here, after recognition and before any proposal, plan file or backup. An
+ * untrusted fence keeps its own next step, and a pending marker its proposal.
+ */
+function refuseIntermediate(status: UpgradeStatus): void {
+  if (status.state === "upgrade_needed" && status.marker === "complete" && status.target >= OPERATION_IDEMPOTENCY_VERSION
+    && status.schemaVersion > SECURITY_FENCE_SCHEMA_VERSION && status.schemaVersion < OPERATION_IDEMPOTENCY_VERSION) {
+    throw new UpgradeError("upgrade_intermediate_schema", "none", false, "upgrade_needed");
+  }
+}
 function checkpoint(database: Database.Database): { installation: string; epoch: string } {
   return database.prepare("SELECT installation,epoch FROM security_checkpoint WHERE singleton=1").get() as { installation: string; epoch: string };
 }
@@ -188,6 +205,7 @@ export function inspectSqliteUpgrade(paths: AppPaths, target?: number, decisions
     const status = recognize(path, owner.database, source, version);
     if (status.state === "current") return { ...status, projectIds: inspectProjectIds(owner.database) };
     if (status.state !== "upgrade_needed") return status;
+    refuseIntermediate(status);
     const header = {
       kind: UPGRADE_PLAN_KIND, format: UPGRADE_PLAN_FORMAT, binding: securityFenceBinding(path), installation: checkpoint(owner.database).installation,
       base: status.preflight, source, target: version, steps: structuralSteps(source, version), decisions: normalised,
@@ -214,6 +232,10 @@ function upgradeActs(database: Database.Database, plan: UpgradePlan, receipt: st
   const now = new Date().toISOString();
   validateUpgradeProposal(database, plan, plan.target);
   executeUpgradeActs(database, plan, { source: plan.source, target: plan.target, planHash, receipt, at: now });
+  // Step 53: no retained outcome survives an upgrade as replayable. From the
+  // released 49 the table is new and empty; from a pending marker it holds what
+  // the quarantine already invalidated.
+  if (plan.target >= OPERATION_IDEMPOTENCY_VERSION) invalidateOperationIdempotency(database, Date.parse(now));
   if (database.prepare("UPDATE upgrade_marker SET state='complete',changed_at=?,plan_hash=? WHERE singleton=1").run(now, planHash).changes !== 1) throw new Error("Upgrade marker update failed.");
   // The last act and this run's durable commit evidence (see upgradeCommitted).
   database.prepare("INSERT INTO controller_audit_events(event_type,actor,details_json,created_at) VALUES('authentication.upgrade_applied','local-cli',?,?)")
@@ -276,6 +298,7 @@ async function applyUpgrade(paths: AppPaths, expect: string, backup: UpgradeBack
       throw new UpgradeError("upgrade_wrong_state", "none", false, "current");
     }
     if (status.state !== "upgrade_needed") throw new UpgradeError("upgrade_wrong_state", status.nextStep, false, status.state);
+    refuseIntermediate(status);
     try { SecurityFence.assertOwnerContinuity(path, owner.database); } catch { throw new UpgradeError("upgrade_owner_changed", "auth fence resume", false, "fenced"); }
     const { plan, hash } = readUpgradePlan(path);
     if (hash !== expect) throw new UpgradeError("upgrade_plan_mismatch", "upgrade inspect");
