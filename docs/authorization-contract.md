@@ -1398,8 +1398,9 @@ staged a value, and the work never runs again. A delivery combined with
 
 `OperationRunner.mutationRelease` releases a mutation inside admission. It is
 unmounted: no transport calls it yet, and the production registry still holds
-the four reads. `run()` keeps its behaviour and still returns a mutation's
-value or error without writing anything. An error can disclose project state
+four operation IDs. `run()` keeps its behaviour and still returns a mutation's
+value or error without writing anything; it reads `signal` and
+`idempotencyKey` once, before planning, and uses that one snapshot throughout. An error can disclose project state
 (`not_found` against `forbidden`, `project_archived`, `request_in_progress`) or
 tell a client whether to repeat a write. A transport therefore writes the
 success and every refusal of a mutation only through this entry point.
@@ -1479,9 +1480,10 @@ nothing it saved earlier.
 
 **Reservation before answer.** For a fresh, owned attempt refused before its
 commit point, the refusing admitted callback releases the reservation
-synchronously and only then writes the refusal. The handler's own transaction
-has unwound by then, and admission opens none, so the release runs outside any
-SQL transaction. The callback records that it attempted the release, so
+synchronously and only then writes the refusal. A handler must unwind its own
+transaction before it throws, and admission opens none, so the release runs
+outside any SQL transaction; a handler that leaves a transaction open is a
+broken definition. The callback records that it attempted the release, so
 `finally` never repeats it. An immediate retry after a confirmed release runs
 fresh. Further rules:
 
@@ -1493,6 +1495,13 @@ fresh. Further rules:
   release can land and then throw with the row already absent, a failed
   `started` write can land and survive as `started` until the next start, and
   a latched fence refuses every later store call.
+- A release the store refuses because a transaction is still open (the SQLite
+  adapter's `idempotency_in_transaction`) is such an attempted, unconfirmed
+  release: the refusal is still written, `finally` does not repeat the release,
+  and the record is left to the store's repair at the next start. The runner
+  does not fall back to the completion path for it: it cannot tell this refusal
+  from any other without trusting a reason supplied by adapter code, and the
+  store interface has no transaction predicate.
 - Decision Z is unchanged: once the completion callback attempts the final
   write and its repair, it alone owns the record.
 - Only an owned attempt is cleaned up. An answer from an existing record leaves
@@ -1536,8 +1545,9 @@ Buffered (`stage`, for MCP):
   first-release value (also for a secret-bearing operation and for a call
   without a key). For a replay it keeps the validated record evidence (the
   stored resources, result and transitions).
-- `stage(value)` is awaited once, outside admission. It may prepare bytes only.
-  There is no restaging and no retry of the effect.
+- `stage(value)` is called once, outside admission, and awaited until it
+  settles or the caller's `signal` aborts, whichever comes first. It may
+  prepare bytes only. There is no restaging and no retry of the effect.
 - The final phase is a reserved admission without side effects and without
   any store lookup. It repeats the applicable release logic: for an ordinary
   first release the current decision and the comparison of the current
@@ -1553,15 +1563,32 @@ Buffered (`stage`, for MCP):
 - A rejected `stage` discards the bytes and returns
   `internal`/`release_stage_failed`, classified with this invocation's effect.
   A cancellation during staging returns `request_cancelled` with that effect.
+  When the signal aborts while `stage` is still pending, the call returns at
+  once, without a final phase and without a write; a late settlement of that
+  `stage` is absorbed and admits and writes nothing. The release deadline does
+  not interrupt a pending `stage`: the runtime clock is read inside admitted
+  phases and no timer is added, so the final phase applies the deadline after
+  `stage` settles. A call without a signal waits for `stage` to settle.
 - A replay answered in phase 1 with `stage` projects there; the final phase
   commits it. A record that expires or is replaced during staging cannot cause
   a second reservation or effect, because the final phase reads no record.
 
-The tests are `runner.mutation-release.test.ts` and
-`runner.mutation-stage.test.ts` over the fixture store, and the
-`mutationRelease` matrices in `src/server/bootstrap/operation-retention.faults.test.ts`
-over the real SQLite store, which assert each first answer, the durable record
-before a reopen and after its repair, and the retry.
+Over the fixture store, `runner.mutation-release.test.ts`,
+`runner.mutation-release.paths.test.ts` and `runner.mutation-stage.test.ts`
+assert the five public fields of each answer, the admitted phase that wrote it
+(the fixture admission's flag at the moment of the write), the handler and
+staging counts and the record. Over the real SQLite store, the
+`mutationRelease` matrix of decision Z in
+`src/server/bootstrap/operation-retention.faults.test.ts` and the decision-4
+rows in `runner.mutation-release.sqlite.test.ts` assert the five public fields
+of every first answer and every retry, the durable record before a reopen and
+after its repair, and, at the moment of each write, the real gate's count of
+admitted participants. The SQLite suite runs with strict admission and reads
+the record through the gate from inside each callback, which shows the
+reservation already released when a refusal is written.
+`runner.mutation-release.test.ts` and both SQLite suites have a negative
+control: a callback called after the runner returned observes no admission. Only SQLite has reopen and repair evidence; the fixture store
+has none.
 
 ### Project reads (D2a)
 
@@ -2437,6 +2464,11 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   on MCP. A transport that mounts a mutation releases it through
   `mutationRelease` and, on `commit_failed`, ends the response without a
   further envelope.
+- **Buffered mutation release.** The first transport that passes `stage` to
+  `mutationRelease` (D2b-2, MCP) also passes a `signal` and aborts it when its
+  deadline passes or its caller is gone. The runner does not bound a pending
+  `stage` by the deadline, so without that abort a `stage` that never settles
+  holds the call open.
 - **Mutation release with `acquire` or an idle effect.** `mutationRelease`
   refuses both as `internal`/`invalid_operation` before any reservation. A
   rejected `acquire`, an invalid lease, the abort check after the wait, a
