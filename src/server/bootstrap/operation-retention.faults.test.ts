@@ -12,7 +12,8 @@ import { ownedFixtureDatabase, unmanagedFixtureDatabase } from "@/server/unmanag
 import type { EffectScope, MutationOperation } from "@/server/modules/operations/operation";
 import { createWorld } from "@/server/modules/operations/operations-fixture";
 import { onProject } from "@/server/modules/operations/requirements";
-import { OperationRunner, type RunResult } from "@/server/modules/operations/runner";
+import { OperationRunner, type MutationReleaseOptions, type RunResult } from "@/server/modules/operations/runner";
+import type { PublicOperationError } from "@/shared/contracts/operations";
 import { key, projectA } from "@/server/modules/operations/runner-fixture";
 
 /**
@@ -192,24 +193,45 @@ describe("a landed write whose acknowledgement threw, then a recovery", () => {
 
 /**
  * D2b-1: the same matrix through `mutationRelease`. Every first answer and
- * every retry is a refusal or a value written inside an admitted phase
- * (`writes`), never returned for a later write; the durable record before the
- * reopen and after its repair is the one decision Z gives `run()`.
+ * every retry is written inside an admitted phase (`writes`), never returned
+ * for a later write, and is compared with all five public fields. `active` is
+ * the real gate's count of admitted core participants at the moment of the
+ * write (`admissionSnapshot`, which reads no SQL, so a latched fence cannot
+ * hide it); a write after the runner returned observes 0 (the negative
+ * control below). The durable record before the reopen and after its repair
+ * is the one decision Z gives `run()`.
  */
-interface Written { kind: "commit" | "refuse"; value: unknown }
-async function released(runner: OperationRunner, write: MutationOperation<Record<string, never>, { value: number }, { value: number }>,
+interface Written { kind: "commit" | "refuse"; value: unknown; active: number }
+async function released(owner: { runner: OperationRunner; store: SqliteStateStore }, write: MutationOperation<Record<string, never>, { value: number }, { value: number }>,
   context: ReturnType<ReturnType<typeof createWorld>["operator"]>, commit?: () => void) {
   const writes: Written[] = [];
-  const result = await runner.mutationRelease(write, context, {}, {
+  const active = () => owner.store.admissionSnapshot().coreActive;
+  const options: MutationReleaseOptions<{ value: number }> = {
     eligible: () => true, connected: () => true, deadline: Number.MAX_SAFE_INTEGER, idempotencyKey: "k-1",
-    commit: value => { writes.push({ kind: "commit", value }); commit?.(); },
-    refuse: error => { writes.push({ kind: "refuse", value: error }); },
-  });
+    commit: value => { writes.push({ kind: "commit", value, active: active() }); commit?.(); },
+    refuse: error => { writes.push({ kind: "refuse", value: error, active: active() }); },
+  };
+  const result = await owner.runner.mutationRelease(write, context, {}, options);
   const error = result.status === "committed" ? (writes[0]?.kind === "refuse" ? writes[0].value as { category: string; effect: string } : null)
     : result.error;
-  return { status: result.status, writes, summary: error ? `${error.category}/${error.effect}` : "commit", result };
+  return { status: result.status, writes, summary: error ? `${error.category}/${error.effect}` : "commit", result, options };
 }
 const asWritten = (summary: string) => (summary === "fresh" || summary === "replay" ? "commit" : summary);
+const fields = (category: string, status: number, reason: string, retry: string, effect: string) => ({ category, status, reason, retry, effect });
+/** The one write of a matrix row's first answer or retry, five fields and all. */
+function matrixWrite(summary: string, retry: boolean): Written {
+  const refuse = (value: object): Written => ({ kind: "refuse", value, active: 1 });
+  switch (summary) {
+    case "fresh": case "replay": return { kind: "commit", value: { value: 1 }, active: 1 };
+    // A fault of the store, a fence latch or a declared handler's untyped throw, all before the commit point.
+    case "internal/not_started": return refuse(fields("internal", 500, "unexpected_failure", "none", "not_started"));
+    case "unavailable/cleanup_unconfirmed": return refuse(fields("unavailable", 503, "finalization_unconfirmed", "inspect_first", "cleanup_unconfirmed"));
+    // The first caller saw its own effect fail; a retry is told about the earlier attempt.
+    case "outcome_unknown/unknown": return refuse(retry ? fields("outcome_unknown", 409, "previous_attempt_outcome_unknown", "inspect_first", "unknown")
+      : fields("outcome_unknown", 409, "effect_interrupted", "inspect_first", "unknown"));
+    default: throw new Error(`no expected write for ${summary}`);
+  }
+}
 
 describe("mutationRelease through the real facade: decision Z", () => {
   it.each(MATRIX)("$point $mode: first $first, durable $before → $after, retry $retry", async row => {
@@ -220,10 +242,10 @@ describe("mutationRelease through the real facade: decision Z", () => {
     const counters: Counters = { effects: 0 };
     const kind = row.point === "unknown" ? "throws" : row.point === "release" ? "declared" : "entry";
     const first = await owner(paths, world, { point: row.point, mode: row.mode });
-    const answer = await released(first.runner, operation(kind, counters), operator);
+    const answer = await released(first, operation(kind, counters), operator);
     // Each first answer of the matrix is a refusal, written once inside the phase that established it.
     expect(answer.status).toBe("committed");
-    expect(answer.writes.map(write => write.kind)).toEqual(["refuse"]);
+    expect(answer.writes).toEqual([matrixWrite(row.first, false)]);
     expect(answer.summary).toBe(row.first);
     expect(JSON.stringify(answer.writes)).not.toContain("secret");
     expect(injection.fired).toBe(row.mode === "before" ? 0 : 1);
@@ -236,31 +258,45 @@ describe("mutationRelease through the real facade: decision Z", () => {
     try { expect((raw.prepare("SELECT state FROM operation_idempotency").get() as { state: string } | undefined)?.state ?? "none").toBe(row.before); } finally { raw.close(); }
     const second = await owner(paths, world);
     expect(second.record()).toBe(row.after);
-    const retry = await released(second.runner, operation(kind, counters), operator);
+    const retry = await released(second, operation(kind, counters), operator);
     expect(retry.status).toBe("committed");
-    expect(retry.writes).toHaveLength(1);
+    expect(retry.writes).toEqual([matrixWrite(row.retry, true)]);
     expect(retry.summary).toBe(asWritten(row.retry));
     expect(counters.effects - effectsBefore).toBe(row.retry === "fresh" || (row.point === "release") ? 1 : 0);
+  });
+
+  it("negative control: a callback called after the runner returned observes no admitted participant", async () => {
+    const paths = installation();
+    const world = createWorld();
+    world.resolver.addProject(projectA).put({ kind: "registration", id: "reg-1" }, projectA);
+    const counters: Counters = { effects: 0 };
+    const first = await owner(paths, world);
+    const answer = await released(first, operation("declared", counters), world.operator());
+    expect(answer.writes).toEqual([matrixWrite("internal/not_started", false)]);
+    answer.options.refuse(fields("internal", 500, "unexpected_failure", "none", "not_started") as PublicOperationError);
+    expect(answer.writes.map(write => write.active)).toEqual([1, 0]);
   });
 });
 
 describe("mutationRelease through the real facade: decision 4 with a reopen", () => {
-  const fields = (category: string, status: number, reason: string, retry: string, effect: string) => ({ category, status, reason, retry, effect });
   type Kind = "entry" | "throws" | "declared" | "finalize";
   const write = (kind: Kind, counters: Counters) => kind === "finalize"
     ? { ...operation("entry", counters), finalize: () => { throw new Error("audit store down /secret"); } }
     : operation(kind, counters);
 
-  it.each<{ name: string; kind: Kind; commitThrows?: boolean; first: { status: string; kind?: "commit" | "refuse"; error?: object }; before: string; after: string; retry: string; effects: number }>([
+  it.each<{ name: string; kind: Kind; commitThrows?: boolean; first: { status: string; kind?: "commit" | "refuse"; error?: object }; before: string; after: string; retry: string; retryError?: object; effects: number }>([
     { name: "a success", kind: "entry", first: { status: "committed", kind: "commit" }, before: "completed", after: "completed", retry: "commit", effects: 0 },
     { name: "a failed delivery of a success", kind: "entry", commitThrows: true,
       first: { status: "commit_failed", error: fields("internal", 500, "release_commit_failed", "none", "committed") }, before: "completed", after: "completed", retry: "commit", effects: 0 },
     { name: "a refusal before the commit point", kind: "declared",
-      first: { status: "committed", kind: "refuse", error: fields("internal", 500, "unexpected_failure", "none", "not_started") }, before: "none", after: "none", retry: "internal/not_started", effects: 1 },
+      first: { status: "committed", kind: "refuse", error: fields("internal", 500, "unexpected_failure", "none", "not_started") }, before: "none", after: "none", retry: "internal/not_started",
+      retryError: fields("internal", 500, "unexpected_failure", "none", "not_started"), effects: 1 },
     { name: "an unknown effect", kind: "throws",
-      first: { status: "committed", kind: "refuse", error: fields("outcome_unknown", 409, "effect_interrupted", "inspect_first", "unknown") }, before: "unknown", after: "unknown", retry: "outcome_unknown/unknown", effects: 0 },
+      first: { status: "committed", kind: "refuse", error: fields("outcome_unknown", 409, "effect_interrupted", "inspect_first", "unknown") }, before: "unknown", after: "unknown", retry: "outcome_unknown/unknown",
+      retryError: fields("outcome_unknown", 409, "previous_attempt_outcome_unknown", "inspect_first", "unknown"), effects: 0 },
     { name: "an unconfirmed cleanup", kind: "finalize",
-      first: { status: "committed", kind: "refuse", error: fields("unavailable", 503, "finalization_unconfirmed", "inspect_first", "cleanup_unconfirmed") }, before: "unknown", after: "unknown", retry: "outcome_unknown/unknown", effects: 0 },
+      first: { status: "committed", kind: "refuse", error: fields("unavailable", 503, "finalization_unconfirmed", "inspect_first", "cleanup_unconfirmed") }, before: "unknown", after: "unknown", retry: "outcome_unknown/unknown",
+      retryError: fields("outcome_unknown", 409, "previous_attempt_outcome_unknown", "inspect_first", "unknown"), effects: 0 },
   ])("$name: the five fields, then the record before and after the reopen", async row => {
     const paths = installation();
     const world = createWorld();
@@ -268,9 +304,9 @@ describe("mutationRelease through the real facade: decision 4 with a reopen", ()
     const operator = world.operator();
     const counters: Counters = { effects: 0 };
     const first = await owner(paths, world);
-    const answer = await released(first.runner, write(row.kind, counters), operator, row.commitThrows ? () => { throw new Error("socket gone /secret"); } : undefined);
+    const answer = await released(first, write(row.kind, counters), operator, row.commitThrows ? () => { throw new Error("socket gone /secret"); } : undefined);
     expect(answer.status).toBe(row.first.status);
-    if (row.first.kind) expect(answer.writes.map(each => each.kind)).toEqual([row.first.kind]);
+    if (row.first.kind) expect(answer.writes.map(each => [each.kind, each.active])).toEqual([[row.first.kind, 1]]);
     if (row.first.error) expect(answer.status === "committed" ? answer.writes[0].value : (answer.result as { error: unknown }).error).toEqual(row.first.error);
     if (row.first.kind === "commit") expect(answer.writes[0].value).toEqual({ value: 1 });
     expect(JSON.stringify(answer)).not.toContain("secret");
@@ -279,9 +315,9 @@ describe("mutationRelease through the real facade: decision 4 with a reopen", ()
     first.store.close();
     const second = await owner(paths, world);
     expect(second.record()).toBe(row.after);
-    const retry = await released(second.runner, write(row.kind, counters), operator);
+    const retry = await released(second, write(row.kind, counters), operator);
     expect(retry.summary).toBe(row.retry);
-    if (row.retry === "commit") expect(retry.writes).toEqual([{ kind: "commit", value: { value: 1 } }]);
+    expect(retry.writes).toEqual([row.retry === "commit" ? { kind: "commit", value: { value: 1 }, active: 1 } : { kind: "refuse", value: row.retryError, active: 1 }]);
     expect(counters.effects - effectsBefore).toBe(row.effects);
     expect(second.record()).toBe(row.retry === "commit" ? "completed" : row.after);
   });
@@ -293,11 +329,11 @@ describe("mutationRelease through the real facade: decision 4 with a reopen", ()
     const operator = world.operator();
     const counters: Counters = { effects: 0 };
     const first = await owner(paths, world);
-    expect((await released(first.runner, write("entry", counters), operator)).summary).toBe("commit");
+    expect((await released(first, write("entry", counters), operator)).summary).toBe("commit");
     first.store.close();
     const second = await owner(paths, world);
     const stored = second.database.prepare("SELECT * FROM operation_idempotency").all();
-    const answer = await released(second.runner, write("entry", counters), operator, () => { throw new Error("socket gone"); });
+    const answer = await released(second, write("entry", counters), operator, () => { throw new Error("socket gone"); });
     expect(answer.result).toEqual({ status: "commit_failed", error: fields("internal", 500, "release_commit_failed", "none", "not_started") });
     expect(second.database.prepare("SELECT * FROM operation_idempotency").all()).toEqual(stored);
     expect(counters.effects).toBe(1);

@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProjectId } from "@/shared/contracts/operations";
 import type { EffectScope, MutationOperation, Receipt } from "./operation";
 import { onProject } from "./requirements";
-import type { MutationReleaseOptions } from "./runner";
-import { admittedWrite, answer, projectA, projectB, recordingDelivery, REGISTRATION, setup, unhandledDuring } from "./runner-fixture";
+import { MemoryIdempotency } from "./operations-fixture";
+import { OperationRunner, type MutationReleaseOptions } from "./runner";
+import {
+  admittedWrite, answer, deferred, gatedAdmission, projectA, projectB, recordingDelivery, REGISTRATION, setup, tick, unhandledDuring,
+} from "./runner-fixture";
 
 /**
  * D2b-1 decision 5: the buffered shape of `mutationRelease` (`stage`, used by
@@ -56,7 +59,7 @@ describe("buffered first release", () => {
   });
 
   it("a changed projection is refused as release_payload_changed with effect committed", async () => {
-    const { world, alice, runner } = setup();
+    const { world, alice, runner, idempotency } = setup();
     let projections = 0;
     const { operation, counts } = admittedWrite(world, { project: () => ({ value: ++projections }) });
     const { stage } = stager(world);
@@ -64,6 +67,8 @@ describe("buffered first release", () => {
     expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, options)).toEqual({ status: "committed" });
     expect(writes).toEqual([{ kind: "refuse", value: answer("conflict", 409, "release_payload_changed", "none", "committed"), admitted: true, admission: 5 }]);
     expect(counts.runs).toBe(1);
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(idempotency.states()).toEqual(["completed"]);
   });
 
   it("a resource moved during staging is refused as resource_changed", async () => {
@@ -94,7 +99,7 @@ describe("buffered first release", () => {
   });
 
   it.each([false, true])("a cancellation during staging returns request_cancelled with effect committed (stage also rejects: %s)", async rejects => {
-    const { world, alice, runner } = setup();
+    const { world, alice, runner, idempotency } = setup();
     const { operation, counts } = admittedWrite(world);
     const controller = new AbortController();
     const { stage } = stager(world, () => { controller.abort(); if (rejects) throw new Error("aborted"); });
@@ -104,6 +109,8 @@ describe("buffered first release", () => {
     expect(writes).toEqual([]);
     expect(runs(world)).toBe(4);
     expect(counts.runs).toBe(1);
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(idempotency.states()).toEqual(["completed"]);
   });
 
   it.each<[string, (world: ReturnType<typeof setup>["world"], deadline: number) => [Partial<MutationReleaseOptions<Value>>, () => void], string]>([
@@ -161,8 +168,123 @@ describe("buffered first release", () => {
     });
     const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), stage });
     expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, options)).toEqual({ status: "committed" });
-    expect(writes.map(write => write.kind)).toEqual(["commit"]);
+    expect(writes).toEqual([{ kind: "commit", value: { value: 1 }, admitted: true, admission: 5 }]);
     expect(idempotency.calls).toEqual(["get", "reserved", "started", "completed"]);
+    expect(idempotency.states()).toEqual(change === "expires" ? [] : ["reserved"]);
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(counts.runs).toBe(1);
+  });
+});
+
+describe("staging: the stage callback itself", () => {
+  it.each(["fulfils", "rejects"] as const)("a stage still pending at the abort: request_cancelled at once; when it %s late, nothing is admitted or written", async late => {
+    const unhandled = await unhandledDuring(async () => {
+      const { world, alice, runner, idempotency } = setup();
+      const { operation, counts } = admittedWrite(world);
+      const controller = new AbortController();
+      const pending = deferred();
+      const stage = vi.fn(() => pending.promise);
+      const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), stage, signal: controller.signal });
+      const result = runner.mutationRelease(operation, alice.context, { n: 1 }, options);
+      await vi.waitFor(() => expect(stage).toHaveBeenCalledTimes(1));
+      controller.abort();
+      // Settles while the stage is still pending: the wait ends at the abort, not at the stage.
+      expect(await result).toEqual({ status: "refused", error: answer("unavailable", 503, "request_cancelled", "none", "committed") });
+      expect(world.admission.events).toHaveLength(4);
+      if (late === "fulfils") pending.resolve(); else pending.reject(new Error("late stage /secret"));
+      for (let index = 0; index < 5; index++) await tick();
+      expect(writes).toEqual([]);
+      expect(world.admission.events).toHaveLength(4);
+      expect(stage).toHaveBeenCalledTimes(1);
+      expect(counts.runs).toBe(1);
+      expect(idempotency.states()).toEqual(["completed"]);
+    });
+    expect(unhandled).toEqual([]);
+  });
+
+  it("a buffered replay whose stage is pending at the abort: request_cancelled with this invocation's not_started", async () => {
+    const unhandled = await unhandledDuring(async () => {
+      const { world, alice, runner, idempotency } = setup();
+      const { operation, counts } = admittedWrite(world);
+      expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, recordingDelivery<Value>(world, keyed()).options)).toEqual({ status: "committed" });
+      const stored = structuredClone([...idempotency.entries.values()]);
+      world.admission.events = [];
+      const controller = new AbortController();
+      const pending = deferred();
+      const stage = vi.fn(() => pending.promise);
+      const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), stage, signal: controller.signal });
+      const result = runner.mutationRelease(operation, alice.context, { n: 1 }, options);
+      await vi.waitFor(() => expect(stage).toHaveBeenCalledTimes(1));
+      controller.abort();
+      expect(await result).toEqual({ status: "refused", error: answer("unavailable", 503, "request_cancelled", "retry", "not_started") });
+      pending.reject(new Error("late stage"));
+      for (let index = 0; index < 5; index++) await tick();
+      expect(writes).toEqual([]);
+      expect(world.admission.events).toHaveLength(1);
+      expect([...idempotency.entries.values()]).toEqual(stored);
+      expect(counts.runs).toBe(1);
+    });
+    expect(unhandled).toEqual([]);
+  });
+
+  it("the abort listener of the wait is removed when the stage settles first", async () => {
+    const { world, alice, runner } = setup();
+    const { operation } = admittedWrite(world);
+    const controller = new AbortController();
+    const added = vi.spyOn(controller.signal, "addEventListener");
+    const removed = vi.spyOn(controller.signal, "removeEventListener");
+    const { stage } = stager(world);
+    const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), stage, signal: controller.signal });
+    expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, options)).toEqual({ status: "committed" });
+    expect(writes.map(write => write.kind)).toEqual(["commit"]);
+    const listeners = added.mock.calls.filter(([type]) => type === "abort").map(([, listener]) => listener);
+    expect(listeners).toHaveLength(1);
+    expect(removed.mock.calls.filter(([type]) => type === "abort").map(([, listener]) => listener)).toEqual(listeners);
+  });
+
+  it("a stage that changes the value it received changes nothing: the final phase writes its own fresh value", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const { operation, counts } = admittedWrite(world);
+    const stage = vi.fn(async (value: Value) => { value.value = 99; });
+    const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), stage });
+    expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, options)).toEqual({ status: "committed" });
+    expect(writes).toEqual([{ kind: "commit", value: { value: 1 }, admitted: true, admission: 5 }]);
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(counts).toMatchObject({ runs: 1, projections: 2 });
+    expect(idempotency.states()).toEqual(["completed"]);
+  });
+
+  it("a stage that throws synchronously is release_stage_failed, returned; nothing is written", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const { operation, counts } = admittedWrite(world);
+    const stage = vi.fn((): Promise<void> => { throw new Error("sync stage /secret"); });
+    const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), stage });
+    expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, options))
+      .toEqual({ status: "refused", error: answer("internal", 500, "release_stage_failed", "none", "committed") });
+    expect(writes).toEqual([]);
+    expect(runs(world)).toBe(4);
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(counts.runs).toBe(1);
+    expect(idempotency.states()).toEqual(["completed"]);
+  });
+
+  it("a stage reassigned on the options object after the call began: the captured stage runs, once", async () => {
+    const { world, alice } = setup();
+    const idempotency = new MemoryIdempotency();
+    const gated = gatedAdmission(world);
+    const runner = new OperationRunner({ ...world.runtime({ idempotency }), admission: gated.admission });
+    const { operation, counts } = admittedWrite(world);
+    const { stage, seen } = stager(world);
+    const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), stage });
+    const pending = runner.mutationRelease(operation, alice.context, { n: 1 }, options);
+    const replacement = vi.fn(async () => undefined);
+    options.stage = replacement;
+    gated.open();
+    expect(await pending).toEqual({ status: "committed" });
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual([{ value: { value: 1 }, admitted: false }]);
+    expect(replacement).not.toHaveBeenCalled();
+    expect(writes.map(write => write.kind)).toEqual(["commit"]);
     expect(counts.runs).toBe(1);
   });
 });

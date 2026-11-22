@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PublicOperationError } from "@/shared/contracts/operations";
 import { OperationError } from "./errors";
-import type { EffectScope, MutationOperation, ReadOperation } from "./operation";
+import type { EffectScope, MutationOperation, QueryOperation, ReadOperation } from "./operation";
 import { MemoryIdempotency } from "./operations-fixture";
 import { authenticated } from "./requirements";
 import { OperationRunner, type IdempotencyKey, type IdempotencyRecord, type MutationReleaseOptions } from "./runner";
@@ -301,11 +301,11 @@ describe("mutationRelease: decision 4, after the effect", () => {
 describe("mutationRelease: one delivery attempt", () => {
   const failed = (retry: string, effect: "not_started" | "committed" | "cleanup_unconfirmed") => answer("internal", 500, "release_commit_failed", retry, effect);
 
-  it.each<[string, (sink: string[]) => (value: unknown) => void]>([
-    ["throws before any byte", () => () => { throw new Error("socket gone /secret"); }],
-    ["throws after a partial write", sink => () => { sink.push("partial"); throw new Error("socket gone /secret"); }],
-    ["returns a thenable", sink => (async () => { sink.push("async"); throw new Error("late /secret"); }) as unknown as (value: unknown) => void],
-  ])("a commit that %s is commit_failed with effect committed; nothing else is written; the record stays completed", async (_name, make) => {
+  it.each<[string, (sink: string[]) => (value: unknown) => void, string[]]>([
+    ["throws before any byte", () => () => { throw new Error("socket gone /secret"); }, []],
+    ["throws after a partial write", sink => () => { sink.push("partial"); throw new Error("socket gone /secret"); }, ["partial"]],
+    ["returns a thenable", sink => (async () => { sink.push("async"); throw new Error("late /secret"); }) as unknown as (value: unknown) => void, ["async"]],
+  ])("a commit that %s is commit_failed with effect committed; nothing else is written; the record stays completed", async (_name, make, partial) => {
     const unhandled = await unhandledDuring(async () => {
       const { world, alice, runner, idempotency } = setup();
       const { operation, counts } = admittedWrite(world);
@@ -315,7 +315,8 @@ describe("mutationRelease: one delivery attempt", () => {
       expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, options)).toEqual({ status: "commit_failed", error: failed("none", "committed") });
       expect(commit).toHaveBeenCalledTimes(1);
       expect(writes).toEqual([]);
-      expect(sink.length).toBeLessThanOrEqual(1);
+      // The chosen branch wrote exactly what it wrote, once: the runner never called it again.
+      expect(sink).toEqual(partial);
       expect(counts.runs).toBe(1);
       expect(idempotency.states()).toEqual(["completed"]);
     });
@@ -566,6 +567,35 @@ describe("mutationRelease: guards", () => {
     expect(writes).toEqual([refuseWrite(invalidOperation, 1)]);
   });
 
+  it("a query is internal/invalid_operation, written in one admitted phase; its plan and work never run", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const plan = vi.fn(() => ({})), work = vi.fn(async () => ({ value: 1 }));
+    const query: QueryOperation<object, Value, Value> = {
+      id: "fixture.not_a_mutation_query", kind: "query", requirement: { require: authenticated() },
+      parse: () => ({}), resources: () => ({}), plan, work, project: value => value, publicKeys: ["value"],
+    };
+    const { options, writes } = recordingDelivery<Value>(world, keyed());
+    expect(await runner.mutationRelease(query, alice.context, {}, options)).toEqual({ status: "committed" });
+    expect(writes).toEqual([refuseWrite(invalidOperation, 1)]);
+    expect(runs(world)).toBe(1);
+    expect(plan).not.toHaveBeenCalled();
+    expect(work).not.toHaveBeenCalled();
+    expect(idempotency.calls).toEqual([]);
+  });
+
+  it("a mutation passed to queryRelease is internal/invalid_operation, returned before any admission or handler", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const { operation, counts } = admittedWrite(world);
+    const commit = vi.fn();
+    const result = await runner.queryRelease<object, object, Value>(operation, alice.context, { n: 1 },
+      { eligible: () => true, connected: () => true, deadline: Number.MAX_SAFE_INTEGER, commit });
+    expect(result).toEqual({ status: "refused", error: answer("internal", 500, "invalid_operation", "none", null) });
+    expect(commit).not.toHaveBeenCalled();
+    expect(runs(world)).toBe(0);
+    expect(counts.runs).toBe(0);
+    expect(idempotency.calls).toEqual([]);
+  });
+
   it.each<[string, (operation: MutationOperation<{ n: number }, WriteResult, Value>, log: string[]) => MutationOperation<{ n: number }, WriteResult, Value>]>([
     ["an acquire", (operation, log) => ({ ...operation, acquire: async () => { log.push("acquire"); return { release: () => undefined }; } })],
     ["an idle effect", (operation, log) => ({
@@ -651,6 +681,27 @@ describe("mutationRelease: guards", () => {
     expect(release.values).toEqual([{ value: 1 }]);
     for (const replacement of Object.values(replacements)) expect(replacement).not.toHaveBeenCalled();
   });
+
+  it("a refusal is written through the refuse captured before admission, even when the options object is changed meanwhile", async () => {
+    const { world, alice } = setup();
+    const idempotency = new MemoryIdempotency();
+    const gated = gatedAdmission(world);
+    const runner = new OperationRunner({ ...world.runtime({ idempotency }), admission: gated.admission });
+    const { operation } = admittedWrite(world, { before: () => { throw new OperationError("conflict", "project_archived"); } });
+    const refused: { error: PublicOperationError; receiver: unknown }[] = [];
+    const options: MutationReleaseOptions<Value> = {
+      eligible: () => true, connected: () => true, deadline: Number.MAX_SAFE_INTEGER, idempotencyKey: "k-1", commit: vi.fn(),
+      refuse(error) { refused.push({ error, receiver: this }); },
+    };
+    const pending = runner.mutationRelease(operation, alice.context, { n: 1 }, options);
+    const replacement = vi.fn();
+    options.refuse = replacement;
+    gated.open();
+    expect(await pending).toEqual({ status: "committed" });
+    expect(refused).toEqual([{ error: answer("conflict", 409, "project_archived", "none", "not_started"), receiver: options }]);
+    expect(replacement).not.toHaveBeenCalled();
+    expect(idempotency.entries.size).toBe(0);
+  });
 });
 
 describe("mutationRelease: run() is unchanged", () => {
@@ -661,6 +712,31 @@ describe("mutationRelease: run() is unchanged", () => {
     expect(await runner.run(operation, alice.context, { n: 1 }, keyed())).toEqual({ ok: true, value: { value: 1 }, replayed: true });
     expect(counts.runs).toBe(1);
     expect(idempotency.states()).toEqual(["completed"]);
+  });
+
+  it("run() reads idempotencyKey and signal once, before planning, and keeps that one key throughout", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const { operation, counts } = admittedWrite(world);
+    const reads = { key: 0, signal: 0 };
+    // A key that changes on its second read: planning, the lookup and the reservation must all use the first.
+    const options = { get idempotencyKey() { return ++reads.key === 1 ? "k-1" : "k-2"; }, get signal() { reads.signal++; return undefined; } };
+    expect(await runner.run(operation, alice.context, { n: 1 }, options)).toEqual({ ok: true, value: { value: 1 }, replayed: false });
+    expect(reads).toEqual({ key: 1, signal: 1 });
+    expect([...idempotency.entries.keys()]).toEqual([JSON.stringify([operation.id, `account:${alice.id}`, "k-1"])]);
+    // An ordinary retry with that key replays: the effect ran once.
+    expect(await runner.run(operation, alice.context, { n: 1 }, keyed("k-1"))).toEqual({ ok: true, value: { value: 1 }, replayed: true });
+    expect(counts.runs).toBe(1);
+  });
+
+  it("run() refusing in planning has read its options once as well", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const { operation } = admittedWrite(world);
+    const reads = { key: 0, signal: 0 };
+    const options = { get idempotencyKey() { reads.key++; return "k-1"; }, get signal() { reads.signal++; return undefined; } };
+    expect(await runner.run(operation, alice.context, { n: "one" }, options))
+      .toEqual({ ok: false, error: answer("invalid_request", 400, "invalid_input", "none", "not_started") });
+    expect(reads).toEqual({ key: 1, signal: 1 });
+    expect(idempotency.calls).toEqual([]);
   });
 
   it("negative control: a write made after run() returned is observed outside admission", async () => {
