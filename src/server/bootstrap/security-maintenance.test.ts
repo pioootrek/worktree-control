@@ -55,8 +55,8 @@ describe("fence establishment with a pre-establishment backup", () => {
     const { backup, ...established } = result;
     const comparable = (value: Record<string, unknown>) => ({ ...value, preflight: "<preflight>", receipt: "<receipt>" });
     expect(comparable(established)).toEqual(comparable(plain));
-    // At the supported target a non-fresh source reaches 52 with the upgrade marker pending: the upgrade is next.
-    expect(established).toMatchObject({ code: "security_fence_current", trusted: true, changed: true, quarantined: false, schemaVersion: 52 });
+    // At the supported target a non-fresh source reaches 53 with the upgrade marker pending: the upgrade is next.
+    expect(established).toMatchObject({ code: "security_fence_current", trusted: true, changed: true, quarantined: false, schemaVersion: 53 });
     const live = new Database(paths.databasePath, { readonly: true, fileMustExist: true });
     try { expect(live.prepare("SELECT state, plan_hash FROM upgrade_marker").get()).toEqual({ state: "pending", plan_hash: null }); } finally { live.close(); }
     const entries = readdirSync(directory);

@@ -593,7 +593,7 @@ describe("the upgrade marker under the security fence (target 50)",()=>{
     read(paths,db=>{expect(db.prepare("SELECT max(version) FROM schema_migrations").pluck().get()).toBe(49);expect(upgradeMarker(db)).toBe("absent");});
     expect(resume50(paths)).toMatchObject({trusted:true,quarantined:true});
     read(paths,db=>{expect(upgradeMarker(db)).toEqual(["pending"]);expect(effects(db)).toEqual(expected);});
-    // The ordinary store at the supported 52 sends it to the upgrade.
+    // The ordinary store at the supported 53 sends it to the upgrade.
     expect(()=>new SqliteStateStore(paths.databasePath)).toThrowError(expect.objectContaining({code:"upgrade_required"}));
   });
 

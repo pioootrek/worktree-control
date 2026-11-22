@@ -25,7 +25,7 @@ const legacyInput = process.argv[2] && !process.argv[2].startsWith("--") ? proce
 const input = legacyInput ? JSON.parse(await readFile(legacyInput, "utf8")) : {};
 const baseline = legacyInput ? "historical-installed" : argument("--baseline") ?? `public-${PUBLIC_BASELINE.version}`;
 assert(["historical-installed", `public-${PUBLIC_BASELINE.version}`, "fresh"].includes(baseline), "Unsupported baseline.");
-const CURRENT_SCHEMA = 52;
+const CURRENT_SCHEMA = 53;
 const reportPath = resolve(argument("--report") ?? join(repository, "dist/rbac-artifacts", `acceptance-${baseline}.json`));
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 let oldRoot, oldCli;
@@ -725,7 +725,7 @@ try {
   let currentOwnerEnv = ownerEnv, currentAgentCredential = oldAgentCredential;
   if (fresh) {
     await step("fresh-install-fence-current", async () => { const status = await json(currentCli, ["auth", "fence", "inspect"]); assert.equal(status.code, "security_fence_current"); assert.equal(status.establishmentAllowed, false); assert.equal(status.nextStep, "upgrade inspect"); });
-    await step("fresh-install-schema-52-marker-complete-and-upgrade-current", async () => {
+    await step("fresh-install-schema-53-marker-complete-and-upgrade-current", async () => {
       assert.deepEqual(marker(), { state: "complete", plan_hash: null }, "A fresh installation starts with a complete marker and no plan hash.");
       const files = await sourceFiles();
       const inspection = await json(currentCli, ["upgrade", "inspect"]);
@@ -749,7 +749,7 @@ try {
       assert.equal(established.nextStep, "upgrade inspect", "An established fence points to the upgrade, not to an ordinary start.");
       assert.match(established.backup, new RegExp(`/pre-establishment-v${before.schema}-[0-9a-f-]{36}$`));
       assert.equal(JSON.parse(await readFile(join(established.backup, "manifest.json"), "utf8")).database.schemaVersion, before.schema);
-      assert.deepEqual(marker(), { state: "pending", plan_hash: null }, "Establishment brings the structure to 52 with the marker pending.");
+      assert.deepEqual(marker(), { state: "pending", plan_hash: null }, "Establishment brings the structure to 53 with the marker pending.");
     });
     await step("upgrade-required-refusal-preserves-database", async () => {
       const files = await sourceFiles(), copies = (await readdir(maintenanceBackups)).sort(), port = await freePort();
@@ -1121,7 +1121,7 @@ try {
     try { await restoreAndResume("empty-installation"); } finally { directoryArgs = originalArgs; }
   }
   // Reset evidence replaces the former "grants preserved" claim: an upgrade revokes every old grant and credential.
-  const authority = fresh ? { upgrade: "none: fresh installation at schema 52 with a complete marker", seededGrantsAndTokensKeepWorking: true }
+  const authority = fresh ? { upgrade: "none: fresh installation at schema 53 with a complete marker", seededGrantsAndTokensKeepWorking: true }
     : { upgrade: { planHash, ...resetEvidence }, preUpgradeCredentialsRejected: true, newCredentialDeniedWithoutGrant: true, explicitGrantRestoresAccess: true, installationTokenKept: true };
   const snapshot = { baseline, oldSchema: before.schema, currentSchema: CURRENT_SCHEMA, communityWithoutProvider: ["token", "open"], ownerContinuity: true, authority,
     oldCredentialsNotWidened: true, restorationQuarantinesAuthority: true, publicBackupRestore: oldBackup ? ["existing-installation", "empty-installation"] : [],

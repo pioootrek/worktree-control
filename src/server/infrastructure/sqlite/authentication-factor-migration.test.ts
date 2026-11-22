@@ -54,11 +54,11 @@ describe("authentication factor migration 40", () => {
   it("creates recognized empty storage on a fresh database", () => {
     const f = directory(), store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(52);
+      expect(store.schemaVersion()).toBe(53);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
-      expect(inspectSchema(db)).toEqual({ version: 52, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 53, fresh: false });
       expect(factorTables(db)).toEqual(FACTOR_TABLES);
       for (const table of FACTOR_TABLES) expect(db.prepare(`SELECT count(*) n FROM "${table}"`).get()).toEqual({ n: 0 });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=40").get()).toEqual({ name: authenticationFactorMigration.name, checksum: authenticationFactorChecksum });
@@ -94,7 +94,7 @@ describe("authentication factor migration 40", () => {
     restoreControllerBackup(join(backups, backup!), restoredPath);
     await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
-    try { expect(restored.schemaVersion()).toBe(52); } finally { restored.close(); }
+    try { expect(restored.schemaVersion()).toBe(53); } finally { restored.close(); }
     raw(restoredPath, db => { expect(db.prepare("SELECT * FROM remote_principals ORDER BY rowid").all()).toEqual(before.rows.remote_principals); expect(db.prepare("SELECT * FROM authentication_totp_steps ORDER BY rowid").all()).toEqual(before.rows.authentication_totp_steps ?? []); expect(db.prepare("SELECT * FROM authentication_ba_session").all()).toEqual([]); });
   });
 
@@ -109,7 +109,7 @@ describe("authentication factor migration 40", () => {
     restoreControllerBackup(target, restoredPath);
     await resumeFixtureSecurity(restoredPath);
     const reopened = new SqliteStateStore(restoredPath);
-    try { expect(reopened.schemaVersion()).toBe(52); } finally { reopened.close(); }
+    try { expect(reopened.schemaVersion()).toBe(53); } finally { reopened.close(); }
     raw(restoredPath, db => {
       expect(db.prepare("SELECT last_step FROM authentication_totp_steps").all()).toEqual([{ last_step: 59788416 }]);
       expect(db.prepare("SELECT method, generation FROM authentication_session_evidence").all()).toEqual([]);

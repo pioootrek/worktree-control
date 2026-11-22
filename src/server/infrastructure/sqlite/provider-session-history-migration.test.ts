@@ -51,11 +51,11 @@ describe("provider session history migration 39", () => {
   it("creates recognized fresh storage with provider storage revision 1 and honest history method", () => {
     const f = directory(), store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(52);
+      expect(store.schemaVersion()).toBe(53);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
-      expect(inspectSchema(db)).toEqual({ version: 52, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 53, fresh: false });
       expect(db.prepare("SELECT name,checksum FROM schema_migrations WHERE version=39").get())
         .toEqual({ name: providerSessionHistoryMigration.name, checksum: providerSessionHistoryChecksum });
       expect(db.prepare("SELECT sql FROM sqlite_master WHERE name='knowledge_history'").get()).toMatchObject({ sql: expect.stringContaining("'provider_session'") });
@@ -98,7 +98,7 @@ describe("provider session history migration 39", () => {
     restoreControllerBackup(join(backups, backup!), restoredPath);
     await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
-    try { expect(restored.schemaVersion()).toBe(52); } finally { restored.close(); }
+    try { expect(restored.schemaVersion()).toBe(53); } finally { restored.close(); }
     raw(restoredPath, db => {
       const after=preserved(db);
       for(const table of ["knowledge_history","knowledge_tasks","remote_principals","authentication_provider_subjects"])expect(after[table]).toEqual(before.rows[table]);
@@ -160,7 +160,7 @@ describe("provider session history migration 39", () => {
     await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
     try {
-      expect(restored.schemaVersion()).toBe(52);
+      expect(restored.schemaVersion()).toBe(53);
       expect(restored.listHistory("kept", "task", task.value.id, 25, 0).items[0]?.authenticationMethod).toBe("provider_session");
     } finally { restored.close(); }
     const target = new SqliteStateStore(join(f.root, "logical.sqlite3"));

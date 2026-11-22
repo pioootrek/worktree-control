@@ -66,11 +66,11 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
   it("creates recognized empty storage on a fresh database and bumps the storage revision", () => {
     const f = directory(), store = new SqliteStateStore(f.path);
     try {
-      expect(store.schemaVersion()).toBe(52);
+      expect(store.schemaVersion()).toBe(53);
       expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     } finally { store.close(); }
     raw(f.path, db => {
-      expect(inspectSchema(db)).toEqual({ version: 52, fresh: false });
+      expect(inspectSchema(db)).toEqual({ version: 53, fresh: false });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=41").get()).toEqual({ name: authenticationSessionIssuanceMigration.name, checksum: authenticationSessionIssuanceChecksum });
       expect(db.prepare("SELECT name, checksum FROM schema_migrations WHERE version=40").get()).toEqual({ name: authenticationFactorMigration.name, checksum: authenticationFactorChecksum });
       // No token, cookie, password, actor or process identity has a column here.
@@ -96,7 +96,7 @@ describe("authentication session issuance migration 41", { timeout: 30_000 }, ()
     restoreControllerBackup(join(backups, backup), restoredPath);
     await resumeFixtureSecurity(restoredPath);
     const restored = new SqliteStateStore(restoredPath);
-    try { expect(restored.schemaVersion()).toBe(52); } finally { restored.close(); }
+    try { expect(restored.schemaVersion()).toBe(53); } finally { restored.close(); }
     raw(restoredPath, db => { expect(db.prepare("SELECT * FROM remote_principals ORDER BY rowid").all()).toEqual(before.rows.remote_principals); expect(db.prepare("SELECT * FROM authentication_totp_steps ORDER BY rowid").all()).toEqual(before.rows.authentication_totp_steps); expect(db.prepare("SELECT * FROM authentication_ba_session").all()).toEqual([]); });
   });
 

@@ -115,7 +115,7 @@ describe("ordinary human principal migration 42", () => {
     const root = mkdtempSync(join(tmpdir(), "human-migration-")); roots.push(root);
     const path = join(root, "data", "state.sqlite3"), store = new SqliteStateStore(path);
     const human = new HumanAccountService(store.humanAccounts(), "local-cli").create();
-    expect(store.schemaVersion()).toBe(52); expect(store.authenticationProviderStorage().storageRevision).toBe(3);
+    expect(store.schemaVersion()).toBe(53); expect(store.authenticationProviderStorage().storageRevision).toBe(3);
     const storage = store.authenticationProviderStorage(), connection = storage.createProviderConnection();
     await storage.borrow(async () => {
       connection.prepare("INSERT INTO authentication_ba_user(id,name,email,emailVerified,createdAt,updatedAt) VALUES('s','Fixture','fixture@invalid.test',0,'2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z')").run([]);

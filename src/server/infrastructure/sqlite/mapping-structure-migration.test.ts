@@ -159,8 +159,8 @@ const LOOSE_JOURNAL = "CREATE TABLE project_mapping_journal(sequence INTEGER PRI
 
 describe("schema step 51: project mapping structure", () => {
   it("pins step 51 and its coverage, and leaves steps 49 and 50 as they were", () => {
-    // Step 52 is the supported version; it is pinned in account-grants-migration.test.ts.
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(52);
+    // Step 53 is the supported version; it is pinned in operation-idempotency-migration.test.ts.
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(53);
     expect(projectMappingMigration).toMatchObject({ version: 51, name: "project-mapping-structure" });
     // Pinned: a change to the step's text is a visible edit here.
     expect(projectMappingChecksum).toBe("1c0afefd54f82635da94be7361bbe412ec76bbe49ff50a335ed8a248ea50bc85");

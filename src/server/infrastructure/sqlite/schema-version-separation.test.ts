@@ -17,9 +17,9 @@ import { inspectSqliteUpgrade } from "./upgrade-maintenance";
 import { createFencedAt49, schemaAt49 } from "./fixtures/released-schema";
 
 /**
- * The fence base (49, a released fact) and the supported version (52, what this
+ * The fence base (49, a released fact) and the supported version (53, what this
  * release creates and runs) are separate constants. These tests run against the
- * real ones: every use that means "the fence's base" accepts 49 to 51, and every
+ * real ones: every use that means "the fence's base" accepts 49 to 52, and every
  * default is the supported version.
  */
 const roots: string[] = [];
@@ -34,30 +34,30 @@ const freshAt = (target?: number) => {
   return database;
 };
 
-describe("the schema target with the supported version at 52", () => {
-  it("keeps the fence base at 49, accepts the explicit targets 49 to 52, defaults to 52 and refuses outside them", () => {
+describe("the schema target with the supported version at 53", () => {
+  it("keeps the fence base at 49, accepts the explicit targets 49 to 53, defaults to 53 and refuses outside them", () => {
     expect(SECURITY_FENCE_SCHEMA_VERSION).toBe(49);
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(52);
-    expect(schemaTarget()).toBe(52);
-    for (const target of [49, 50, 51, 52]) expect(schemaTarget(target)).toBe(target);
-    for (const invalid of [47, 48, 53, 49.5, Number.NaN, Number.POSITIVE_INFINITY, null as unknown as number]) expect(message(() => schemaTarget(invalid)), String(invalid)).toBe(UNSUPPORTED);
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(53);
+    expect(schemaTarget()).toBe(53);
+    for (const target of [49, 50, 51, 52, 53]) expect(schemaTarget(target)).toBe(target);
+    for (const invalid of [47, 48, 54, 49.5, Number.NaN, Number.POSITIVE_INFINITY, null as unknown as number]) expect(message(() => schemaTarget(invalid)), String(invalid)).toBe(UNSUPPORTED);
   });
 
-  it("plans the structural steps from the fence base 49 and from 50 and 51, not only from the supported version", () => {
-    expect(structuralSteps(49, 52).map(step => step.version)).toEqual([50, 51, 52]);
-    expect(structuralSteps(50, 52).map(step => step.version)).toEqual([51, 52]);
-    expect(structuralSteps(51, 52).map(step => step.version)).toEqual([52]);
-    expect(structuralSteps(52, 52)).toEqual([]);
+  it("plans the structural steps from the fence base 49 and from 50 to 52, not only from the supported version", () => {
+    expect(structuralSteps(49, 53).map(step => step.version)).toEqual([50, 51, 52, 53]);
+    expect(structuralSteps(50, 53).map(step => step.version)).toEqual([51, 52, 53]);
+    expect(structuralSteps(51, 53).map(step => step.version)).toEqual([52, 53]);
+    expect(structuralSteps(52, 53).map(step => step.version)).toEqual([53]);
+    expect(structuralSteps(53, 53)).toEqual([]);
     expect(structuralSteps(49, 50).map(step => step.version)).toEqual([50]);
-    expect(() => structuralSteps(48, 52)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
+    expect(() => structuralSteps(48, 53)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
   });
 
-  it("defaults the upgrade to 52, accepts the explicit targets 50 and 51, refuses 49 and 53, and keeps the step domains available", () => {
-    expect(upgradeTarget()).toBe(52);
-    expect(upgradeTarget(50)).toBe(50);
-    expect(upgradeTarget(51)).toBe(51);
+  it("defaults the upgrade to 53, accepts the explicit targets 50 to 52, refuses 49 and 54, and keeps the step domains available", () => {
+    expect(upgradeTarget()).toBe(53);
+    for (const target of [50, 51, 52]) expect(upgradeTarget(target)).toBe(target);
     // Below the marker step the upgrade has nothing to do; above the supported version nothing is known.
-    for (const target of [49, 53]) expect(() => upgradeTarget(target)).toThrowError(expect.objectContaining({ code: "upgrade_unsupported" }));
+    for (const target of [49, 54]) expect(() => upgradeTarget(target)).toThrowError(expect.objectContaining({ code: "upgrade_unsupported" }));
     // Each step's availability check passes the step's own version through schemaTarget.
     expect(normaliseMappingDecisions({})).toEqual(expect.any(Object));
     expect(normaliseAuthorityDecisions({})).toEqual(expect.any(Object));
@@ -65,14 +65,14 @@ describe("the schema target with the supported version at 52", () => {
     try { expect(() => new ProjectDirectoryQueries(database)).not.toThrow(); } finally { database.close(); }
   });
 
-  it("creates and recognises a database at each explicit target 49 to 51, and at 52 by default", () => {
-    for (const target of [49, 50, 51, 52, undefined]) {
+  it("creates and recognises a database at each explicit target 49 to 52, and at 53 by default", () => {
+    for (const target of [49, 50, 51, 52, 53, undefined]) {
       const database = freshAt(target);
       try {
-        expect(inspectSchema(database, target ?? 52), String(target)).toEqual({ version: target ?? 52, fresh: false });
+        expect(inspectSchema(database, target ?? 53), String(target)).toEqual({ version: target ?? 53, fresh: false });
         // Every lower database is recognised at the default ceiling.
-        expect(inspectSchema(database)).toEqual({ version: target ?? 52, fresh: false });
-        if (target !== undefined && target < 52) expect(message(() => inspectSchema(database, target + 1))).toBe("accepted");
+        expect(inspectSchema(database)).toEqual({ version: target ?? 53, fresh: false });
+        if (target !== undefined && target < 53) expect(message(() => inspectSchema(database, target + 1))).toBe("accepted");
       } finally { database.close(); }
     }
   });
@@ -91,11 +91,11 @@ describe("the released schema-49 fixtures", () => {
     } finally { owner.close(); }
   });
 
-  it("upgrades a fenced schema-49 fixture at the default target 52 through every step from the fence base", () => {
+  it("upgrades a fenced schema-49 fixture at the default target 53 through every step from the fence base", () => {
     const paths = installationPaths();
     createFencedAt49(paths.databasePath);
     const status = inspectSqliteUpgrade(paths);
-    expect(status).toMatchObject({ state: "upgrade_needed", schemaVersion: 49, target: 52, marker: "absent" });
-    expect(status.plan!.steps.map(step => step.version)).toEqual([50, 51, 52]);
+    expect(status).toMatchObject({ state: "upgrade_needed", schemaVersion: 49, target: 53, marker: "absent" });
+    expect(status.plan!.steps.map(step => step.version)).toEqual([50, 51, 52, 53]);
   }, 30_000);
 });

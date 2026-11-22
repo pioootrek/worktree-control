@@ -93,14 +93,14 @@ describe("the maintenance commands through the CLI entry", () => {
     const inspected = await cli(root, ["upgrade", "inspect", ...dirs(paths)]);
     expect(inspected.code, inspected.stderr).toBe(0);
     const inspection = JSON.parse(inspected.stdout) as { state: string; nextStep: string; schemaVersion: number; target: number; planHash: string; review: Record<string, unknown> };
-    expect(inspection).toMatchObject({ state: "upgrade_needed", nextStep: "upgrade apply", schemaVersion: 49, target: 52, marker: "absent" });
+    expect(inspection).toMatchObject({ state: "upgrade_needed", nextStep: "upgrade apply", schemaVersion: 49, target: 53, marker: "absent" });
     expect(inspection.planHash).toMatch(/^[0-9a-f]{64}$/);
     expect(Object.keys(inspection.review).sort()).toEqual(["authority", "mapping"]);
     // Apply with --backup-dir after it: the upgrade parser, not the start parser, reads it.
     const applied = await cli(root, ["upgrade", "apply", "--expect", inspection.planHash, "--backup-dir", backups, ...dirs(paths)]);
     expect(applied.code, applied.stderr).toBe(0);
     const result = JSON.parse(applied.stdout) as { state: string; backup: string; planHash: string; schemaVersion: number };
-    expect(result).toMatchObject({ state: "current", alreadyApplied: false, planHash: inspection.planHash, schemaVersion: 52, planRemoved: true });
+    expect(result).toMatchObject({ state: "current", alreadyApplied: false, planHash: inspection.planHash, schemaVersion: 53, planRemoved: true });
     expect(readdirSync(backups)).toEqual([expect.stringMatching(/^pre-upgrade-v49-[0-9a-f-]{36}$/)]);
     expect(marker(paths)).toEqual({ state: "complete", plan_hash: inspection.planHash });
     // A repeated apply with the same hash answers "already applied"; another hash is refused in "current".
@@ -114,11 +114,11 @@ describe("the maintenance commands through the CLI entry", () => {
     const status = await cli(root, ["auth", "status", ...dirs(paths)]);
     expect(status.code, status.stderr).toBe(0);
     const current = await cli(root, ["upgrade", "inspect", ...dirs(paths)]);
-    expect(JSON.parse(current.stdout)).toMatchObject({ state: "current", nextStep: "none", schemaVersion: 52, appliedPlan: inspection.planHash });
+    expect(JSON.parse(current.stdout)).toMatchObject({ state: "current", nextStep: "none", schemaVersion: 53, appliedPlan: inspection.planHash });
     expect(existsSync(join(`${join(realpathSync(paths.dataDirectory), "state.sqlite3")}.upgrade`, "plan.json"))).toBe(false);
   }, CALL);
 
-  it("establishes a pre-fence installation with a backup at 52 with the marker pending, refuses a failing backup before the witness, and points to upgrade inspect", async () => {
+  it("establishes a pre-fence installation with a backup at 53 with the marker pending, refuses a failing backup before the witness, and points to upgrade inspect", async () => {
     const { root, paths } = preFence(), occupied = join(root, "occupied");
     writeFileSync(occupied, "operator file", { mode: 0o600 });
     const inspected = await cli(root, ["auth", "fence", "inspect", ...dirs(paths)]);
@@ -133,12 +133,12 @@ describe("the maintenance commands through the CLI entry", () => {
     expect(sha(paths.databasePath)).toBe(database);
     expect(existsSync(witness(paths))).toBe(false);
     expect(readFileSync(occupied, "utf8")).toBe("operator file");
-    // With a usable directory: the structure reaches 52, the marker is pending, the result points to the upgrade.
+    // With a usable directory: the structure reaches 53, the marker is pending, the result points to the upgrade.
     const backups = join(root, "backups");
     const established = await cli(root, ["auth", "fence", "establish", "--expect", status.preflight, "--backup-dir", backups, ...dirs(paths)]);
     expect(established.code, established.stderr).toBe(0);
     const result = JSON.parse(established.stdout) as { backup: string };
-    expect(result).toMatchObject({ code: "security_fence_current", trusted: true, changed: true, schemaVersion: 52, nextStep: "upgrade inspect" });
+    expect(result).toMatchObject({ code: "security_fence_current", trusted: true, changed: true, schemaVersion: 53, nextStep: "upgrade inspect" });
     expect(result.backup).toMatch(/\/pre-establishment-v40-[0-9a-f-]{36}$/);
     expect(readdirSync(backups)).toHaveLength(1);
     expect(marker(paths)).toEqual({ state: "pending", plan_hash: null });
@@ -152,7 +152,7 @@ describe("the maintenance commands through the CLI entry", () => {
     expect(JSON.parse(noop.stdout)).toMatchObject({ trusted: true, changed: false, backup: null, nextStep: "upgrade inspect" });
     expect(existsSync(join(root, "unused"))).toBe(false);
     const upgrade = JSON.parse((await cli(root, ["upgrade", "inspect", ...dirs(paths)])).stdout) as Record<string, unknown>;
-    expect(upgrade).toMatchObject({ state: "upgrade_needed", schemaVersion: 52, target: 52, marker: "pending" });
+    expect(upgrade).toMatchObject({ state: "upgrade_needed", schemaVersion: 53, target: 53, marker: "pending" });
   }, CALL);
 
   it("returns at once on a trusted schema-49 fence: establish and resume point straight to upgrade inspect", async () => {

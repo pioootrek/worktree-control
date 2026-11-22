@@ -19,7 +19,7 @@ import { schemaAt49 } from "./fixtures/released-schema";
 
 /**
  * Where the schema entry points may be used, now that the supported schema is
- * 52 and the upgrade, fence establishment with a backup and the ordinary
+ * 53 and the upgrade, fence establishment with a backup and the ordinary
  * admission are mounted. Successor of `provisional-schema.test.ts`, whose gate
  * no longer exists.
  *
@@ -430,26 +430,26 @@ const HANDOFF = { preflight: () => undefined, acknowledge: () => undefined };
 const UNUSED_BACKUP = async (): Promise<never> => { throw new Error("fixture backup must not run"); };
 
 describe("schema entry points", () => {
-  it("supports 52, keeps the fence base at 49 and refuses 53 at every public entry point, before any lock or file", async () => {
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(52);
+  it("supports 53, keeps the fence base at 49 and refuses 54 at every public entry point, before any lock or file", async () => {
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(53);
     expect(SECURITY_FENCE_SCHEMA_VERSION).toBe(49);
-    expect(schemaTarget()).toBe(52);
+    expect(schemaTarget()).toBe(53);
     const root = mkdtempSync(join(tmpdir(), "schema-entry-")); temporary.push(root);
     const paths = resolveAppPaths(join(root, "data"));
     const memory = new Database(":memory:");
     try {
       const refusals = {
-        schemaTarget: () => schemaTarget(53),
-        initializeSchema: () => initializeSchema(memory, undefined, undefined, { target: 53 }),
-        inspectSchema: () => inspectSchema(memory, 53),
-        OwnedSqliteDatabase: () => new OwnedSqliteDatabase(paths.databasePath, true, 53),
-        maintainSqliteSecurityFence: () => maintainSqliteSecurityFence(paths, { action: "inspect" }, HANDOFF, 53),
-        quarantineAuthority: () => quarantineAuthority(memory, "receipt", "token", 53),
-        parseManifest: () => parseManifest({}, 53),
-        upgradeTarget: () => upgradeTarget(53),
-        inspectSqliteUpgrade: () => inspectSqliteUpgrade(paths, 53),
-        applySqliteUpgrade: () => applySqliteUpgrade(paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, 53),
-        establishSqliteSecurityFence: () => establishSqliteSecurityFence(paths, { action: "establish", expect: "0".repeat(64) }, HANDOFF, UNUSED_BACKUP, 53),
+        schemaTarget: () => schemaTarget(54),
+        initializeSchema: () => initializeSchema(memory, undefined, undefined, { target: 54 }),
+        inspectSchema: () => inspectSchema(memory, 54),
+        OwnedSqliteDatabase: () => new OwnedSqliteDatabase(paths.databasePath, true, 54),
+        maintainSqliteSecurityFence: () => maintainSqliteSecurityFence(paths, { action: "inspect" }, HANDOFF, 54),
+        quarantineAuthority: () => quarantineAuthority(memory, "receipt", "token", 54),
+        parseManifest: () => parseManifest({}, 54),
+        upgradeTarget: () => upgradeTarget(54),
+        inspectSqliteUpgrade: () => inspectSqliteUpgrade(paths, 54),
+        applySqliteUpgrade: () => applySqliteUpgrade(paths, { expect: "0".repeat(64) }, UNUSED_BACKUP, 54),
+        establishSqliteSecurityFence: () => establishSqliteSecurityFence(paths, { action: "establish", expect: "0".repeat(64) }, HANDOFF, UNUSED_BACKUP, 54),
       };
       for (const [entry, refusal] of Object.entries(refusals)) expect(message(refusal), entry).toBe(UNSUPPORTED);
       expect(memory.prepare("SELECT count(*) FROM sqlite_master").pluck().get()).toBe(0);

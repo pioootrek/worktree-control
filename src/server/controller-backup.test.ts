@@ -70,7 +70,7 @@ describe("controller backup", () => {
     const directory=root(), databasePath=join(directory,"state.sqlite3"), backupPath=join(directory,"backup");
     const store=new SqliteStateStore(databasePath); store.addProject({name:"Before",repositoryPath:join(directory,"repo"),port:3456,executable:"pnpm",args:["dev"]});
     const manifest=await createControllerBackup(store, backupPath, { applicationVersion:"test-version", attachmentDirectory:join(directory,"attachments") });
-    expect(manifest).toMatchObject({formatVersion:1,applicationVersion:"test-version",database:{file:"state.sqlite3",schemaVersion:52}});
+    expect(manifest).toMatchObject({formatVersion:1,applicationVersion:"test-version",database:{file:"state.sqlite3",schemaVersion:53}});
     expect(existsSync(join(backupPath,"state.sqlite3"))).toBe(true); store.close();
     const changed=new SqliteStateStore(databasePath); changed.addProject({name:"After",repositoryPath:join(directory,"repo-2"),port:3457,executable:"pnpm",args:["dev"]}); changed.close();
     restoreControllerBackup(backupPath,databasePath);
@@ -83,23 +83,23 @@ describe("controller backup", () => {
     const directory=root(), databasePath=join(directory,"state.sqlite3");
     const source=new Database(databasePath); cleanups.push(()=>source.close());
     chmodSync(databasePath,0o600); configureDurability(source);
-    initializeSchema(source,true,current=>{inspectSchema(current,52);},{target:52});
+    initializeSchema(source,true,current=>{inspectSchema(current,53);},{target:53});
     const snapshots={backup:async(destination:string)=>{await source.backup(destination);}};
     const options={applicationVersion:"test-version",attachmentDirectory:join(directory,"attachments")};
     // At ceiling 49: refused at the snapshot's inspection, and the staging tree is removed.
     await expect(createControllerBackup(snapshots,join(directory,"at-49"),{...options,schemaCeiling:49})).rejects.toThrow();
     expect(readdirSync(directory).filter(name=>name.includes("at-49"))).toEqual([]);
-    // At the default ceiling (52) it is accepted and validates; a lower ceiling refuses its manifest.
+    // At the default ceiling (53) it is accepted and validates; a lower ceiling refuses its manifest.
     const manifest=await createControllerBackup(snapshots,join(directory,"default"),options);
-    expect(manifest).toMatchObject({formatVersion:1,database:{file:"state.sqlite3",schemaVersion:52}});
+    expect(manifest).toMatchObject({formatVersion:1,database:{file:"state.sqlite3",schemaVersion:53}});
     expect(()=>validateBackup(join(directory,"default"),parseManifest(manifest),true)).not.toThrow();
     expect(()=>parseManifest(manifest,51)).toThrow(/Unsupported or invalid backup manifest/);
-    // A store of this release backs up at 52 whether or not the ceiling is named.
+    // A store of this release backs up at 53 whether or not the ceiling is named.
     const supported=new SqliteStateStore(join(directory,"supported.sqlite3")); cleanups.push(()=>supported.close());
-    expect(await createControllerBackup(supported,join(directory,"supported"),{...options,schemaCeiling:52})).toMatchObject({database:{schemaVersion:52}});
+    expect(await createControllerBackup(supported,join(directory,"supported"),{...options,schemaCeiling:53})).toMatchObject({database:{schemaVersion:53}});
   }, 30_000);
 
-  /** A database at `version`: the public 0.1.1 baseline (28), the released 49, or 50 to 52 migrated from 49 with the marker pending. */
+  /** A database at `version`: the public 0.1.1 baseline (28), the released 49, or 50 to 53 migrated from 49 with the marker pending. */
   function versioned(path: string, version: number): void {
     const database = unmanagedFixtureDatabase(path);
     try {
@@ -115,7 +115,7 @@ describe("controller backup", () => {
     } finally { database.close(); }
     chmodSync(path, 0o600);
   }
-  it.each([28, 49, 50, 51, 52])("verifies and restores a schema-%i snapshot at the default ceiling, without requiring a witness or a complete marker", async version => {
+  it.each([28, 49, 50, 51, 52, 53])("verifies and restores a schema-%i snapshot at the default ceiling, without requiring a witness or a complete marker", async version => {
     const directory = root(), source = join(directory, "source.sqlite3"), backup = join(directory, "backup"), target = join(directory, "restored", "state.sqlite3");
     versioned(source, version);
     const reader = new Database(source, { readonly: true, fileMustExist: true }); cleanups.push(() => reader.close());
@@ -130,14 +130,14 @@ describe("controller backup", () => {
     const restored = new Database(target, { readonly: true, fileMustExist: true });
     try { expect(inspectSchema(restored).version).toBe(version); } finally { restored.close(); }
   }, 30_000);
-  it("refuses a schema-53 manifest and snapshot at the default ceiling", async () => {
+  it("refuses a schema-54 manifest and snapshot at the default ceiling", async () => {
     const directory = root(), source = join(directory, "source.sqlite3"), backup = join(directory, "backup");
-    versioned(source, 52);
+    versioned(source, 53);
     const reader = new Database(source, { readonly: true, fileMustExist: true }); cleanups.push(() => reader.close());
     const manifest = await createControllerBackup({ backup: async destination => { await reader.backup(destination); } }, backup, { applicationVersion: "test", attachmentDirectory: join(directory, "attachments") });
-    expect(() => parseManifest({ ...manifest, database: { ...manifest.database, schemaVersion: 53 } })).toThrow(/Unsupported or invalid backup manifest/);
+    expect(() => parseManifest({ ...manifest, database: { ...manifest.database, schemaVersion: 54 } })).toThrow(/Unsupported or invalid backup manifest/);
     const snapshot = unmanagedFixtureDatabase(join(backup, "state.sqlite3"));
-    try { snapshot.prepare("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(53,'2026-11-16T00:00:00.000Z','future','future')").run(); } finally { snapshot.close(); }
+    try { snapshot.prepare("INSERT INTO schema_migrations(version,applied_at,name,checksum) VALUES(54,'2026-11-16T00:00:00.000Z','future','future')").run(); } finally { snapshot.close(); }
     expect(() => validateSnapshot(join(backup, "state.sqlite3"), { ...manifest, database: { ...manifest.database } })).toThrow(/Unsupported or unrecognized database schema/);
     expect(() => restoreControllerBackup(backup, join(directory, "restored", "state.sqlite3"))).toThrow();
   }, 30_000);
