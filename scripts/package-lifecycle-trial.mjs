@@ -522,10 +522,10 @@ async function main() {
       check(existsSync(join(options.dataDirectory, "state.sqlite3")), "uninstall removed application data");
       check(existsSync(join(options.dataDirectory, "mcp-token")), "uninstall removed MCP credentials");
       check(((await stat(join(options.dataDirectory, "mcp-token"))).mode & 0o777) === 0o600, "preserved MCP credential is not owner-only");
-      // The preserved fresh installation is current at schema 52 with a complete marker and no plan hash.
+      // The preserved fresh installation is current at schema 53 with a complete marker and no plan hash.
       const upgrade = JSON.parse((await run(cli, ["upgrade", "inspect", "--data-dir", options.dataDirectory, "--state-dir", options.stateDirectory], { env: serviceEnvironment })).stdout);
-      check(upgrade.state === "current" && upgrade.schemaVersion === 52 && upgrade.marker === "complete" && upgrade.appliedPlan === null && upgrade.planHash === undefined,
-        "the preserved installation is not current at schema 52 with a complete marker");
+      check(upgrade.state === "current" && upgrade.schemaVersion === 53 && upgrade.marker === "complete" && upgrade.appliedPlan === null && upgrade.planHash === undefined,
+        "the preserved installation is not current at schema 53 with a complete marker");
       serviceMayExist = false;
       report.retainedState = { database: true, mcpCredential: true, logs: existsSync(join(options.stateDirectory, "logs")) };
       report.cleanup = { graceful: true, serviceAbsent: true, dataPreserved: true };

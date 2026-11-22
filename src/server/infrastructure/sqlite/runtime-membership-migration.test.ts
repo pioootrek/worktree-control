@@ -57,7 +57,7 @@ describe("runtime membership migration 45", () => {
       await resumeFixtureSecurity(target);
       const restored = new SqliteStateStore(target);
       try {
-        expect(restored.schemaVersion()).toBe(52);
+        expect(restored.schemaVersion()).toBe(53);
         // Revoked by the resume's quarantine, then again by the upgrade's reset: each advances the revision.
         expect(restored.runtimeMemberships().getRuntimeMembership("human", "runtime")).toMatchObject({...row,revision:row.revision+2,revokedAt:expect.any(String),updatedAt:expect.any(String)});
         expect(restored.listPrincipalCredentials("human")).toEqual([]);

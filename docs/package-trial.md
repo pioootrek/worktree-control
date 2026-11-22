@@ -1,6 +1,6 @@
 ---
 audience: "people installing Worktree Control from the npm registry or a verified tarball"
-last_reviewed: "2026-11-09"
+last_reviewed: "2026-11-22"
 source_of_truth: "release artifact installation, first run, upgrade, and removal"
 status: "active"
 ---
@@ -296,16 +296,16 @@ carries every credential as of the backup, including any you revoked later, so
 rotate its installation token and revoke stale agent tokens before exposing it.
 This is a separate recovery copy, not a rollback of the upgraded installation.
 
-## Unreleased integration build: the explicit upgrade to schema 52
+## Unreleased integration build: the explicit upgrade to schema 53
 
 This section describes the unreleased state of the
 `integration/auth-unification` branch, not a published release. The `0.1.1`
 and `0.2.0` texts above are history: they describe what those releases do and
-stay valid for them. Schema steps 50 to 52 may still change until the release
+stay valid for them. Schema steps 50 to 53 may still change until the release
 candidate; treat every database such a build has migrated as disposable, and
 rehearse on a copy.
 
-This build runs schema 52. It never migrates an existing database at an
+This build runs schema 53. It never migrates an existing database at an
 ordinary start: every ordinary opening of the store (`start`, the service,
 `service install`, `auth`, `identity`, `knowledge`, `project`, `doctor`,
 `config mcp`, `remote-verification`, `backup export-project` and
@@ -314,13 +314,17 @@ other one before it writes anything:
 
 | State | Recognised by | Refusal | Next step |
 | --- | --- | --- | --- |
-| Current | trusted fence, schema 52, upgrade marker `complete` | none | start |
-| Upgrade needed | trusted fence, and schema below 52 or marker `pending` | `upgrade_required` | `upgrade inspect`, then `upgrade apply` |
+| Current | trusted fence, schema 53, upgrade marker `complete` | none | start |
+| Upgrade needed | trusted fence, and schema below 53 or marker `pending` | `upgrade_required` | `upgrade inspect`, then `upgrade apply` |
 | Pre-fence (`0.1.1`) | no fence | `security_fence_establishment_required` | `auth fence inspect`, then `auth fence establish` |
 | Fenced | a pending or mismatched witness, or an unacknowledged restore | `security_fence_recovery_required` | `auth fence inspect`, then `auth fence resume` |
 
 A fence refusal always wins: a rolled-back, restored or pending database goes
-to recovery, never to the upgrade. `service install` with a restore handoff
+to recovery, never to the upgrade. A database that an earlier integration build
+completed at schema 50, 51 or 52 is not upgraded: `upgrade inspect` and
+`upgrade apply` refuse it as `upgrade_intermediate_schema` before they write a
+plan or a backup. Such a database is disposable; start from a released
+database or a fresh installation. `service install` with a restore handoff
 pending is the one exception to refusing first: it leaves the database to the
 controller, issues no token and starts the service as before; that start
 completes the restore and is then refused until `auth fence resume` and the
@@ -357,7 +361,7 @@ directories:
    `nextStep: "auth fence establish"`.
 4. `worktree-control auth fence establish --expect <preflight> --backup-dir <dir>`.
    It writes `pre-establishment-v28-<UUID>` into `<dir>` before it changes
-   anything, migrates the structure to 52 with the upgrade marker `pending`,
+   anything, migrates the structure to 53 with the upgrade marker `pending`,
    and reports `nextStep: "upgrade inspect"`. `--backup-dir` is required.
 5. `worktree-control upgrade inspect`: the plan's hash, the operator's lines
    and the review: which registrations and remote identities map to which
@@ -366,7 +370,7 @@ directories:
    file with the keys `links`, `bindings` and `isolate` and run
    `upgrade inspect --decisions <file>` again.
 6. Review it, then `worktree-control upgrade apply --expect <plan hash> --backup-dir <dir>`.
-   It writes `pre-upgrade-v52-<UUID>` and completes the marker.
+   It writes `pre-upgrade-v53-<UUID>` and completes the marker.
 7. Issue credentials and grant again: `identity recover-owner` for a new owner
    session, `identity issue-agent-token`, `identity grant-knowledge`, runtime
    delegations and credentials, and `auth provider` recovery for accounts.

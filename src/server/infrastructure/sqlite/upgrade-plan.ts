@@ -9,6 +9,7 @@ import { schemaTarget, SECURITY_FENCE_SCHEMA_VERSION } from "./migration-registr
 import { UPGRADE_MARKER_VERSION, upgradeMarkerChecksum, upgradeMarkerMigration } from "./upgrade-marker-migration";
 import { PROJECT_MAPPING_VERSION, projectMappingChecksum, projectMappingMigration } from "./mapping-structure-migration";
 import { ACCOUNT_GRANTS_VERSION, accountGrantsChecksum, accountGrantsMigration } from "./account-grants-migration";
+import { OPERATION_IDEMPOTENCY_VERSION, operationIdempotencyChecksum, operationIdempotencyMigration } from "./operation-idempotency-migration";
 import { MAPPING_ACT_DOMAIN } from "./mapping-upgrade-acts";
 import { AUTHORITY_ACT_DOMAIN } from "./authority-upgrade-acts";
 import {
@@ -55,6 +56,7 @@ const STRUCTURAL_STEPS: ReadonlyMap<number, Omit<UpgradeStep, "version">> = new 
   [UPGRADE_MARKER_VERSION, { name: upgradeMarkerMigration.name, checksum: upgradeMarkerChecksum }],
   [PROJECT_MAPPING_VERSION, { name: projectMappingMigration.name, checksum: projectMappingChecksum }],
   [ACCOUNT_GRANTS_VERSION, { name: accountGrantsMigration.name, checksum: accountGrantsChecksum }],
+  [OPERATION_IDEMPOTENCY_VERSION, { name: operationIdempotencyMigration.name, checksum: operationIdempotencyChecksum }],
 ]);
 /**
  * The steps from `source` (exclusive) to `target`, as this code would run them.

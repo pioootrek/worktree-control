@@ -109,7 +109,7 @@ describe("durable SQLite initialization and migration", () => {
     const store = new SqliteStateStore(f.path, owned);
     try {
       assertDurability(owned.database);
-      expect(store.schemaVersion()).toBe(version ? 49 : 52);
+      expect(store.schemaVersion()).toBe(version ? 49 : 53);
       expect(store.getAuthenticationPolicy().mode).toBe(version && version < 25 ? "legacy" : "token");
       expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version<28").all()).toEqual(Array.from({length:27},()=>({name:null,checksum:null})));
       expect(owned.database.prepare("SELECT name,checksum FROM schema_migrations WHERE version=28").get()).toEqual({name:registryMigration.name,checksum:registryChecksum});
@@ -167,7 +167,7 @@ describe("durable SQLite initialization and migration", () => {
       const [message]=await once(child,"message",{signal:AbortSignal.timeout(5000)});expect(message).toEqual({interrupted:true});
     } finally { const ended=once(child,"exit");child.kill("SIGKILL");await ended; }
     if(stage!=="fresh")establishFixtureSecurity(f.path);
-    const retry=stage==="fresh"?new SqliteStateStore(f.path):openStoreAt49(f.path);try{expect(retry.schemaVersion()).toBe(stage==="fresh"?52:49);expect(retry.getAuthenticationPolicy().mode).toBe("token");}finally{retry.close();}
+    const retry=stage==="fresh"?new SqliteStateStore(f.path):openStoreAt49(f.path);try{expect(retry.schemaVersion()).toBe(stage==="fresh"?53:49);expect(retry.getAuthenticationPolicy().mode).toBe("token");}finally{retry.close();}
     released(f.path);
   },10000);
 

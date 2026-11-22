@@ -90,7 +90,7 @@ function backupTree(build: (database: Database.Database) => void, schemaVersion:
 describe("schema step 50: upgrade marker", () => {
   it("keeps schema-49 coverage frozen and covers the marker with the same trigger body", () => {
     expect(SECURITY_TABLES).not.toContain("upgrade_marker");
-    // Steps 49 to 51; step 52's entry is pinned in account-grants-migration.test.ts.
+    // Steps 49 to 51; step 52's entry is pinned in account-grants-migration.test.ts and step 53's in operation-idempotency-migration.test.ts.
     expect(SECURITY_COVERAGE.slice(0, 3).map(step => [step.version, step.tables])).toEqual([[49, SECURITY_TABLES], [50, UPGRADE_MARKER_SECURITY_TABLES], [51, PROJECT_MAPPING_SECURITY_TABLES]]);
     expect(securityTriggersAt(48)).toEqual([]);
     expect(securityTriggersAt(49)).toEqual(securityTriggers);
@@ -125,7 +125,7 @@ describe("schema step 50: upgrade marker", () => {
   it("does not apply or recognise step 50 at target 49, and refuses a step-50 database there like an unknown newer schema", () => {
     const current = fresh49();
     try {
-      expect(SUPPORTED_SCHEMA_VERSION).toBe(52);
+      expect(SUPPORTED_SCHEMA_VERSION).toBe(53);
       expect(inspectSchema(current, 49)).toEqual({ version: 49, fresh: false });
       expect(current.prepare("SELECT 1 FROM sqlite_master WHERE name='upgrade_marker'").get()).toBeUndefined();
       expect(triggers(current)).toEqual(byName(securityTriggers));
@@ -372,7 +372,7 @@ describe("schema step 50: upgrade marker", () => {
     const parsed = parseManifest(provisional.manifest, TARGET);
     expect(parsed.database.schemaVersion).toBe(50);
     expect(() => validateBackup(provisional.root, parsed, false, TARGET)).not.toThrow();
-    // At ceiling 49 the snapshot itself is refused as the unknown newer one is; the default (52) accepts it.
+    // At ceiling 49 the snapshot itself is refused as the unknown newer one is; the default (53) accepts it.
     const refusal = message(() => validateSnapshot(unknown.path, parseManifest(unknown.manifest, 49), 49));
     expect(refusal).toMatch(SCHEMA_REFUSAL);
     expect(message(() => validateSnapshot(provisional.path, parsed, 49))).toBe(refusal);
@@ -383,6 +383,6 @@ describe("schema step 50: upgrade marker", () => {
     expect(() => validateBackup(current.root, parseManifest(current.manifest, 49), false, 49)).not.toThrow();
     expect(() => validateBackup(current.root, parseManifest(current.manifest, TARGET), false, TARGET)).not.toThrow();
     // The first target above the supported version.
-    expect(() => parseManifest(current.manifest, 53)).toThrow("Unsupported schema target.");
+    expect(() => parseManifest(current.manifest, 54)).toThrow("Unsupported schema target.");
   });
 });

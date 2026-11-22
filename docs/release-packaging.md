@@ -1,6 +1,6 @@
 ---
 audience: "maintainers building, verifying and handing over Worktree Control release artifacts, and operators installing the optional account provider"
-last_reviewed: "2026-11-09"
+last_reviewed: "2026-11-22"
 source_of_truth: "release artifact contract for the Community package and the optional account provider"
 status: "active"
 ---
@@ -146,8 +146,8 @@ separate temporary prefixes and drives only installed executables:
 
 | Baseline | Command | What it proves |
 | --- | --- | --- |
-| `public-0.1.1` (default) | `pnpm test:rbac-artifact` | The registry `worktree-control@0.1.1` (schema 28, pinned sha256/sha512) seeds owner, agent grant, tokens and Knowledge history. The candidate refuses every ordinary opening before fence establishment, and after it with `upgrade_required`, writing nothing. `auth fence establish --backup-dir` and `upgrade apply --backup-dir` each take their backup, and the upgrade to schema 52 resets authority: every old grant and credential is revoked, only the owner gets the `admin` grant, and the installation token, mode, principals and history are kept. Old owner session and agent token are rejected; a newly issued agent token is refused until the owner grants it again. Token and open modes work without a provider; the installed provider closure equals the shipped lock; then provider enrollment of the existing owner, explicit RBAC selection, login, scoped MCP, revocation, TOTP replay, rollback fence, and protected recovery followed by the upgrade again |
-| `fresh` | `pnpm test:rbac-artifact:fresh` | The same account-mode flow on a new candidate installation at schema 52, whose fence is current without establishment and whose upgrade marker is complete; no upgrade runs, so its seeded grants and tokens keep working |
+| `public-0.1.1` (default) | `pnpm test:rbac-artifact` | The registry `worktree-control@0.1.1` (schema 28, pinned sha256/sha512) seeds owner, agent grant, tokens and Knowledge history. The candidate refuses every ordinary opening before fence establishment, and after it with `upgrade_required`, writing nothing. `auth fence establish --backup-dir` and `upgrade apply --backup-dir` each take their backup, and the upgrade to schema 53 resets authority: every old grant and credential is revoked, only the owner gets the `admin` grant, and the installation token, mode, principals and history are kept. Old owner session and agent token are rejected; a newly issued agent token is refused until the owner grants it again. Token and open modes work without a provider; the installed provider closure equals the shipped lock; then provider enrollment of the existing owner, explicit RBAC selection, login, scoped MCP, revocation, TOTP replay, rollback fence, and protected recovery followed by the upgrade again |
+| `fresh` | `pnpm test:rbac-artifact:fresh` | The same account-mode flow on a new candidate installation at schema 53, whose fence is current without establishment and whose upgrade marker is complete; no upgrade runs, so its seeded grants and tokens keep working |
 | historical installed | `node scripts/package-rbac.mjs <input.json>` | An explicitly fingerprinted installed old package, such as the earlier schema-43 trial |
 
 Both package scripts test the exact `dist/provider-release/` directory. Pass
@@ -158,7 +158,7 @@ exact CI artifacts instead of packing the checkout; the CI job
 schema-43 result does not prove an upgrade from the public `0.1.1` release.
 
 The table describes the script in this checkout, which on the
-`integration/auth-unification` branch targets the unreleased schema 52. The
+`integration/auth-unification` branch targets the unreleased schema 53. The
 `0.2.0` release was accepted with the earlier script, which migrated the
 public `0.1.1` installation to schema 49 at start and preserved its grants and
 tokens.

@@ -1,6 +1,6 @@
 ---
 audience: "people running Worktree Control and choosing how callers authenticate"
-last_reviewed: "2026-11-20"
+last_reviewed: "2026-11-22"
 source_of_truth: "authentication modes, identities, optional account mode and protected recovery for the 0.2.0 release candidate"
 status: "active"
 ---
@@ -535,7 +535,7 @@ prefix. Rotate the token if it may have leaked.
 These notes describe the move from installations created before modes existed
 (schema 25). For `0.1.1` to `0.2.0`, follow
 [Upgrade from 0.1.1 to 0.2.0](package-trial.md#upgrade-from-011-to-020). The
-unreleased integration build's explicit upgrade to schema 52 is described in
+unreleased integration build's explicit upgrade to schema 53 is described in
 [The explicit upgrade (unreleased integration build)](#the-explicit-upgrade-unreleased-integration-build).
 
 Upgrading an existing installation keeps it in `legacy` mode. The pairing link,
@@ -593,19 +593,22 @@ an informational hint; every later operation must authorize again.
 
 
 This section describes `integration/auth-unification`, not a release. The
-build runs schema 52 and never migrates an existing database at an ordinary
+build runs schema 53 and never migrates an existing database at an ordinary
 start. An installation's database is in one of four states:
 
 | State | Recognised by | Ordinary opening | Operator runs |
 | --- | --- | --- | --- |
-| Current | trusted fence, schema 52, upgrade marker `complete` | admitted | ordinary start |
-| Upgrade needed | trusted fence, and schema below 52 or marker `pending` | `upgrade_required` | `upgrade inspect`, then `upgrade apply --expect <plan hash> --backup-dir <dir>` |
-| Pre-fence (the public `0.1.1` package) | no fence | `security_fence_establishment_required` | `auth fence inspect`, then `auth fence establish --expect <hash> --backup-dir <dir>`, which brings the structure to 52 with the marker pending; then upgrade needed |
+| Current | trusted fence, schema 53, upgrade marker `complete` | admitted | ordinary start |
+| Upgrade needed | trusted fence, and schema below 53 or marker `pending` | `upgrade_required` | `upgrade inspect`, then `upgrade apply --expect <plan hash> --backup-dir <dir>` |
+| Pre-fence (the public `0.1.1` package) | no fence | `security_fence_establishment_required` | `auth fence inspect`, then `auth fence establish --expect <hash> --backup-dir <dir>`, which brings the structure to 53 with the marker pending; then upgrade needed |
 | Fenced | a pending or mismatched witness, or an unacknowledged restore | `security_fence_recovery_required` | `auth fence inspect`, then `auth fence resume`; then upgrade needed |
 
-A fresh installation is created at schema 52 with the marker `complete`. A
-schema-52 database without a marker row is corrupt and refused by the database
-validation, never treated as needing the upgrade.
+A fresh installation is created at schema 53 with the marker `complete`. A
+schema-53 database without a marker row is corrupt and refused by the database
+validation, never treated as needing the upgrade. A database an earlier
+integration build completed at schema 50, 51 or 52 is upgrade needed, but
+`upgrade inspect` and `upgrade apply` refuse it as `upgrade_intermediate_schema`
+before any plan or backup: such a database is disposable.
 
 Every ordinary opening (the controller, the service and `service install`, and
 the offline `auth`, `auth provider`, `identity`, `knowledge`, `project`,
@@ -686,6 +689,39 @@ resume, inspect, apply, then credentials.
 operator removes; the catalogue protects them and never rotates them. A backup
 is never a rollback: restoring one is a fenced restore that needs resume and the
 upgrade again.
+
+### Operation idempotency records and their key (integration branch)
+
+Schema 53 keeps the records of the new operations runner's idempotency keys
+(`operation_idempotency`). No mounted operation accepts an idempotency key yet;
+the first one is a later step. What an operator needs to know now:
+
+- **The key file.** At each start the controller loads, or on first start
+  creates, `state.sqlite3.operation-key` beside the database: 32 random bytes,
+  mode 0600, owned by the service user, one link. The controller refuses keyed
+  requests (`idempotency_unavailable`) and writes one
+  `operations.retention_unavailable` diagnostic when the file is unsafe (another
+  mode, owner, a symlink or hardlink) or has the wrong size; it never overwrites
+  it. Ordinary requests are unaffected. Offline commands never create it.
+- **Backups.** A backup holds the database image, the attachments and the
+  manifest only; the key file is not in it. A restore into the same data
+  directory keeps the key that is there.
+- **A lost or replaced key.** Deleting or replacing the file deletes no record.
+  At the next start every record written under the old key becomes
+  `unknown`, and a retry of such a key answers `idempotency_conflict` or
+  `outcome_unknown` until the record expires (24 hours after its last write),
+  never a second run. To rotate the key, replace the file while the controller
+  is stopped; there is no command.
+- **After a restore or a fence resume.** The quarantine turns every record
+  that survived in the recovered database into `unknown`, so a retry of an
+  old key never replays a pre-recovery result and never runs again silently.
+  A key first used after the backup was taken has no record in the restored
+  database, and its retry runs fresh: reconcile the effects made after the
+  backup's snapshot before retrying them.
+- **What is not covered.** The records are outside the security fence. A
+  database file replaced by an older copy without the fence detecting it loses
+  the idempotency history written since that copy, and a retry of such a key
+  runs fresh.
 
 ## Owner and agent identities
 
@@ -1714,7 +1750,7 @@ backup before this explicit adoption. On the integration branch `--backup-dir`
 is required (one non-blank directory, made absolute; refused for `inspect` and
 `resume`): establishment first writes `pre-establishment-v<source schema>-<UUID>`
 there and accepts it only as this run's copy of this source, then migrates the
-structure to schema 52 with the upgrade marker `pending`. A fence already trusted
+structure to schema 53 with the upgrade marker `pending`. A fence already trusted
 returns at once with `changed: false`, takes no backup and writes nothing to the
 directory. Every fence result carries `nextStep`: `auth fence establish` or
 `auth fence resume` while the fence is not trusted, and `upgrade inspect` once
@@ -1919,14 +1955,14 @@ Release-candidate evidence, Linux x64 only:
   candidate. See [release packaging](release-packaging.md).
   On the integration branch the same harness follows the reset: the
   `public-0.1.1` baseline is refused at an ordinary start as needing
-  establishment, `auth fence establish --backup-dir` brings it to schema 52 with
+  establishment, `auth fence establish --backup-dir` brings it to schema 53 with
   the marker pending, ordinary openings are refused with `upgrade_required`,
   `upgrade inspect` and `upgrade apply` complete it, every pre-upgrade owner and
   agent credential is rejected, a new credential without a new grant is denied,
   and the existing acceptance continues with an explicitly recovered owner and
   new, explicitly granted credentials. Every resume (raw rollback and both
   restore destinations) is followed by inspect and apply before credentials.
-  The `fresh` lane checks schema 52 with a complete marker and no upgrade.
+  The `fresh` lane checks schema 53 with a complete marker and no upgrade.
 - **Production composition and browser.** The production-composition suite
   passed on the candidate. The account browser tests (fixture UI and a real
   controller and provider behind the HTTPS proxy fixture) passed during the

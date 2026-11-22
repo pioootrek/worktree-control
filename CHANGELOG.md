@@ -31,8 +31,19 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
   [authentication](docs/authentication.md) and the
   [authorization contract](docs/authorization-contract.md).
 
-- **Explicit offline upgrade to schema 52 (integration branch, not
-  released).** This build runs schema 52 and no longer migrates an existing
+- **Unreleased authorization integration:** schema 53 adds the records of
+  the new operations runner's idempotency keys and the controller's store for
+  them. At each start the controller creates or loads the private file
+  `state.sqlite3.operation-key` (32 bytes, mode 0600, not in backups) and
+  repairs the records; a recovery (`auth fence resume`, also after a restore)
+  turns every surviving record into an unknown outcome. No mounted operation
+  takes an idempotency key yet. `upgrade inspect` and `upgrade apply` refuse a
+  database an earlier integration build completed at schema 50, 51 or 52 as
+  `upgrade_intermediate_schema`; such databases are disposable. See
+  [authentication](docs/authentication.md#operation-idempotency-records-and-their-key-integration-branch).
+
+- **Explicit offline upgrade to schema 53 (integration branch, not
+  released).** This build runs schema 53 and no longer migrates an existing
   database at start. Every ordinary opening of the store (the controller, the
   service and `service install`, and the offline `auth`, `identity`,
   `knowledge`, `project`, `doctor`, `config mcp`, `remote-verification` and
@@ -53,7 +64,7 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
   prints a notice. The backup catalogue accepts and protects
   `pre-upgrade-v<n>-<UUID>` and `pre-establishment-v<n>-<UUID>`; operators
   remove them. See
-  [the unreleased upgrade procedure](docs/package-trial.md#unreleased-integration-build-the-explicit-upgrade-to-schema-52).
+  [the unreleased upgrade procedure](docs/package-trial.md#unreleased-integration-build-the-explicit-upgrade-to-schema-53).
 
 - **Runtime links are owner or installation only.** `knowledge_link_runtime`
   (linking, re-pointing or unlinking the runtime project of a Knowledge

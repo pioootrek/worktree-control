@@ -111,7 +111,8 @@ function contractRoleScopes(): Array<[string, string]> {
 
 describe("schema step 52: grants storage", () => {
   it("pins step 52 and its coverage, and leaves steps 49, 50 and 51 as they were", () => {
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(52);
+    // Step 53 is the supported version; it is pinned in operation-idempotency-migration.test.ts.
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(53);
     expect(accountGrantsMigration).toMatchObject({ version: 52, name: "account-grants-structure" });
     // Pinned: a change to the step's text is a visible edit here.
     expect(accountGrantsChecksum).toBe("8a65a27c2243118bd3f14dba323df6f00e3e6b608351c5c23463997a36115cff");
@@ -197,7 +198,7 @@ describe("schema step 52: grants storage", () => {
     expect(() => validateBackup(backup.root, parsed, false, TARGET)).not.toThrow();
     for (const ceiling of [49, 51]) expect(message(() => validateSnapshot(backup.path, parsed, ceiling))).toMatch(SCHEMA_REFUSAL);
     expect(() => validateSnapshot(backup.path, parsed)).not.toThrow();
-    expect(() => parseManifest(backup.manifest, 53)).toThrow("Unsupported schema target.");
+    expect(() => parseManifest(backup.manifest, 54)).toThrow("Unsupported schema target.");
   });
 
   it("applies step 52 fresh and from 49, 50 and 51 with one structure, on connections without the fence function, and writes no row", () => {

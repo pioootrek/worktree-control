@@ -12,6 +12,7 @@ import {
 import { authenticationModes, type AuthenticationMode, type ListenerKind, type PublicOperationError } from "../../shared/contracts/operations";
 import { CONTROLLER_OPERATION_SESSION_POLICY, ControllerOperationSessionResolutionError, type ControllerOperationSessionAuthority, type ProviderSessionEligibility, type createControllerOperationEligibility } from "./authentication-provider-lifetime";
 import type { AuthenticationRequestBudget } from "./authentication-request-budget";
+import type { OperationRetention } from "./operation-retention";
 
 type ServedListener = Exclude<ListenerKind, "offline">;
 type MintResult = { readonly ok: true; readonly context: AuthenticationContext } | { readonly ok: false; readonly error: PublicOperationError };
@@ -33,6 +34,14 @@ export interface OperationsRuntimeOptions {
    * stopped placement (no controller runs managed servers) and their own reader.
    */
   projectReads: { placement: RegistrationPlacementReader; git: WorktreeGit };
+  /**
+   * The controller's idempotency store and fingerprint key, from
+   * `initializeOperationRetention` (once per database-owner lifetime, before
+   * this composition). Absent or null (offline callers, or retention
+   * unavailable): a keyed request is `unavailable`/`idempotency_unavailable`.
+   * Only the runner receives them; the returned `runtime` carries neither.
+   */
+  retention?: OperationRetention | null;
 }
 
 function holds(call: () => unknown): boolean {
@@ -136,7 +145,12 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
     availableOn: registry.availableOn.bind(registry),
     idsOn: registry.idsOn.bind(registry),
   });
-  const runner = new OperationRunner(runtime);
+  // The runner copies the key at construction. It is given a copy that is zeroed right after, so
+  // nothing returned from here (the runner keeps its runtime argument) holds the key's bytes.
+  const fingerprintKey = options.retention ? new Uint8Array(options.retention.fingerprintKey) : null;
+  const runner = new OperationRunner(options.retention && fingerprintKey
+    ? { ...runtime, idempotency: options.retention.idempotency, fingerprintKey } : runtime);
+  fingerprintKey?.fill(0);
   const sessions = provider === null ? null : new ProviderSessionVerifier({
     providerId: provider.providerId, reader: provider.reader, now, eligible: admittedProviderSessionEligible,
     stagedCapacity: CONTROLLER_OPERATION_SESSION_POLICY.stagedCapacity,

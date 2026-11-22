@@ -32,7 +32,7 @@ import { openControllerStore, openCurrentControllerStore } from "../../controlle
  * `OwnedSqliteDatabase` opened with `ordinary: true`. The CLI families are in
  * `src/cli/ordinary-admission.test.ts`.
  */
-const TARGET = 52;
+const TARGET = 53;
 const HANDOFF = { preflight: (database: string) => { preflightSecurityRecoveryHandoff(database); }, acknowledge: acknowledgeRecoveredBackupHandoff };
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -101,12 +101,12 @@ function rewriteWitness(paths: AppPaths, mutate: (payload: Record<string, unknow
 /** Fixtures: each returns the paths of a new installation. */
 const fenced49 = () => { const paths = installationPaths(); createFencedAt49(paths.databasePath); return paths; };
 const freshAt = (target: number) => { const paths = installationPaths(); createFencedDatabase(paths.databasePath, target); return paths; };
-/** Schema 52 with the marker pending, as an operator reaches it: `auth fence resume` at 52 over a schema-49 database. */
-function pending52() {
+/** Schema 53 with the marker pending, as an operator reaches it: `auth fence resume` at 53 over a schema-49 database. */
+function pendingAtTarget() {
   const paths = fenced49();
   rmSync(witnessPath(paths));
   const inspect = maintainSqliteSecurityFence(paths, { action: "inspect" }, HANDOFF, TARGET);
-  expect(maintainSqliteSecurityFence(paths, { action: "resume", expect: inspect.preflight, mode: "token" }, HANDOFF, TARGET)).toMatchObject({ trusted: true, schemaVersion: 52 });
+  expect(maintainSqliteSecurityFence(paths, { action: "resume", expect: inspect.preflight, mode: "token" }, HANDOFF, TARGET)).toMatchObject({ trusted: true, schemaVersion: 53 });
   return paths;
 }
 /** A schema-40 installation that never had a fence. */
@@ -133,13 +133,13 @@ const backups = (paths: AppPaths): UpgradeBackup => async source => {
   const destination = join(paths.dataDirectory, "..", `backup-${randomUUID()}`);
   return { root: destination, manifest: await createControllerBackup(source, destination, { applicationVersion: "test", attachmentDirectory: paths.knowledgeAttachmentDirectory, schemaCeiling: TARGET }) };
 };
-/** The whole upgrade from a schema-49 database to 52; returns the bytes of the database and its WAL before it ran. */
+/** The whole upgrade from a schema-49 database to 53; returns the bytes of the database and its WAL before it ran. */
 async function upgraded(paths: AppPaths) {
   const path = canonical(paths), wal = `${path}-wal`;
   const before = { database: readFileSync(path), wal: existsSync(wal) && lstatSync(wal).size > 0 ? readFileSync(wal) : null };
   const plan = inspectSqliteUpgrade(paths, TARGET);
   expect(plan).toMatchObject({ state: "upgrade_needed", schemaVersion: 49 });
-  expect(await applySqliteUpgrade(paths, { expect: plan.planHash! }, backups(paths), TARGET)).toMatchObject({ state: "current", schemaVersion: 52 });
+  expect(await applySqliteUpgrade(paths, { expect: plan.planHash! }, backups(paths), TARGET)).toMatchObject({ state: "current", schemaVersion: 53 });
   return before;
 }
 /** Writes earlier bytes back into the same database file (same device and inode), with their WAL or none. */
@@ -151,7 +151,7 @@ function rollBack(paths: AppPaths, earlier: { database: Buffer; wal: Buffer | nu
   expect(lstatSync(path).ino).toBe(inode);
 }
 
-describe("ordinary admission at target 52", () => {
+describe("ordinary admission at target 53", () => {
   it("admits a fresh database created at the target with the marker complete, and a new empty one the store would create", () => {
     const paths = freshAt(TARGET);
     expect(verdict(() => admit(paths, TARGET))).toBe("admitted");
@@ -171,7 +171,7 @@ describe("ordinary admission at target 52", () => {
     refusedUnchanged(paths, TARGET, UPGRADE_REQUIRED);
   });
 
-  it.each([50, 51])("requires the upgrade for schema %i with the marker complete", version => {
+  it.each([50, 51, 52])("requires the upgrade for schema %i with the marker complete", version => {
     const paths = freshAt(version);
     const owner = new OwnedSqliteDatabase(paths.databasePath, false, version, { inspectOnly: true });
     try { expect(owner.database.prepare("SELECT state FROM upgrade_marker").pluck().all()).toEqual(["complete"]); } finally { owner.close(); }
@@ -180,12 +180,12 @@ describe("ordinary admission at target 52", () => {
     expect(verdict(() => admit(paths, version))).toBe("admitted");
   });
 
-  it("requires the upgrade for schema 52 with the marker pending", () => {
-    const paths = pending52();
+  it("requires the upgrade for schema 53 with the marker pending", () => {
+    const paths = pendingAtTarget();
     refusedUnchanged(paths, TARGET, UPGRADE_REQUIRED);
   }, 30_000);
 
-  it("refuses schema 52 without a marker row as corrupt, by the database validation, never as needing the upgrade", () => {
+  it("refuses schema 53 without a marker row as corrupt, by the database validation, never as needing the upgrade", () => {
     const paths = freshAt(TARGET), path = canonical(paths);
     // The row is deleted outside the owner, then the epoch its trigger moved is put back, so the fence still trusts the file.
     const writer = unmanagedFixtureDatabase(path);
@@ -206,7 +206,7 @@ describe("ordinary admission at target 52", () => {
     // The check alone, on a read-only connection that skipped the validation, gives the same refusal.
     const before = files(paths);
     const connection = new Database(path, { readonly: true, fileMustExist: true });
-    try { expect(verdict(() => assertOrdinaryAdmission({ canonicalPath: path, database: connection, inspection: { version: 52, fresh: false } }, TARGET))).toEqual(corrupt); }
+    try { expect(verdict(() => assertOrdinaryAdmission({ canonicalPath: path, database: connection, inspection: { version: 53, fresh: false } }, TARGET))).toEqual(corrupt); }
     finally { connection.close(); }
     expect(files(paths)).toEqual(before);
   });
@@ -254,7 +254,7 @@ describe("ordinary admission at target 52", () => {
     const paths = fenced49(), path = canonical(paths);
     const connection = new Database(path, { readonly: true, fileMustExist: true });
     try {
-      for (const target of [48, 53]) expect(verdict(() => assertOrdinaryAdmission({ canonicalPath: path, database: connection, inspection: { version: 49, fresh: false } }, target)))
+      for (const target of [48, 54]) expect(verdict(() => assertOrdinaryAdmission({ canonicalPath: path, database: connection, inspection: { version: 49, fresh: false } }, target)))
         .toEqual({ name: "Error", code: undefined, committed: false, message: "Unsupported schema target." });
     } finally { connection.close(); }
   });
@@ -300,7 +300,8 @@ describe("the admission at every ordinary entry point", () => {
     ["a fenced schema-49 database", fenced49],
     ["schema 50 with the marker complete", () => freshAt(50)],
     ["schema 51 with the marker complete", () => freshAt(51)],
-    ["schema 52 with the marker pending", pending52],
+    ["schema 52 with the marker complete", () => freshAt(52)],
+    ["schema 53 with the marker pending", pendingAtTarget],
   ] as Array<[string, () => AppPaths]>)("refuses %s with upgrade_required at every entry, before anything is written", (_name, build) => {
     for (const [entry, open] of ENTRIES) {
       const paths = build();
@@ -400,11 +401,11 @@ describe("an admitted current database at the store's opening", () => {
  * copy of the file holds the deleted row. The copy must never be admitted: it
  * would bring the revoked grant back. The earlier tests of this file roll back
  * the upgrade itself; this one rolls back a write of the new `account_grants`
- * table on a schema-52 database, with the writes made on the store's own
+ * table on a schema-53 database, with the writes made on the store's own
  * guarded handle (so the table's fence trigger moves the checkpoint epoch and
  * the store publishes the matching witness), as production writes them.
  */
-describe("a revoked grant and a database file put back in place at target 52", () => {
+describe("a revoked grant and a database file put back in place at target 53", () => {
   const AT = "2026-11-17T00:00:00.000Z";
   const GRANT = "INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('human-a','operator','project','project-a',?)";
   const REVOKE = "DELETE FROM account_grants WHERE account_id='human-a' AND role='operator' AND project_id='project-a'";

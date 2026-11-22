@@ -2,6 +2,7 @@ import { applySecurityFenceMigration } from "./security-fence-migration";
 import { applyUpgradeMarkerMigration } from "./upgrade-marker-migration";
 import { applyProjectMappingMigration } from "./mapping-structure-migration";
 import { applyAccountGrantsMigration } from "./account-grants-migration";
+import { applyOperationIdempotencyMigration } from "./operation-idempotency-migration";
 import { applyHumanConfigurationMigration } from "./human-configuration-migration";
 import { applyHumanTestRunMigration } from "./human-test-run-migration";
 import { applyHumanRuntimeMigration } from "./human-runtime-migration";
@@ -377,7 +378,7 @@ export interface SchemaInitializationOptions {
   acts?: (database: Database.Database) => void;
   /**
    * The highest step to apply, validated with `schemaTarget`. Defaults to
-   * `SUPPORTED_SCHEMA_VERSION`; a lower explicit target (49 to 51) stops
+   * `SUPPORTED_SCHEMA_VERSION`; a lower explicit target (49 to 52) stops
    * there. The acts and `validateDatabase` run at this version.
    */
   target?: number;
@@ -422,6 +423,7 @@ export function initializeSchema(database: Database.Database, fresh = !database.
       if (target >= 50) applyUpgradeMarkerMigration(database, empty);
       if (target >= 51) applyProjectMappingMigration(database);
       if (target >= 52) applyAccountGrantsMigration(database);
+      if (target >= 53) applyOperationIdempotencyMigration(database);
       if (options.acts) {
         // Acts begin from a consistent database, so a violation found by the
         // check in validateDatabase below is the acts' own. Nothing repairs it.

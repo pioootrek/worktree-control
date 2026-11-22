@@ -36,7 +36,7 @@ const code = (operation: () => unknown) => { try { operation(); } catch (error) 
 const open = (paths: AppPaths) => code(() => new SqliteStateStore(paths.databasePath).close());
 
 describe("a schema-49 backup restored at the default ceilings", () => {
-  it.each(["existing", "empty"])("is restored into an %s installation as 49, resumed to 52 pending, refused until the upgrade, then current", async destination => {
+  it.each(["existing", "empty"])("is restored into an %s installation as 49, resumed to 53 pending, refused until the upgrade, then current", async destination => {
     const source = installation(), backup = join(source.dataDirectory, "..", "backup");
     const store = openStoreAt49(source.databasePath);
     try {
@@ -52,14 +52,14 @@ describe("a schema-49 backup restored at the default ceilings", () => {
     expect(open(target)).toBe("security_fence_recovery_required");
     const status = maintainSecurityFence(target, { action: "inspect" });
     expect(status).toMatchObject({ trusted: false, establishmentAllowed: false, schemaVersion: 49 });
-    expect(maintainSecurityFence(target, { action: "resume", expect: status.preflight, mode: "token" })).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 52 });
-    expect(version(target)).toBe(52);
+    expect(maintainSecurityFence(target, { action: "resume", expect: status.preflight, mode: "token" })).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 53 });
+    expect(version(target)).toBe(53);
     expect(marker(target)).toEqual({ state: "pending", plan_hash: null });
     expect(open(target)).toBe("upgrade_required");
     const inspection = inspectUpgrade(target);
-    expect(inspection).toMatchObject({ state: "upgrade_needed", schemaVersion: 52, target: 52, marker: "pending" });
+    expect(inspection).toMatchObject({ state: "upgrade_needed", schemaVersion: 53, target: 53, marker: "pending" });
     const result = await applyUpgrade(target, { expect: inspection.planHash! }, { directory: join(target.dataDirectory, "..", "maintenance"), applicationVersion: "test" });
-    expect(result).toMatchObject({ state: "current", planHash: inspection.planHash, schemaVersion: 52 });
+    expect(result).toMatchObject({ state: "current", planHash: inspection.planHash, schemaVersion: 53 });
     expect(marker(target)).toEqual({ state: "complete", plan_hash: inspection.planHash });
     const restored = new SqliteStateStore(target.databasePath);
     try { expect(restored.listProjects().map(project => project.name)).toEqual(["Restored runtime"]); } finally { restored.close(); }

@@ -15,7 +15,7 @@ import { createFencedAt49, openStoreAt, openStoreAt49, RELEASED_SCHEMA_VERSION, 
 
 /**
  * The schema-49 fixtures build the released schema 49 by its own steps, while
- * this release creates 52 by default; the test-side store opens such a
+ * this release creates 53 by default; the test-side store opens such a
  * database at 49 through an ordinary owner (the admission check runs there)
  * and refuses anything else loudly.
  */
@@ -48,7 +48,7 @@ describe("released schema-49 fixtures", () => {
   it("keeps the released version and the fence base at 49, below the supported version", () => {
     expect(RELEASED_SCHEMA_VERSION).toBe(49);
     expect(SECURITY_FENCE_SCHEMA_VERSION).toBe(RELEASED_SCHEMA_VERSION);
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(52);
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(53);
   });
 
   it("creates a fenced schema-49 database with a confirmed witness, which the store opened at 49 reopens unchanged", () => {
@@ -81,12 +81,12 @@ describe("released schema-49 fixtures", () => {
     expect(() => openStoreAt(current, 51)).toThrow(/Unsupported or unrecognized database schema/);
   });
 
-  it("initialises the schema-49 catalogue on a raw connection, which the default extends to 52", () => {
+  it("initialises the schema-49 catalogue on a raw connection, which the default extends to 53", () => {
     const fixture = schemaAt49(new Database(":memory:")), current = new Database(":memory:");
     try {
       initializeSchema(current, undefined, inspectSchema);
       expect(inspectSchema(fixture)).toEqual({ version: 49, fresh: false });
-      expect(inspectSchema(current)).toEqual({ version: 52, fresh: false });
+      expect(inspectSchema(current)).toEqual({ version: 53, fresh: false });
       expect(fixture.prepare("SELECT version FROM schema_migrations ORDER BY version").pluck().all()).toEqual(Array.from({ length: 49 }, (_, index) => index + 1));
     } finally { fixture.close(); current.close(); }
   });

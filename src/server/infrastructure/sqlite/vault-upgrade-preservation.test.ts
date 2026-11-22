@@ -51,7 +51,7 @@ import { openStoreAt49 } from "./fixtures/released-schema";
  * Fixtures are synthetic: a new schema-49 database and its own key, data,
  * witness and backup paths in temporary directories.
  */
-const TARGET = 52;
+const TARGET = 53;
 const KEY_ENV = "WORKTREE_CONTROL_DEV_VAULT_KEY_FILE";
 const AAD_DOMAIN = "wtc-dev-vault-v1";
 /** Historical clock of every fixture write that takes one. */
@@ -172,7 +172,7 @@ function installation(): Installation {
 async function upgrade(paths: AppPaths, decisions?: unknown) {
   const inspection = inspectSqliteUpgrade(paths, TARGET, decisions);
   expect(inspection).toMatchObject({ state: "upgrade_needed", schemaVersion: 49 });
-  expect(await applySqliteUpgrade(paths, { expect: inspection.planHash! }, backups(paths), TARGET)).toMatchObject({ state: "current", schemaVersion: 52 });
+  expect(await applySqliteUpgrade(paths, { expect: inspection.planHash! }, backups(paths), TARGET)).toMatchObject({ state: "current", schemaVersion: 53 });
   return inspection.plan!.acts.filter(act => act.kind === "attach_registration").map(act => act.payload as { registrationId: string; projectId: string; basis: string });
 }
 const parents = (paths: AppPaths) => read(paths, database => Object.fromEntries((database.prepare("SELECT id,parent_project_id AS parent FROM projects").all() as Array<{ id: string; parent: string | null }>)
@@ -180,7 +180,7 @@ const parents = (paths: AppPaths) => read(paths, database => Object.fromEntries(
 /** The tables whose rows carry the IDs, provenance and history of the installation. */
 const IDENTITY_TABLES = ["dev_environment_vaults", "projects", "knowledge_projects", "knowledge_project_runtime_links", "knowledge_history", "knowledge_tasks"] as const;
 
-describe("the Vault across the upgrade from schema 49 to 52", () => {
+describe("the Vault across the upgrade from schema 49 to 53", () => {
   it("keeps IDs, provenance, history, the Vault's bytes and the inputs of its AAD, and the same key still decrypts every entry", async () => {
     const { paths, key, keyFile, alpha, beta, knowledge, expected } = installation();
     const before = { rows: vaultRows(paths), exact: read(paths, exact) };
@@ -278,13 +278,13 @@ describe("the Vault across the upgrade from schema 49 to 52", () => {
     expect(attached.map(act => act.basis).sort()).toEqual(["accepted_link", "created_project"]);
     expect(() => missing().key(), "the key was still missing after the upgrade").toThrow("vault_unavailable");
 
-    // 3. The ciphertext rows are byte-identical, as read raw and through the ordinary store's own Vault reader at 52.
+    // 3. The ciphertext rows are byte-identical, as read raw and through the ordinary store's own Vault reader at 53.
     const rows = vaultRows(paths);
     expect(rows).toEqual(before.rows);
     expect(read(paths, exact).dev_environment_vaults).toEqual(before.exact.dev_environment_vaults);
     const store = new SqliteStateStore(paths.databasePath);
     try {
-      expect(store.schemaVersion()).toBe(52);
+      expect(store.schemaVersion()).toBe(53);
       for (const row of before.rows) expect(store.devVault.load(row.project_id)).toEqual({ version: row.version, ciphertext: row.ciphertext });
     } finally { store.close(); }
 

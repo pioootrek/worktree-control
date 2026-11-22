@@ -67,6 +67,7 @@ import { OwnedSqliteDatabase, type DatabaseProvenance } from "./owned-database";
 import { IdentityQueries } from "./identity-queries";
 import { MachineCredentialQueries } from "./machine-credential-queries";
 import { AccountGrantsQueries } from "./account-grants-queries";
+import { OperationIdempotencyQueries } from "./operation-idempotency-queries";
 import { ProjectCatalogQueries, ProjectDirectoryQueries, type ProjectId, type RegistrationId } from "./project-directory-queries";
 import { KnowledgeQueries } from "./knowledge-queries";
 import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
@@ -954,6 +955,16 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
 
   /** Synchronous committed account and grant facts. Call within an admitted core phase in strict mode. */
   accountGrantsReader(): AccountGrantsQueries { return new AccountGrantsQueries(this.database); }
+
+  /**
+   * The step-53 idempotency records on this owner's core connection: the
+   * SQLite side of the operations idempotency store. Call within an admitted
+   * core phase; only the controller's retention initialization composes it.
+   */
+  operationIdempotency(): OperationIdempotencyQueries { return new OperationIdempotencyQueries(this.database); }
+
+  /** The canonical path of the owned database file; the fingerprint key file is bound to it. */
+  get canonicalDatabasePath(): string { return this.ownedDatabase.canonicalPath; }
 
   /**
    * Synchronous committed directory facts on this owner's core connection.

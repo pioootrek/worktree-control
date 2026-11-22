@@ -135,9 +135,9 @@ const backups = (paths: AppPaths, calls: string[] = []): UpgradeBackup => async 
 const apply = (paths: AppPaths, expect: string, backup: UpgradeBackup = backups(paths)) => applySqliteUpgrade(paths, { expect }, backup, TARGET);
 /**
  * What an ordinary opening (the store, as the controller start opens it, at the
- * supported 52) answers at a point of the upgrade at the test target 50: a
+ * supported 53) answers at a point of the upgrade at the test target 50: a
  * fence refusal while the witness is pending, otherwise `upgrade_required`
- * (a database at 50 is never current at 52).
+ * (a database at 50 is never current at 53).
  */
 const ordinary = (paths: AppPaths) => { try { new SqliteStateStore(paths.databasePath).close(); return "opened"; } catch (error) { return (error as { code?: string }).code ?? (error as Error).message; } };
 async function failure(operation: () => Promise<unknown> | unknown) {
@@ -337,10 +337,11 @@ describe("explicit offline upgrade: plan and act mechanism", () => {
     expect(() => upgradePlanHash({ ...plan(), acts: new Array(1) as UpgradePlan["acts"] })).toThrowError(expect.objectContaining({ code: "upgrade_plan_invalid" }));
     expect(structuralSteps(50, 50)).toEqual([]);
     expect(() => structuralSteps(48, 50)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
-    // Step 51 is a known structural step since C2a and step 52 since C3a; a step above the highest known one is not.
+    // Step 51 is a known structural step since C2a and step 52 since C3a and step 53 since D1b; a step above the highest known one is not.
     expect(structuralSteps(49, 51).map(step => step.version)).toEqual([50, 51]);
     expect(structuralSteps(49, 52).map(step => step.version)).toEqual([50, 51, 52]);
-    expect(() => structuralSteps(49, 53)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
+    expect(structuralSteps(49, 53).map(step => step.version)).toEqual([50, 51, 52, 53]);
+    expect(() => structuralSteps(49, 54)).toThrowError(expect.objectContaining({ code: "upgrade_step_mismatch" }));
   });
   it("lets a registered domain propose, validate, execute and describe acts in order, every act, decision and review covered by the hash", () => {
     const executed: string[] = [];

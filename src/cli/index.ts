@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createSessionDescribeOutput, runProjectsCommand, runSessionDescribe, SessionDescribeError } from "./session-describe";
 import { buildOperationsRuntime } from "../server/bootstrap/operations-runtime";
+import { initializeOperationRetention, type OperationRetention } from "../server/bootstrap/operation-retention";
 import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
 import { createProtectedIdentityAdministration } from "../server/bootstrap/identity-administration";
 import { projectAdminHandler } from "../server/bootstrap/project-administration";
@@ -376,6 +377,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   preview.service = godotWeb;
   const service = new ControlService(store, git, processes, logs, commands, storage, undefined, undefined, tests, lifecycle, knowledge, remoteVerification?.controller, identity, godotWeb);
   let browserAuthentication;
+  let retention: OperationRetention | null = null;
   try {
     if (authentication.mode() === "better-auth") {
       if (!publicOrigin) throw new Error("Account authentication requires a canonical HTTPS --public-url.");
@@ -384,6 +386,9 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
         knowledge, runtimeReads: service, runtimeMutations: service, verification: service, configuration: service });
     }
     await store.admission.run(() => authentication.assertStartupPolicy());
+    // Once per opened store (a handoff reopen is a new owner lifetime), before any listener:
+    // the fingerprint key and the restart repair of the idempotency records.
+    retention = await initializeOperationRetention({ store, now: Date.now, logs, excludedRoots: [paths.knowledgeAttachmentDirectory] });
   } catch (error) {
     maintenance = true; userSchedules?.close();
     try { await backups.close(); await remoteVerification?.close(); await providerAdministration.dispose(); await service.shutdown(); controllerLock.release(); }
@@ -439,7 +444,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
     statusWaits: service.statusWaitDiagnostics(),
   });
   const operationListeners: { api?: import("node:http").Server; unix?: import("node:http").Server } = {};
-  const operations = buildOperationsRuntime({ store, activeMode: authentication.mode(), now: Date.now, logs,
+  const operations = buildOperationsRuntime({ store, activeMode: authentication.mode(), now: Date.now, logs, retention,
     eligibility: providerAdministration, provider: providerAdministration.operationSessionAuthority(), requestBudget: providerAdministration.requestBudget,
     projectReads: { placement: processes, git },
     listeners: { mcp: () => mcp?.server.listening === true, worker: () => remoteVerification?.listenerOpen() === true, api: () => operationListeners.api?.listening === true, unix: () => operationListeners.unix?.listening === true } });

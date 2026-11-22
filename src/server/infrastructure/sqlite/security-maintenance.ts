@@ -11,6 +11,7 @@ import { inspectSchema } from "./schema-inspection";
 import { schemaTarget } from "./migration-registry";
 import { applyMappingQuarantine, planMappingQuarantine } from "./mapping-structure-migration";
 import { clearAccountGrants } from "./account-grants-migration";
+import { invalidateOperationIdempotency } from "./operation-idempotency-migration";
 import { cancelRemoteWork, interruptTestRuns, releaseReservations, revokeCredentials, revokeOldGrants } from "./authority-reset";
 import { takeBoundBackup, type MaintenanceBackup } from "./backup-binding";
 import type Database from "better-sqlite3";
@@ -78,6 +79,9 @@ export function quarantineAuthority(database: Database.Database, receipt: string
   // Step 52: no grant written after an upgrade stands either; the next
   // upgrade grants `admin` again when its rule holds.
   if (version >= 52) clearAccountGrants(database);
+  // Step 53: no retained outcome of the restored or fenced history replays, and
+  // none runs fresh silently: every surviving record becomes `unknown`.
+  if (version >= 53) invalidateOperationIdempotency(database, Date.parse(now));
   // Mode is an explicit protected decision, never a restored selection or fallback.
   // All shared and legacy verifier material is removed; first-run issuance is fresh.
   database.prepare("UPDATE controller_settings SET value_json=?,updated_at=? WHERE key='authentication'")

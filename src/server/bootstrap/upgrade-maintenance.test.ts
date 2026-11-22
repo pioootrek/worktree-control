@@ -21,11 +21,11 @@ vi.mock("node:crypto", async original => ({ ...await original<typeof import("nod
 /*
  * The upgrade through its bootstrap composition: the real createControllerBackup
  * writes the pre-upgrade backup into the operator's directory, at the
- * supported target 52 (named explicitly, as the composition's tests do). A full
+ * supported target 53 (named explicitly, as the composition's tests do). A full
  * upgrade cycle flushes files several times: each such test has an explicit
  * 30 s timeout, since the hosted runner is about twice as slow as a workstation.
  */
-const TARGET = 52;
+const TARGET = 53;
 const CYCLE = 30_000;
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -57,12 +57,12 @@ function installation() {
   createFencedAt49(paths.databasePath);
   return paths;
 }
-/** Schema 52 with the marker pending, as an operator reaches it: `auth fence resume` at target 52. */
-function pending52() {
+/** Schema 53 with the marker pending, as an operator reaches it: `auth fence resume` at target 53. */
+function pendingAtTarget() {
   const paths = installation();
   rmSync(witnessFile(paths));
   const preflight = maintainSqliteSecurityFence(paths, { action: "inspect" }, HANDOFF, TARGET).preflight;
-  expect(maintainSqliteSecurityFence(paths, { action: "resume", expect: preflight, mode: "token" }, HANDOFF, TARGET)).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 52 });
+  expect(maintainSqliteSecurityFence(paths, { action: "resume", expect: preflight, mode: "token" }, HANDOFF, TARGET)).toMatchObject({ trusted: true, quarantined: true, schemaVersion: 53 });
   return paths;
 }
 /** The tree is a valid private backup at the target ceiling holding `schemaVersion`; returns its manifest. */
@@ -97,14 +97,14 @@ describe("upgrade bootstrap composition", () => {
     expect(files(paths)).toEqual(before);
   }, CYCLE);
 
-  it("backs up a schema-52 source whose marker a resume set to pending, at the target ceiling", async () => {
-    const paths = pending52(), directory = join(temporary(), "backups");
+  it("backs up a schema-53 source whose marker a resume set to pending, at the target ceiling", async () => {
+    const paths = pendingAtTarget(), directory = join(temporary(), "backups");
     const inspection = inspectUpgrade(paths, undefined, TARGET);
-    expect(inspection).toMatchObject({ state: "upgrade_needed", schemaVersion: 52, marker: "pending", planHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(inspection).toMatchObject({ state: "upgrade_needed", schemaVersion: 53, marker: "pending", planHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
     const result = await applyUpgrade(paths, { expect: inspection.planHash! }, OPTIONS(directory), TARGET);
-    expect(result).toMatchObject({ state: "current", alreadyApplied: false, schemaVersion: 52 });
-    expect(readdirSync(directory)).toEqual([expect.stringMatching(/^pre-upgrade-v52-[0-9a-f-]{36}$/)]);
-    validTree(result.backup!, 52);
+    expect(result).toMatchObject({ state: "current", alreadyApplied: false, schemaVersion: 53 });
+    expect(readdirSync(directory)).toEqual([expect.stringMatching(/^pre-upgrade-v53-[0-9a-f-]{36}$/)]);
+    validTree(result.backup!, 53);
   }, CYCLE);
 
   describe("a failed pre-upgrade backup", () => {

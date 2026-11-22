@@ -22,7 +22,7 @@ vi.mock("../server/bootstrap/upgrade-maintenance", async original => {
 });
 const inspectUpgrade = vi.mocked(composition.inspectUpgrade), applyUpgrade = vi.mocked(composition.applyUpgrade);
 
-const TARGET = 52;
+const TARGET = 53;
 const HASH = "a".repeat(64);
 const roots: string[] = [];
 beforeEach(() => { inspectUpgrade.mockClear(); applyUpgrade.mockClear(); });
