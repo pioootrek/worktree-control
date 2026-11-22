@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ProjectId, PublicOperationError } from "@/shared/contracts/operations";
+import type { EffectState, ProjectId, PublicOperationError } from "@/shared/contracts/operations";
 import { OperationError } from "./errors";
 import type { EffectScope, MutationOperation, Receipt } from "./operation";
 import type { MemoryIdempotency } from "./operations-fixture";
@@ -227,6 +227,104 @@ describe("the clock at the final write", () => {
         expect(writes).toEqual([]);
         expect(counts.runs).toBe(1);
         expect(idempotency.states()).toEqual(["completed"]);
+      });
+      expect(unhandled).toEqual([]);
+    });
+});
+
+describe("a broken clock at the release policy (amendment C6)", () => {
+  type Fault = "NaN" | "Infinity" | "a non-number" | "throws" | "a thenable";
+  type Place = "phase 1" | "phase 3" | "the early refusal" | "step 5" | "the final staged phase";
+  const faults: Fault[] = ["NaN", "Infinity", "a non-number", "throws", "a thenable"];
+  /** Each place: the admission it is (fixture count), and this invocation's effect there. */
+  const places: Record<Place, { admission: number; effect: EffectState }> = {
+    "phase 1": { admission: 1, effect: "not_started" }, "phase 3": { admission: 2, effect: "not_started" },
+    "the early refusal": { admission: 1, effect: "not_started" }, "step 5": { admission: 4, effect: "committed" },
+    "the final staged phase": { admission: 5, effect: "committed" },
+  };
+  /**
+   * A runtime clock that breaks at the entry of admission `at`: from its first
+   * read there on, every read (`stays`) or only that read (`once`) answers the
+   * fault. `reads` counts the faulty answers.
+   */
+  function brokenClock(state: ReturnType<typeof setup>, fault: Fault, at: number, mode: "stays" | "once") {
+    const { world, idempotency } = state;
+    const clock = { armed: false, reads: 0 };
+    world.admission.onAdmit = event => { if (event.kind === "run" && event.n === at) clock.armed = true; };
+    const runner = new OperationRunner({
+      ...world.runtime({ idempotency }),
+      now: (): number => {
+        if (!clock.armed) return world.clock.now;
+        if (mode === "once") clock.armed = false;
+        clock.reads++;
+        switch (fault) {
+          case "NaN": return Number.NaN;
+          case "Infinity": return Number.POSITIVE_INFINITY;
+          case "a non-number": return String(world.clock.now) as unknown as number;
+          case "throws": throw new Error("clock failed /secret");
+          case "a thenable": return Promise.reject(new Error("late clock /secret")) as unknown as number;
+        }
+      },
+    });
+    return { runner, clock };
+  }
+  const timedOut = (effect: EffectState) => answer("unavailable", 503, "release_timed_out", effect === "not_started" ? "retry" : "none", effect);
+  /** The clock fault `prepare` met before the guard, written once the policy retry passed on the recovered clock. */
+  const operationError = (fault: Fault, effect: EffectState) => answer("internal", 500, fault === "throws" ? "unexpected_failure" : "runtime_not_synchronous", "none", effect);
+
+  const cases = (Object.keys(places) as Place[]).flatMap(place => faults.flatMap(fault => (["stays", "once"] as const).map(mode => [place, fault, mode] as const)));
+  it.each(cases)("at the entry of %s, a clock answering %s (%s broken)", async (place, fault, mode) => {
+    const unhandled = await unhandledDuring(async () => {
+      const state = setup();
+      const { world, alice, idempotency } = state;
+      const { admission, effect } = places[place];
+      const { runner, clock } = brokenClock(state, fault, admission, mode);
+      const { operation, counts } = admittedWrite(world);
+      const stage = vi.fn(async () => undefined);
+      const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), ...(place === "the final staged phase" ? { stage } : {}) });
+      const result = await runner.mutationRelease(operation, alice.context, { n: place === "the early refusal" ? "one" : 1 }, options);
+      // Only a fault `prepare` meets before the guard, on a clock that then recovers, is an operation error; the early read is the policy's own.
+      const written = mode === "once" && (fault === "throws" || fault === "a thenable") && place !== "the early refusal";
+      if (written) {
+        expect(result).toEqual({ status: "committed" });
+        expect(writes).toEqual([refuseWrite(operationError(fault, effect), admission)]);
+      } else {
+        expect(result).toEqual({ status: "refused", error: timedOut(effect) });
+        expect(writes).toEqual([]);
+      }
+      expect(JSON.stringify(result)).not.toContain("secret");
+      expect(clock.reads).toBeGreaterThan(0);
+      expect(runs(world)).toBe(admission);
+      if (place === "phase 1" || place === "the early refusal") {
+        expect(idempotency.calls).toEqual([]);
+        expect(counts.runs).toBe(0);
+      } else if (place === "phase 3") {
+        // Before the effect: the owned reservation was given back in that phase.
+        expect(idempotency.calls).toEqual(["get", "reserved", "release"]);
+        expect(idempotency.entries.size).toBe(0);
+        expect(counts.runs).toBe(0);
+      } else {
+        expect(idempotency.states()).toEqual(["completed"]);
+        expect(counts.runs).toBe(1);
+      }
+      expect(stage).toHaveBeenCalledTimes(place === "the final staged phase" ? 1 : 0);
+    });
+    expect(unhandled).toEqual([]);
+  });
+
+  it.each((["phase 1", "the early refusal", "step 5"] as const).flatMap(place => faults.map(fault => [place, fault] as const)))(
+    "eligibility is still checked first: an ineligible caller at %s with a clock answering %s gets release_not_eligible",
+    async (place, fault) => {
+      const unhandled = await unhandledDuring(async () => {
+        const state = setup();
+        const { world, alice } = state;
+        const { admission, effect } = places[place];
+        const { runner, clock } = brokenClock(state, fault, admission, "stays");
+        const { operation } = admittedWrite(world);
+        const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), eligible: () => !clock.armed });
+        expect(await runner.mutationRelease(operation, alice.context, { n: place === "the early refusal" ? "one" : 1 }, options))
+          .toEqual({ status: "refused", error: answer("unavailable", 503, "release_not_eligible", "none", effect) });
+        expect(writes).toEqual([]);
       });
       expect(unhandled).toEqual([]);
     });

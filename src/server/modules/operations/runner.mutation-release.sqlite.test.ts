@@ -12,7 +12,7 @@ import type { AdmittedCommitScope, MutationOperation } from "./operation";
 import { createWorld } from "./operations-fixture";
 import { onProject } from "./requirements";
 import { OperationRunner, type MutationReleaseOptions } from "./runner";
-import { answer, projectA, projectB, REGISTRATION } from "./runner-fixture";
+import { answer, heldAdmission, interleaving, projectA, projectB, REGISTRATION } from "./runner-fixture";
 
 /**
  * D2b-1 decision 4 over the real SQLite store and the real connection gate,
@@ -68,7 +68,7 @@ async function owner(paths: AppPaths, world: World) {
   /** Every column of every record, read in a fresh admission. */
   const rows = () => store.admission.run(() => database.prepare("SELECT * FROM operation_idempotency").all());
   const recorded = () => store.admission.run(states);
-  return { store, runner, database, observe, rows, recorded };
+  return { store, runner, database, observe, rows, recorded, retention };
 }
 type Owner = Awaited<ReturnType<typeof owner>>;
 
@@ -244,6 +244,64 @@ describe("mutationRelease over SQLite: an existing record is answered and left a
     expect(await s.current.rows()).toEqual(stored);
     expect((await s.release()).writes).toEqual([expected]);
     s.grant();
+    expect((await s.release()).writes).toEqual([replayed(inside(["completed"]))]);
+    expect(s.counters.effects).toBe(1);
+  });
+});
+
+describe("mutationRelease over SQLite: a record whose resource moved (amendment C5)", () => {
+  it("a caller who lost the record's project gets the historical denial, not the record's answer; every column unchanged", async () => {
+    const s = await start();
+    const first = await s.release({ after: () => { throw new Error("effect failed /secret"); } });
+    expect(first.writes).toEqual([refused(answer("outcome_unknown", 409, "effect_interrupted", "inspect_first", "unknown"), inside(["unknown"]))]);
+    const stored = await s.current.rows();
+    // The record names project A; the registration moves to B, which the caller keeps, and A is taken away.
+    s.world.resolver.move(REGISTRATION, projectB);
+    s.world.grants.grant({ accountId: s.alice.id, role: "operator", scope: { kind: "project", projectId: projectB } });
+    s.world.grants.grants = s.world.grants.grants.filter(grant => grant.accountId !== s.alice.id || grant.scope.kind !== "project" || grant.scope.projectId !== projectA);
+    const denied = refused(answer("not_found", 404, "resource_not_found", "none", "not_started"), inside(["unknown"]));
+    expect((await s.release()).writes).toEqual([denied]);
+    expect(await s.current.rows()).toEqual(stored);
+    await s.reopen();
+    expect(await s.current.rows()).toEqual(stored);
+    expect((await s.release()).writes).toEqual([denied]);
+    // Positive control: with project A again, the record answers.
+    s.grant();
+    expect((await s.release()).writes).toEqual([refused(previousUnknown, inside(["unknown"]))]);
+    expect(await s.current.rows()).toEqual(stored);
+    expect(s.counters.effects).toBe(1);
+  });
+});
+
+describe("mutationRelease over SQLite: two concurrent calls with one key", () => {
+  it.each(["in progress", "replay"] as const)("one effect and one write per call; the second call is answered from the record (%s)", async order => {
+    const s = await start();
+    const target = s.current;
+    const { signals, hold, settled } = interleaving(order);
+    const runner = new OperationRunner({
+      ...s.world.runtime({ idempotency: target.retention.idempotency, fingerprintKey: target.retention.fingerprintKey }),
+      admission: heldAdmission(target.store.admission, hold),
+    });
+    const operation = write(s.counters, {});
+    const call = (signal: AbortSignal) => {
+      const writes: Written[] = [];
+      const options: MutationReleaseOptions<Value> = {
+        eligible: () => true, connected: () => true, deadline: Number.MAX_SAFE_INTEGER, idempotencyKey: "k-1", signal,
+        commit(value) { writes.push({ kind: "commit", value: structuredClone(value), observed: target.observe() }); },
+        refuse(error) { writes.push({ kind: "refuse", value: structuredClone(error), observed: target.observe() }); },
+      };
+      return { writes, result: runner.mutationRelease(operation, s.alice.context, { n: 1 }, options) };
+    };
+    const one = call(signals.a), two = call(signals.b);
+    void one.result.then(settled.a);
+    void two.result.then(settled.b);
+    expect(await Promise.all([one.result, two.result])).toEqual([committed, committed]);
+    expect(one.writes).toEqual([replayed(inside(["completed"]))]);
+    expect(two.writes).toEqual([order === "in progress"
+      ? refused(answer("conflict", 409, "request_in_progress", "none", "not_started"), inside(["reserved"])) : replayed(inside(["completed"]))]);
+    expect(await s.current.recorded()).toEqual(["completed"]);
+    await s.reopen();
+    expect(await s.current.recorded()).toEqual(["completed"]);
     expect((await s.release()).writes).toEqual([replayed(inside(["completed"]))]);
     expect(s.counters.effects).toBe(1);
   });

@@ -1,12 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PublicOperationError } from "@/shared/contracts/operations";
+import { SqliteStateStore } from "@/server/infrastructure/sqlite/sqlite-state-store";
 import { OperationError } from "./errors";
 import type { EffectScope, MutationOperation, QueryOperation, ReadOperation } from "./operation";
 import { MemoryIdempotency } from "./operations-fixture";
 import { authenticated } from "./requirements";
 import { OperationRunner, type IdempotencyKey, type IdempotencyRecord, type MutationReleaseOptions } from "./runner";
 import {
-  admittedWrite, answer, gatedAdmission, projectB, recordingDelivery, REGISTRATION, setup, unhandledDuring, type WriteResult,
+  admittedWrite, answer, gatedAdmission, heldAdmission, HISTORICAL_DENIAL, interleaving, moveAfterRecord, projectB, RECORD_ANSWERS, RECORD_VARIANTS,
+  recordingDelivery, REGISTRATION, setup, unhandledDuring, type WriteResult,
 } from "./runner-fixture";
 
 /**
@@ -102,6 +107,24 @@ describe("mutationRelease: decision 4, before the effect", () => {
     expect(idempotency.calls).toEqual(["get"]);
     expect(counts.runs).toBe(1);
   });
+
+  it.each(RECORD_VARIANTS.flatMap(variant => [false, true].map(keepA => [variant, keepA] as const)))(
+    "a %s record whose resource moved: decided on the record's resources before it answers (C5; still sees project A: %s)",
+    async (variant, keepA) => {
+      const state = setup();
+      const { world, alice, runner, idempotency } = state;
+      const { operation, counts } = admittedWrite(world);
+      expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, recordingDelivery<Value>(world, keyed()).options)).toEqual({ status: "committed" });
+      const { raw, stored, current } = moveAfterRecord(state, variant, keepA);
+      const { options, writes } = recordingDelivery<Value>(world, keyed());
+      expect(await runner.mutationRelease(operation, alice.context, raw, options)).toEqual({ status: "committed" });
+      expect(writes).toEqual([refuseWrite(keepA ? RECORD_ANSWERS[variant] : HISTORICAL_DENIAL, 1)]);
+      expect(JSON.stringify(writes)).not.toContain("project-a");
+      expect(current()).toEqual(stored);
+      expect(idempotency.calls).toEqual(["get"]);
+      expect(runs(world)).toBe(1);
+      expect(counts.runs).toBe(1);
+    });
 
   it("a capacity refusal of the reservation is refused in phase 1 after the (no-op) release", async () => {
     const { world, alice, runner, idempotency } = setup();
@@ -701,6 +724,119 @@ describe("mutationRelease: guards", () => {
     expect(refused).toEqual([{ error: answer("conflict", 409, "project_archived", "none", "not_started"), receiver: options }]);
     expect(replacement).not.toHaveBeenCalled();
     expect(idempotency.entries.size).toBe(0);
+  });
+});
+
+describe("mutationRelease: hostile options and errors", () => {
+  /** Redefines `name` on `target` as an accessor that counts its reads and answers `first`, then `later` (or throws). */
+  function accessor(target: object, name: string, first: () => unknown, later: () => unknown) {
+    const reads = { count: 0 };
+    Object.defineProperty(target, name, { configurable: true, enumerable: true, get() { return ++reads.count === 1 ? first() : later(); } });
+    return reads;
+  }
+  const names = ["commit", "refuse", "eligible", "connected", "deadline", "stage", "signal", "idempotencyKey"] as const;
+
+  it.each(names)("an options accessor %s that throws: read once, a well-formed answer returned locally, nothing of the accessor leaks", async name => {
+    const { world, alice, runner, idempotency } = setup();
+    const { operation, counts } = admittedWrite(world);
+    const { options, writes } = recordingDelivery<Value>(world, keyed());
+    const reads = accessor(options, name, () => { throw new Error("accessor /secret"); }, () => { throw new Error("second read /secret"); });
+    const result = await runner.mutationRelease(operation, alice.context, { n: 1 }, options);
+    expect(result).toEqual({ status: "refused", error: answer("internal", 500, "unexpected_failure", "none", "not_started") });
+    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(reads.count).toBe(1);
+    expect(writes).toEqual([]);
+    expect(runs(world)).toBe(0);
+    expect(idempotency.calls).toEqual([]);
+    expect(counts.runs).toBe(0);
+  });
+
+  it.each(names)("an options accessor %s that changes its answer on a second read: read once, the first answer used throughout", async name => {
+    const { world, alice, runner, idempotency } = setup();
+    // The refusal case refuses before the commit point, so `refuse` is the callback that writes.
+    const { operation, counts } = admittedWrite(world, name === "refuse" ? { before: () => { throw new OperationError("conflict", "project_archived"); } } : {});
+    const staged = vi.fn(async () => undefined);
+    const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), ...(name === "stage" ? { stage: staged } : {}) });
+    const hostile = vi.fn(() => { throw new Error("hostile callback /secret"); });
+    const aborted = new AbortController();
+    aborted.abort();
+    const later: Record<(typeof names)[number], unknown> = {
+      commit: hostile, refuse: hostile, eligible: () => false, connected: () => false, deadline: 0, stage: hostile, signal: aborted.signal, idempotencyKey: "k-2",
+    };
+    const original: unknown = (options as unknown as Record<string, unknown>)[name];
+    const reads = accessor(options, name, () => original, () => later[name]);
+    expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, options)).toEqual({ status: "committed" });
+    expect(reads.count).toBe(1);
+    expect(hostile).not.toHaveBeenCalled();
+    if (name === "refuse") {
+      expect(writes).toEqual([refuseWrite(answer("conflict", 409, "project_archived", "none", "not_started"), 2)]);
+      expect(idempotency.entries.size).toBe(0);
+    } else {
+      expect(writes).toEqual([{ kind: "commit", value: { value: 1 }, admitted: true, admission: name === "stage" ? 5 : 4 }]);
+      expect([...idempotency.entries.keys()]).toEqual([JSON.stringify([operation.id, `account:${alice.id}`, "k-1"])]);
+      expect(counts.runs).toBe(1);
+    }
+    expect(staged).toHaveBeenCalledTimes(name === "stage" ? 1 : 0);
+  });
+
+  it.each<[string, unknown, PublicOperationError]>([
+    ["category", "busy", answer("internal", 500, "unexpected_failure", "none", "not_started")],
+    ["reason", "other_reason", answer("internal", 500, "unexpected_failure", "none", "not_started")],
+    ["retry", "retry", answer("conflict", 409, "project_archived", "none", "not_started")],
+    ["effect", "committed", answer("conflict", 409, "project_archived", "none", "not_started")],
+  ])("a handler's OperationError whose %s is an accessor: the accessor never runs, a well-formed refusal is written once", async (name, value, expected) => {
+    const { world, alice, runner, idempotency } = setup();
+    const reads = { count: 0 };
+    const { operation, counts } = admittedWrite(world, { before: () => {
+      const error = new OperationError("conflict", "project_archived");
+      Object.defineProperty(error, name, { configurable: true, enumerable: true, get() { reads.count++; return value; } });
+      throw error;
+    } });
+    const { options, writes } = recordingDelivery<Value>(world, keyed());
+    expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, options)).toEqual({ status: "committed" });
+    expect(writes).toEqual([refuseWrite(expected, 2)]);
+    expect(reads.count).toBe(0);
+    expect(idempotency.entries.size).toBe(0);
+    expect(counts.runs).toBe(1);
+  });
+});
+
+describe("mutationRelease: two concurrent calls with one key, through the real gate", () => {
+  const roots: string[] = [];
+  const closers: Array<() => void> = [];
+  afterEach(() => {
+    for (const close of closers.splice(0)) { try { close(); } catch { /* already closed */ } }
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  it.each(["in progress", "replay"] as const)("one effect, one write per call; the second call is answered from the record (%s)", async order => {
+    const root = mkdtempSync(join(tmpdir(), "mutation-release-concurrent-"));
+    roots.push(root);
+    const store = new SqliteStateStore(join(root, "state.sqlite3"));
+    closers.push(() => store.close());
+    const { world, alice, idempotency } = setup();
+    const { signals, hold, settled } = interleaving(order);
+    const runner = new OperationRunner({ ...world.runtime({ idempotency }), admission: heldAdmission(store.admission, hold) });
+    const { operation, counts } = admittedWrite(world);
+    const observed = (into: unknown[]) => ({
+      commit(value: Value) { into.push({ kind: "commit", value, active: store.admissionSnapshot().coreActive }); },
+      refuse(error: PublicOperationError) { into.push({ kind: "refuse", value: error, active: store.admissionSnapshot().coreActive }); },
+    });
+    const first: unknown[] = [], second: unknown[] = [];
+    const policy = { eligible: () => true, connected: () => true, deadline: Number.MAX_SAFE_INTEGER, idempotencyKey: "k-1" };
+    const a = runner.mutationRelease(operation, alice.context, { n: 1 }, { ...policy, ...observed(first), signal: signals.a });
+    const b = runner.mutationRelease(operation, alice.context, { n: 1 }, { ...policy, ...observed(second), signal: signals.b });
+    void a.then(settled.a);
+    void b.then(settled.b);
+    expect(await Promise.all([a, b])).toEqual([{ status: "committed" }, { status: "committed" }]);
+    expect(first).toEqual([{ kind: "commit", value: { value: 1 }, active: 1 }]);
+    expect(second).toEqual([order === "in progress"
+      ? { kind: "refuse", value: answer("conflict", 409, "request_in_progress", "none", "not_started"), active: 1 }
+      : { kind: "commit", value: { value: 1 }, active: 1 }]);
+    expect(idempotency.calls).toEqual(order === "in progress"
+      ? ["get", "reserved", "get", "started", "completed"] : ["get", "reserved", "started", "completed", "get"]);
+    expect(idempotency.states()).toEqual(["completed"]);
+    expect(counts.runs).toBe(1);
   });
 });
 

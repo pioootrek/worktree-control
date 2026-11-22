@@ -4,8 +4,10 @@ import type { EffectScope, MutationOperation, Receipt } from "./operation";
 import { onProject } from "./requirements";
 import { MemoryIdempotency } from "./operations-fixture";
 import { OperationRunner, type MutationReleaseOptions } from "./runner";
+import { OperationError } from "./errors";
 import {
-  admittedWrite, answer, deferred, gatedAdmission, projectA, projectB, recordingDelivery, REGISTRATION, setup, tick, unhandledDuring,
+  admittedWrite, answer, deferred, gatedAdmission, HISTORICAL_DENIAL, moveAfterRecord, projectA, projectB, RECORD_ANSWERS, RECORD_VARIANTS,
+  recordingDelivery, REGISTRATION, setup, tick, unhandledDuring,
 } from "./runner-fixture";
 
 /**
@@ -140,6 +142,26 @@ describe("buffered first release", () => {
     expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, options))
       .toEqual({ status: "refused", error: answer("unavailable", 503, "release_timed_out", "none", "committed") });
     expect(writes).toEqual([]);
+  });
+
+  it("the deadline crossed immediately before a final refusal: the projection reaches it and throws; release_timed_out is returned, not written", async () => {
+    const { world, alice, runner, idempotency } = setup();
+    const deadline = world.clock.now + 10;
+    let projections = 0;
+    const { operation, counts } = admittedWrite(world, { project: result => {
+      if (++projections === 2) { world.clock.now = deadline; throw new OperationError("conflict", "projection_refused"); }
+      return { value: result.n };
+    } });
+    const { stage } = stager(world);
+    const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), deadline, stage });
+    expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, options))
+      .toEqual({ status: "refused", error: answer("unavailable", 503, "release_timed_out", "none", "committed") });
+    expect(writes).toEqual([]);
+    expect(runs(world)).toBe(5);
+    expect(projections).toBe(2);
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(counts.runs).toBe(1);
+    expect(idempotency.states()).toEqual(["completed"]);
   });
 
   it("a thenable commit in the final phase is commit_failed, once", async () => {
@@ -341,12 +363,114 @@ describe("buffered replay", () => {
   });
 });
 
+describe("buffered replay: a failed delivery", () => {
+  it.each<[string, () => unknown]>([
+    ["throws", () => { throw new Error("socket gone /secret"); }],
+    ["returns a thenable", async () => { throw new Error("late /secret"); }],
+  ])("a commit that %s in the final phase: commit_failed with not_started, one attempt, the record untouched", async (_name, failing) => {
+    const unhandled = await unhandledDuring(async () => {
+      const { world, alice, runner, idempotency } = setup();
+      const { operation, counts } = admittedWrite(world);
+      expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, recordingDelivery<Value>(world, keyed()).options)).toEqual({ status: "committed" });
+      const stored = structuredClone([...idempotency.entries.values()]);
+      world.admission.events = [];
+      idempotency.calls.length = 0;
+      const { stage } = stager(world);
+      const commit = vi.fn(failing);
+      const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), stage, commit: commit as unknown as (value: Value) => void });
+      expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, options))
+        .toEqual({ status: "commit_failed", error: answer("internal", 500, "release_commit_failed", "none", "not_started") });
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(stage).toHaveBeenCalledTimes(1);
+      // Phase 1 and the final phase; `refuse` never ran.
+      expect(writes).toEqual([]);
+      expect(runs(world)).toBe(2);
+      expect(idempotency.calls).toEqual(["get"]);
+      expect([...idempotency.entries.values()]).toEqual(stored);
+      expect(counts.runs).toBe(1);
+    });
+    expect(unhandled).toEqual([]);
+  });
+});
+
+describe("buffered: an existing record whose resource moved (amendment C5)", () => {
+  it.each(RECORD_VARIANTS.flatMap(variant => [false, true].map(keepA => [variant, keepA] as const)))(
+    "a %s record is decided on its resources before it answers, in phase 1 and without staging (still sees project A: %s)",
+    async (variant, keepA) => {
+      const state = setup();
+      const { world, alice, runner, idempotency } = state;
+      const { operation, counts } = admittedWrite(world);
+      expect(await runner.mutationRelease(operation, alice.context, { n: 1 }, recordingDelivery<Value>(world, keyed()).options)).toEqual({ status: "committed" });
+      const { raw, stored, current } = moveAfterRecord(state, variant, keepA);
+      const { stage } = stager(world);
+      const { options, writes } = recordingDelivery<Value>(world, { ...keyed(), stage });
+      expect(await runner.mutationRelease(operation, alice.context, raw, options)).toEqual({ status: "committed" });
+      expect(writes).toEqual([{ kind: "refuse", value: keepA ? RECORD_ANSWERS[variant] : HISTORICAL_DENIAL, admitted: true, admission: 1 }]);
+      expect(JSON.stringify(writes)).not.toContain("project-a");
+      expect(stage).not.toHaveBeenCalled();
+      expect(current()).toEqual(stored);
+      expect(idempotency.calls).toEqual(["get"]);
+      expect(runs(world)).toBe(1);
+      expect(counts.runs).toBe(1);
+    });
+});
+
 interface IssueInput { accountId: string }
 interface Issued { accountId: string; tokenId: string; revision: number; token: string; projectId: ProjectId | null }
 type Issue = MutationOperation<IssueInput, Issued, { accountId: string; tokenId: string; revision: number; token?: string }>;
 const TOKEN = "wct_live_stage_secret";
 
 describe("buffered secret-bearing release", () => {
+  /** A secret-bearing issue on project A, for a caller who maintains A; `counts.issued` counts the effects. */
+  function issue(state: ReturnType<typeof setup>) {
+    state.world.grants.grant({ accountId: state.alice.id, role: "maintainer", scope: { kind: "project", projectId: projectA } });
+    const counts = { issued: 0 };
+    const operation: Issue = {
+      id: "fixture.stage_token_issue_revoked", kind: "mutation",
+      requirement: { require: onProject("roles:manage", "project") },
+      parse: raw => ({ accountId: String((raw as IssueInput).accountId) }),
+      resources: () => ({ project: { kind: "project", id: projectA } }),
+      effect: { mode: "admitted", run: (value: IssueInput, scope: EffectScope) => {
+        counts.issued++;
+        return { accountId: value.accountId, tokenId: `token-${counts.issued}`, revision: counts.issued, token: TOKEN, projectId: scope.resources.project.projectId };
+      } },
+      retain: true,
+      secret: {
+        receipt: result => ({ accountId: result.accountId, tokenId: result.tokenId, revision: result.revision }),
+        projectReceipt: (value: Receipt) => ({ accountId: String(value.accountId), tokenId: String(value.tokenId), revision: Number(value.revision) }),
+      },
+      publicKeys: ["accountId", "tokenId", "revision", "token"],
+      project: result => ({ accountId: result.accountId, tokenId: result.tokenId, revision: result.revision, token: result.token }),
+    };
+    return { operation, counts };
+  }
+
+  it.each([false, true])("a caller who loses access during staging is refused once in the final phase; no secret is written (receipt replay: %s)", async replay => {
+    const state = setup();
+    const { world, alice, runner, idempotency } = state;
+    const { operation, counts } = issue(state);
+    if (replay) {
+      expect(await runner.mutationRelease(operation, alice.context, { accountId: "bob" }, recordingDelivery<object>(world, keyed()).options)).toEqual({ status: "committed" });
+      world.admission.events = [];
+    }
+    const { stage, seen } = stager(world, () => { world.grants.revokeAll(alice.id); });
+    const refuse = vi.fn();
+    const { options, writes } = recordingDelivery<object>(world, { ...keyed(), stage });
+    const recorded = options.refuse;
+    options.refuse = error => { refuse(); recorded.call(options, error); };
+    expect(await runner.mutationRelease(operation, alice.context, { accountId: "bob" }, options)).toEqual({ status: "committed" });
+    // The first release stages the secret itself; a replay stages only the receipt.
+    expect(seen.map(each => each.value)).toEqual([replay
+      ? { accountId: "bob", tokenId: "token-1", revision: 1 } : { accountId: "bob", tokenId: "token-1", revision: 1, token: TOKEN }]);
+    expect(writes).toEqual([{ kind: "refuse", value: answer("not_found", 404, "resource_not_found", "none", replay ? "not_started" : "committed"),
+      admitted: true, admission: replay ? 2 : 5 }]);
+    expect(refuse).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(writes)).not.toContain(TOKEN);
+    expect(JSON.stringify([...idempotency.entries.values()])).not.toContain(TOKEN);
+    expect(idempotency.states()).toEqual(["completed"]);
+    expect(counts.issued).toBe(1);
+  });
+
   it("stages the first response with its secret once and replays only the receipt", async () => {
     const { world, alice, runner, idempotency } = setup();
     world.grants.grant({ accountId: alice.id, role: "maintainer", scope: { kind: "project", projectId: projectA } });
