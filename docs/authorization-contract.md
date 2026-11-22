@@ -1578,12 +1578,17 @@ Buffered (`stage`, for MCP):
 - A rejected `stage` discards the bytes and returns
   `internal`/`release_stage_failed`, classified with this invocation's effect.
   A cancellation during staging returns `request_cancelled` with that effect.
-  When the signal aborts while `stage` is still pending, the call returns at
-  once, without a final phase and without a write; a late settlement of that
-  `stage` is absorbed and admits and writes nothing. The release deadline does
-  not interrupt a pending `stage`: the runtime clock is read inside admitted
-  phases and no timer is added, so the final phase applies the deadline after
-  `stage` settles. A call without a signal waits for `stage` to settle.
+  When the signal aborts while `stage` is still pending, the call returns
+  without waiting for `stage`, without a final phase and without a write; a
+  late settlement of that `stage` is absorbed and admits and writes nothing.
+  This holds for a call made outside admission, which is how a transport calls
+  `mutationRelease`. A call made from inside an admitted operation suspends
+  that admission while it stages, and after the abort it first waits to be
+  admitted again, for at most the gate's admission timeout. The release
+  deadline does not interrupt a pending `stage`: the runtime clock is read
+  inside admitted phases and no timer is added, so the final phase applies the
+  deadline after `stage` settles. A call without a signal waits for `stage` to
+  settle.
 - A replay answered in phase 1 with `stage` projects there; the final phase
   commits it. A record that expires or is replaced during staging cannot cause
   a second reservation or effect, because the final phase reads no record.
@@ -1603,12 +1608,14 @@ the record through the gate from inside each callback, which shows the
 reservation already released when a refusal is written.
 `runner.mutation-release.test.ts` and both SQLite suites have a negative
 control: a callback called after the runner returned observes no admission. Only SQLite has reopen and repair evidence; the fixture store
-has none. The historical decision before a record's answer is covered for
-`run()` (`runner.test.ts`), for the direct and the buffered shape and over the
-real store: a keyed attempt on one project whose resource moved to another
+has none. The historical decision before a record's answer is covered over
+the fixture store for `run()` (`runner.test.ts`) and for the direct and the
+buffered shape: a keyed attempt on one project whose resource moved to another
 that the caller keeps, for an `unknown`, `reserved` and `started` record, a
 fingerprint mismatch against a `completed` record and a `completed` replay,
-each with a caller who lost the first project and one who did not. A broken
+each with a caller who lost the first project and one who did not. Over the
+real store that arrangement is covered for an `unknown` record only, before
+and after a reopen. A broken
 clock (`NaN`, `Infinity`, a non-number, a throw, a thenable, broken for good or
 once) is covered at the entry of phase 1, phase 3, the early refusal, step 5
 and the final staged phase, including an ineligible caller.
@@ -1860,16 +1867,21 @@ internal result, or `unknown`, in the completion phase, after the lease was
 released. The runner validates and copies every record it reads back. A
 malformed record is `internal`/`invalid_idempotency_record`.
 
-A later request with the same key is first decided on the current authority
-and the current resolution, then the record is read. An operation without
-expected transitions then decides on the resources stored with the record
-(its commit-point resolution once started) before the record answers; an
-operation with expected transitions reads the record first and decides on its
-resources the same way (see [Expected transitions](#expected-transitions)). A
-caller who lost access to what the attempt was authorized against receives
-that denial, for example `not_found` when its project is no longer visible,
-and learns nothing about the record: no conflict, no request in progress, no
-unknown outcome and no replay. The rule is in the first phase shared by `run()`
+A later request with the same key is answered in the first phase. For an
+operation without expected transitions, the request is first decided on the
+current authority and the current resolution, then the record is read, and
+then the request is decided on the resources stored with the record (its
+commit-point resolution once started) before the record answers. An operation
+with expected transitions reads the record before anything is resolved and
+decides on its resources the same way (see
+[Expected transitions](#expected-transitions)). A caller who lost access to
+what the attempt was authorized against receives that denial, for example
+`not_found` when its project is no longer visible. The denial hides the
+record's fingerprint, state and result: no conflict, no request in progress,
+no unknown outcome and no replay. It does not hide that the key is taken: a
+request of the same caller with a key that has no record runs fresh. Keys are
+separate per principal and operation, so a caller can observe this only for
+its own keys. The rule is in the first phase shared by `run()`
 and `mutationRelease`. For `run()` it is a deliberate tightening: a caller who
 could still see the current resolution but not the stored one used to receive
 the record's answer. Otherwise the request gets:
@@ -2507,8 +2519,9 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   `mutationRelease` and, on `commit_failed`, ends the response without a
   further envelope.
 - **Buffered mutation release.** The first transport that passes `stage` to
-  `mutationRelease` (D2b-2, MCP) also passes a `signal` and aborts it when its
-  deadline passes or its caller is gone. The runner does not bound a pending
+  `mutationRelease` (D2b-2, MCP) calls it outside admission, passes a `signal`
+  and aborts it when its deadline passes or its caller is gone. The runner does
+  not bound a pending
   `stage` by the deadline, so without that abort a `stage` that never settles
   holds the call open.
 - **Mutation release with `acquire` or an idle effect.** `mutationRelease`
