@@ -193,7 +193,8 @@ describe("SQLite idempotency store: sweep budget", () => {
   it("counts the replaced expired record of the requested key against the 100-record sweep", () => {
     const clock = { now: 1_000 };
     const { db, store: s } = store(clock);
-    fill(db, 100, { expiresAt: 500 });
+    // Unexpired at the first reservation, expired (and earlier than the key's record) at the replacement.
+    fill(db, 100, { expiresAt: 2_000 });
     s.put(K(), record("reserved")); s.put(K(), record("started")); s.put(K(), record("completed", { result: 1 }));
     clock.now = 1_000 + HORIZON;
     expect(count(db)).toBe(101);
