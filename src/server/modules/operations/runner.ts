@@ -1213,7 +1213,13 @@ export class OperationRunner {
           } else {
             phase = this.decideOn(prepared, gate, refs);
             const record = lookup();
-            if (record) return { kind: "replay" as const, record, value: existing(record, () => this.replay(operation, phase, record)) };
+            if (record) {
+              // As above: decided on the resources the attempt was authorized against before the
+              // record is classified, so a caller who lost them learns nothing about it (no conflict,
+              // no request in progress, no unknown outcome). `replay()` repeats this decision.
+              this.decided(prepared, gate.requirement, record.resources);
+              return { kind: "replay" as const, record, value: existing(record, () => this.replay(operation, phase, record)) };
+            }
           }
           const attempt = randomUUID();
           // Owned before the write: a write that lands and then throws is still given back in `finally`.
@@ -1622,7 +1628,7 @@ export class OperationRunner {
         try {
           const { authority } = currentAuthorityWithCredential(context);
           if (!listenerAllowed({ excludedListeners: excluded as readonly ListenerKind[] | undefined }, authority.listener)) throw notRegistered();
-          guard.check(synchronous(this.runtime.now(), "runtime_not_synchronous"));
+          guard.check(this.policyClock());
         } catch (thrown) { answer = thrown; }
         delivery.outcome = this.refuseIn(delivery, guard, answer, "not_started");
       }, { signal: delivery.signal });
@@ -1632,12 +1638,31 @@ export class OperationRunner {
     return delivery.outcome ?? { status: "refused", error: failure(new OperationError("internal", "unexpected_failure"), "not_started", undefined) };
   }
 
-  /** The release policy of one admitted phase of a delivery; a refusal it throws is recognized by identity. */
+  /**
+   * The runtime clock as a delivery's release policy reads it. A throw, or a
+   * thenable (absorbed, so its rejection is never unhandled), gives no answer:
+   * `NaN`, which the guard treats as an expired deadline. Never throws.
+   */
+  private policyClock(): number {
+    let now: unknown;
+    try { now = this.runtime.now(); } catch { return Number.NaN; }
+    if (isThenable(now)) { absorb(now); return Number.NaN; }
+    return typeof now === "number" ? now : Number.NaN;
+  }
+
+  /**
+   * The release policy of one admitted phase of a delivery; a refusal it
+   * throws is recognized by identity. A clock answer that is not a finite
+   * number is an expired deadline: the policy is applied at the deadline
+   * itself, so eligibility is still checked first and `release_timed_out`
+   * follows, never an operation error of the clock.
+   */
   private guard<P>(delivery: MutationDelivery<P>): PhaseGuard {
     const guard: PhaseGuard = {
       passed: false,
       check: (now: number) => {
-        try { delivery.check(now); } catch (error) {
+        const time = typeof now === "number" && Number.isFinite(now) ? now : delivery.deadline;
+        try { delivery.check(time); } catch (error) {
           if (typeof error === "object" && error !== null) delivery.policy.add(error);
           throw error;
         }
@@ -1656,10 +1681,8 @@ export class OperationRunner {
   private deliver<P, T>(delivery: MutationDelivery<P>, write: (value: T) => void, value: T, effect: EffectState): MutationReleaseResult {
     const failed = (): MutationReleaseResult => ({ status: "commit_failed", error: failure(new OperationError("internal", "release_commit_failed"), effect, undefined) });
     if (delivery.attempted) return failed();
-    let now: unknown;
-    try { now = this.runtime.now(); } catch { now = Number.NaN; }
-    if (isThenable(now)) absorb(now);
-    if (typeof now !== "number" || !Number.isFinite(now) || now >= delivery.deadline) {
+    const now = this.policyClock();
+    if (!Number.isFinite(now) || now >= delivery.deadline) {
       return { status: "refused", error: failure(new OperationError("unavailable", "release_timed_out", { retry: "retry" }), effect, undefined) };
     }
     delivery.attempted = true;
@@ -1675,14 +1698,16 @@ export class OperationRunner {
   /**
    * Writes a refusal established in this admitted phase. A refusal of the
    * release policy is only returned. Otherwise the policy is applied first when
-   * this phase has not passed it yet (a revalidation that threw before it),
-   * then the deadline, then `refuse`. Never throws.
+   * this phase has not passed it yet (a revalidation, or a clock read of
+   * `prepare`, that threw before it), then the deadline, then `refuse`. The
+   * retry reads the clock through `policyClock`, so a clock still broken is
+   * the policy's `release_timed_out`. Never throws.
    */
   private refuseIn<P>(delivery: MutationDelivery<P>, guard: PhaseGuard, error: unknown, effect: EffectState): MutationReleaseResult {
     const returned = (thrown: unknown): MutationReleaseResult => ({ status: "refused", error: failure(thrown, effect, delivery.signal) });
     if (typeof error === "object" && error !== null && delivery.policy.has(error)) return returned(error);
     if (!guard.passed) {
-      try { guard.check(synchronous(this.runtime.now(), "runtime_not_synchronous")); } catch (thrown) { return returned(thrown); }
+      try { guard.check(this.policyClock()); } catch (thrown) { return returned(thrown); }
     }
     return this.deliver(delivery, delivery.refuse, failure(error, effect, delivery.signal), effect);
   }
