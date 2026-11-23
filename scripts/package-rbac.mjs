@@ -307,7 +307,10 @@ async function operationOffline(mode) {
     const offlineThread = ["knowledge", "threads", "create", "--project", firstProjectId(), "--title", `Installed offline ${mode} thread`, "--body", "Written offline."];
     const offlineWritten = await json(currentCli, offlineThread);
     assert.equal(offlineWritten.thread.createdBy, "installation"); assert.equal(offlineWritten.thread.title, `Installed offline ${mode} thread`);
-    assert.deepEqual(await refusal(currentCli, [...offlineThread, "--idempotency-key", `installed-offline-${mode}`]), mutationRefusal("idempotency_unavailable", "unavailable", 503));
+    // The keyed refusal: exit 1, the error alone on stderr, nothing on stdout.
+    const offlineKeyed = await command(currentCli, [...offlineThread, "--idempotency-key", `installed-offline-${mode}`]);
+    assert.equal(offlineKeyed.code, 1); assert.equal(offlineKeyed.stdout, "");
+    assert.deepEqual(JSON.parse(offlineKeyed.stderr.trim().split("\n").at(-1)), mutationRefusal("idempotency_unavailable", "unavailable", 503));
     assert.equal(observe(db => db.prepare("SELECT count(*) AS n FROM knowledge_threads WHERE title=?").get(`Installed offline ${mode} thread`).n), 1);
     for (const closedStderr of [false, true]) await step(`session-describe-offline-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
       () => closedSessionOutput("offline", closedStderr));
@@ -476,6 +479,10 @@ async function operationProjectReads(mode, secret) {
 /**
  * D2a with a provider cookie: the human's project reads follow their stored roles. After an upgrade the owner holds
  * the installation `admin` role and reads every project; the zero-role agent of the same request matrix sees none of them.
+ * D2b-2 with the same cookie: the admin writes a thread through the cookie POST with a key and replays it, attributed to
+ * the owner's account (an `owner` principal row, a human account of the target model); without a role the write is not
+ * found. An authorized agent write on API or MCP is not demonstrated here: no supported fixture or release command grants
+ * an agent a project role yet, so the installed better-auth agent stays the zero-role agent, refused on both.
  */
 async function projectReadsAsHuman(browser, accountId, agentToken) {
   const ids = observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id").all().map(row => row.id));
@@ -496,6 +503,22 @@ async function projectReadsAsHuman(browser, accountId, agentToken) {
   assert.equal(viaAgent.status, 404, "The zero-role agent cannot see the project the admin reads.");
   // The admin cookie reads the real repositories; without a role (the fresh lane's owner) the same cookie reads nothing.
   await repositoryReads(admin ? "api-cookie/better-auth/admin" : "api-cookie/better-auth/no-role", (operation, input) => browser.call(`/api/operations/${operation}`, input), admin);
+  const writable = observe(db => db.prepare("SELECT id FROM knowledge_projects WHERE status='active' ORDER BY id LIMIT 1").get())?.id;
+  assert(writable, "An active project for the cookie thread write.");
+  const title = `Installed cookie thread ${admin ? "admin" : "no-role"}`;
+  const writeThread = () => browser.call("/api/operations/knowledge.create_thread", { projectId: writable, title, body: "Written with a provider session." },
+    { "Idempotency-Key": `installed-cookie-${admin ? "admin" : "no-role"}` });
+  const written = await writeThread();
+  const stored = () => observe(db => db.prepare("SELECT t.created_by, h.principal_id, h.authentication_method FROM knowledge_threads t JOIN knowledge_history h ON h.record_kind='thread' AND h.record_id=t.id WHERE t.title=?").all(title));
+  if (admin) {
+    assert.equal(written.status, 200, "The installation admin writes a thread with its cookie.");
+    assert.equal(written.body.thread.createdBy, accountId); assert.equal(written.body.thread.projectId, writable); assert.equal(written.body.thread.title, title);
+    assert.deepEqual(await writeThread(), written, "The keyed cookie write replays the same answer.");
+    assert.deepEqual(stored(), [{ created_by: accountId, principal_id: accountId, authentication_method: "provider_session" }]);
+  } else {
+    assert.deepEqual(written, { status: 404, body: mutationRefusal("resource_not_found", "not_found", 404) });
+    assert.deepEqual(stored(), []);
+  }
 }
 /**
  * Two registrations of real Git repositories, made with the seeding version's own interfaces only: the linked registration
