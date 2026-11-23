@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createSessionDescribeOutput, runProjectsCommand, runSessionDescribe, runThreadsCreateCommand, SessionDescribeError } from "./session-describe";
+import { createSessionDescribeOutput, createThreadsCreateOutput, runProjectsCommand, runSessionDescribe, runThreadsCreateCommand, SessionDescribeError } from "./session-describe";
 import { buildOperationsRuntime } from "../server/bootstrap/operations-runtime";
 import { initializeOperationRetention, type OperationRetention } from "../server/bootstrap/operation-retention";
 import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
@@ -120,7 +120,8 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   if (command === "knowledge" && process.argv[3] === "threads" && process.argv[4] === "create") {
     // The operations thread write (D2b-2), routed before the legacy Knowledge parser and its pre-lock
     // handoff check: lock-first, with this finite command's output handling. Option values are opaque.
-    sessionOutput = createSessionDescribeOutput();
+    // A failed standard output after the write is reported with effect committed.
+    sessionOutput = createThreadsCreateOutput();
     await runThreadsCreateCommand(process.argv.slice(5), sessionOutput);
     return;
   }

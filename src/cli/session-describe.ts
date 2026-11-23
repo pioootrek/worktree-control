@@ -80,6 +80,57 @@ export function createSessionDescribeOutput(stdout: OutputStream = process.stdou
   };
 }
 
+/**
+ * A write of `knowledge threads create` that failed after its success was
+ * known: the thread exists, so the effect is `committed`, never `null`.
+ */
+const committedOutputFailure = () => new SessionDescribeError(publicError(new OperationError("unavailable", "output_unavailable"), "committed"));
+
+/**
+ * The finite output of `knowledge threads create`. Like the read commands'
+ * handler, it keeps its listeners until process termination and sets exitCode
+ * without exiting, and it writes at most one diagnostic to standard error. It
+ * differs in what a failed standard output reports: the command writes only
+ * after the outcome is known, so a failed write, synchronous or a late stream
+ * error, reports `output_unavailable` with effect `committed`. A synchronous
+ * failure is thrown, so the offline runner classifies it as its failed
+ * delivery and the socket path reports it; a stream error before any write
+ * only sets the exit code, and the command's own answer is the diagnostic.
+ */
+export function createThreadsCreateOutput(stdout: OutputStream = process.stdout, stderr: OutputStream = process.stderr,
+  fail: () => void = () => { process.exitCode = 1; }) {
+  let outputFailed = false, stderrFailed = false, reported = false, written = false, thrown = false;
+  const reportError = (line: string) => {
+    if (reported) return;
+    reported = true;
+    fail();
+    if (stderrFailed || stderr.destroyed) return;
+    try { writeSync(2, `${line}\n`); } catch { stderrFailed = true; }
+  };
+  stdout.on("error", () => {
+    outputFailed = true;
+    // A failure already thrown is reported by the command's own answer (the runner's failed delivery offline).
+    if (written && !thrown) reportError(JSON.stringify({ error: committedOutputFailure().error }));
+    else fail();
+  });
+  stderr.on("error", () => { stderrFailed = true; fail(); });
+  return {
+    reportError,
+    write(line: string) {
+      written = true;
+      try {
+        if (outputFailed || stdout.destroyed || stdout.writableEnded || !stdout.writable) throw committedOutputFailure();
+        // A false return is backpressure: the complete payload is committed to Node.
+        stdout.write(`${line}\n`);
+        if (outputFailed) throw committedOutputFailure();
+      } catch {
+        outputFailed = true; thrown = true;
+        throw committedOutputFailure();
+      }
+    },
+  };
+}
+
 function replyDecoder(success: z.ZodType) {
   return (status: number | undefined, value: unknown): unknown => {
     if (status === 200) {
@@ -331,7 +382,11 @@ function mutationReplyDecoder(success: z.ZodType) {
   };
 }
 
-/** What the finite command writes: the DTO to stdout, a refusal to stderr. */
+/**
+ * What the finite command writes: the DTO to stdout, a refusal to stderr.
+ * `write` is called only after the outcome is known; a write that throws is a
+ * delivery failure of a committed thread.
+ */
 export interface ThreadsCreateOutput { write(line: string): void; reportError(line: string): void }
 
 /**
@@ -344,7 +399,8 @@ export interface ThreadsCreateOutput { write(line: string): void; reportError(li
  * `unavailable`/`idempotency_unavailable` before any effect. An unkeyed write
  * repeated after an uncertain answer can create a second thread.
  */
-export async function runThreadsCreateCommand(args: string[], output: ThreadsCreateOutput, stdin?: AsyncIterable<unknown> & { destroy?(): void }): Promise<void> {
+export async function runThreadsCreateCommand(args: string[], output: ThreadsCreateOutput, stdin?: AsyncIterable<unknown> & { destroy?(): void },
+  socketTimeoutMs = 15_000): Promise<void> {
   const command = parseThreadsCreateCommand(args);
   const paths = resolveAppPaths(command.dataDir, command.stateDir);
   // Bounded before the lock is taken.
@@ -360,7 +416,7 @@ export async function runThreadsCreateCommand(args: string[], output: ThreadsCre
     if (!(error instanceof ControllerAlreadyRunningError)) throw notSubmitted("unavailable", "offline_lock_unavailable");
     let result: unknown;
     try {
-      result = await requestAdminSocket(paths.adminSocketPath, input, 15_000, 256 * 1024,
+      result = await requestAdminSocket(paths.adminSocketPath, input, socketTimeoutMs, 256 * 1024,
         { path: "/api/operations/knowledge.create_thread", decode: mutationReplyDecoder(threadResult), ...(key !== undefined ? { idempotencyKey: key } : {}) });
     } catch (cause) {
       if (cause instanceof SessionDescribeError) throw cause;
@@ -371,7 +427,9 @@ export async function runThreadsCreateCommand(args: string[], output: ThreadsCre
       // Submitted: the controller may have written the thread. Inspect before repeating; never run it offline.
       throw new SessionDescribeError(publicError(new OperationError("outcome_unknown", "admin_outcome_unknown", { effect: "unknown" })));
     }
-    emit(result); return;
+    // The decoded success is the controller's committed thread: a failed write cannot hide that.
+    try { emit(result); } catch { throw committedOutputFailure(); }
+    return;
   }
   let store: SqliteStateStore | null = null;
   try {
@@ -395,7 +453,8 @@ export async function runThreadsCreateCommand(args: string[], output: ThreadsCre
     const released = await runtime.runner.mutationRelease(operation, minted.context, input, {
       eligible: runtime.eligible, connected: () => true, deadline: Date.now() + 15_000,
       ...(key !== undefined ? { idempotencyKey: key } : {}),
-      // Both writes happen inside the admitted phase that established them.
+      // Both writes happen inside the admitted phase that established them. A failed write of the
+      // DTO is the runner's failed delivery, reported below with the runner's error and effect.
       commit(value) { emit(value); },
       refuse(error) { output.reportError(JSON.stringify({ error })); },
     });
