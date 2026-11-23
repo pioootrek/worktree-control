@@ -1,3 +1,4 @@
+// test-tier: heavy (git repositories, child processes)
 import { execFileSync } from "node:child_process";
 import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join } from "node:path";

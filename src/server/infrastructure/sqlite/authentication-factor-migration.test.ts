@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite migrations)
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity, resumeFixtureSecurity, openProtectedUpgradeFixture } from "./fixtures/protected-security";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";

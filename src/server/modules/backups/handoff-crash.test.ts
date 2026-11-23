@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes)
 import { resumeFixtureSecurity } from "../../infrastructure/sqlite/fixtures/protected-security";
 import { fork } from "node:child_process";
 import { once } from "node:events";

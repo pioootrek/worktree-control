@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes)
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";

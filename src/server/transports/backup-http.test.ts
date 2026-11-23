@@ -1,3 +1,4 @@
+// test-tier: heavy (network listeners)
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

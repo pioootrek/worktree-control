@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes, network listeners)
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";

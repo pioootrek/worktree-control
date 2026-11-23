@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes)
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

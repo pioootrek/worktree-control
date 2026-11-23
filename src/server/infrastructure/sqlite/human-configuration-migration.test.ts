@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite migrations)
 import { resumeFixtureSecurity } from "./fixtures/protected-security";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 

@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes, durable SQLite stores)
 import { maintainSecurityFence } from "../../bootstrap/security-maintenance";
 import { resolveAppPaths } from "../../paths";
 import { resumeFixtureSecurity } from "./fixtures/protected-security";

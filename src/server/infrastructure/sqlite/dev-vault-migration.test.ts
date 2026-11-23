@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite migrations)
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { createHash } from "node:crypto";

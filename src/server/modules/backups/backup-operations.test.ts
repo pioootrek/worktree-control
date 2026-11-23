@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite backups)
 import { mkdtempSync, existsSync, rmSync, renameSync, symlinkSync, writeFileSync, readFileSync, statfsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
