@@ -19,6 +19,8 @@ export const CLI_HELP = [
   "  doctor             Check Node.js, Git and the application state",
   "  test-run           Local operator, one exact run via the owner socket: inspect <run-id>, stop <run-id> --reason TEXT [--wait-seconds N]",
   "  knowledge          Project knowledge operations and Hub imports",
+  "    threads create   Operator thread write as JSON, lock-first: --project ID --title TEXT (--body TEXT | --body-file PATH|-) [--idempotency-key KEY]",
+  "                     Without a key, repeating it after an uncertain answer can create a second thread; offline, a key is refused before any write",
   "  identity           Owners, agents, runtime delegations/credentials and knowledge grants",
   "  vault              DEV-only encrypted vault; signed owner approval, JSON on stdin",
   "  remote-verification  Local owner provisioning: provision --file FILE, revoke-token --credential-id ID; start opts in with --remote-verification-config FILE",

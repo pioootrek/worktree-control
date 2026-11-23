@@ -277,3 +277,20 @@ export interface ProjectWorktreesResult {
   registrations: RegistrationWorktrees[];
   registrationsTruncated: boolean;
 }
+
+/**
+ * A thread as `knowledge.create_thread` releases it: eight named fields, the
+ * stored values. `createdBy` is the stored principal ID (an account ID, or
+ * `installation` for the installation and the operator).
+ */
+export interface KnowledgeThreadDto {
+  id: string;
+  projectId: ProjectId;
+  title: string;
+  body: string;
+  revision: number;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface KnowledgeCreateThreadResult { thread: KnowledgeThreadDto }

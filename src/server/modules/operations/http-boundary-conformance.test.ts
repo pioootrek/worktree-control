@@ -1638,7 +1638,7 @@ describe("MCP listener boundary conformance", () => {
 
   it.each(["open", "token", "better-auth"])("%s SDK sequential initialize/list/call has no session authority", async mode => {
     const f = await mcpFixture(mode), client = await f.client(false, mode === "token" ? f.installation : mode === "better-auth" ? f.agent : undefined);
-    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["project_list", "project_status", "project_worktrees", "session_describe"]);
+    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["knowledge_create_thread", "project_list", "project_status", "project_worktrees", "session_describe"]);
     expect((await client.callTool({ name: "session_describe", arguments: {} })).structuredContent).toMatchObject({ listener: "mcp", mode });
     expect(f.authenticate).not.toHaveBeenCalled(); expect(f.usage).not.toHaveBeenCalled();
   });
@@ -2424,3 +2424,50 @@ it("real legacy startup refuses all mounted operations and CLI with a consistent
   const reopened = new SqliteStateStore(paths.databasePath);
   try { expect(reopened.getAuthenticationPolicy().mode).toBe("legacy"); } finally { await reopened.closeAfterDrain(); }
 }, 40_000);
+
+const createThreadRoute = "/api/operations/knowledge.create_thread";
+const threadInput = JSON.stringify({ projectId: "project-a", title: "Cookie thread", body: "Written in a browser session." });
+const sameOrigin = { "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty" };
+describe("knowledge.create_thread over the mounted cookie POST (D2b-2)", () => {
+  const human = async () => {
+    const f = await fixture("better-auth", undefined, undefined, true);
+    await f.store.admission.run(() => f.db.prepare("INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES('human','operator','project','project-a',?)").run(iso(NOW)));
+    const threads = () => f.store.admission.run(() => f.db.prepare("SELECT t.created_by, h.principal_id, h.authentication_method FROM knowledge_threads t JOIN knowledge_history h ON h.record_id=t.id AND h.record_kind='thread'").all());
+    return { f, threads };
+  };
+
+  it("writes the thread of a human session with the pinned HTTPS Origin and same-origin Fetch Metadata", async () => {
+    const { f, threads } = await human();
+    const reply = await f.send("api", { path: createThreadRoute, body: threadInput, headers: { ...cookieHeaders, ...sameOrigin } }).reply;
+    expect(reply.status).toBe(200);
+    expect(reply.body.thread).toMatchObject({ projectId: "project-a", title: "Cookie thread", createdBy: "human", revision: 1 });
+    expect(await threads()).toEqual([{ created_by: "human", principal_id: "human", authentication_method: "provider_session" }]);
+  });
+
+  const withoutOrigin = Object.fromEntries(Object.entries(cookieHeaders).filter(([name]) => name !== "Origin"));
+  it.each([
+    ["a missing Origin despite same-origin Fetch Metadata", { ...withoutOrigin, ...sameOrigin }, 403, "forbidden", "origin_forbidden"],
+    ["a wrong Origin", { ...cookieHeaders, ...sameOrigin, Origin: "https://other.test" }, 403, "forbidden", "origin_forbidden"],
+    ["a duplicate Origin", ["Host", "controller.test", "Content-Type", "application/json", "Cookie", cookieHeaders.Cookie, "Origin", "https://controller.test", "Origin", "https://controller.test"], 403, "forbidden", "origin_forbidden"],
+    ["a wrong Host", { ...cookieHeaders, ...sameOrigin, Host: "other.test" }, 400, "invalid_request", "invalid_authority"],
+    ["cross-site Fetch Metadata", { ...cookieHeaders, "Sec-Fetch-Site": "cross-site" }, 403, "forbidden", "origin_forbidden"],
+    ["a simple-form content type", { ...cookieHeaders, ...sameOrigin, "Content-Type": "text/plain" }, 400, "invalid_request", "invalid_request"],
+  ] as const)("refuses %s before the body read, mint and reservation", async (_name, headers, status, category, reason) => {
+    const { f, threads } = await human();
+    const mint = vi.spyOn(f.runtime, "mint"), resolve = vi.spyOn(f.runtime, "resolveSession");
+    let bodyReads = 0;
+    f.controller.server.prependListener("request", req => req.on("newListener", event => { if (event === "data") bodyReads++; }));
+    const reply = await f.send("api", { path: createThreadRoute, slow: true, headers: headers as Record<string, string> | string[] }).reply;
+    expect(reply.status).toBe(status);
+    expect(reply.body).toEqual(refusal(reason, category, status, "none"));
+    expect(bodyReads).toBe(0); expect(mint).not.toHaveBeenCalled(); expect(resolve).not.toHaveBeenCalled();
+    expect(await threads()).toEqual([]);
+  });
+
+  it("the unix listener keeps refusing a cookie on the thread write", async () => {
+    const { f, threads } = await human();
+    const reply = await f.send("unix", { path: createThreadRoute, body: threadInput, headers: { "Content-Type": "application/json", Cookie: cookieHeaders.Cookie } }).reply;
+    expect(reply.status).toBe(401); expect(reply.body).toEqual(refusal("provider_cookie_not_supported"));
+    expect(await threads()).toEqual([]);
+  });
+});

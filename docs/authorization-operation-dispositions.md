@@ -782,7 +782,9 @@ that limit to every operation that retains. Knowledge accepts 200 characters
 and backups 256 today (matrix), and the configuration and test operations 1 to
 120, so some existing keys no longer fit: behaviour change 34. `test_run.admin_stop`
 keeps its request id (8 to 120 characters) as its key, which is within the
-limit.
+limit. `knowledge.create_thread` (D2b-2) is the first mounted operation under
+this limit; the legacy `create_thread` keeps its 200-character keys, in its own
+`knowledge_idempotency` records, until the Knowledge family step removes it.
 
 ### 4.11 Aggregates and collections
 
@@ -1771,6 +1773,22 @@ are in [the contract](authorization-contract.md#project-reads-d2a). The legacy
 project reads they replace (rows 1.1 to 1.4, 1.R and part of 2.5) remain until
 their removal step. Every mutation keeps its prerequisites below.
 
+D2b mounts the retained Knowledge write of item 3, `knowledge.create_thread`
+(row 7.23), on the API listener, the private unix socket, MCP and the CLI,
+never on the worker listener. D2b-1 added `OperationRunner.mutationRelease`,
+which writes a mutation's success and every refusal inside admission; D2b-2
+builds the operation over the store's own thread writer and mounts it. HTTP
+carries the key as the `Idempotency-Key` header, MCP as the reserved tool
+argument `idempotencyKey`, and the CLI as `--idempotency-key`. Offline the CLI
+keeps no retention: a keyed write is refused before any effect. The operator's
+writes are attributed provisionally to `installation` with method `none`, a
+release item for the owner. The operation, its bounds, authorship, transports
+and rollback limit are in
+[the contract](authorization-contract.md#knowledge-thread-write-d2b-2). This
+proves mutation, release and replay through the real adapter stack. The legacy
+`create_thread` paths remain, byte for byte, until item 4 removes them; the two
+paths write the same tables but share no idempotency records.
+
 
 A proposal, not a decision. It reproduces the ordering of review `ce8aa214`.
 Treat the catalogue as a draft inventory, not as a single implementation pull
@@ -1800,8 +1818,10 @@ revision 3 in task 040062b4):
 - then the bounded synchronous idempotency store with restart repair (D1b,
   done: schema step 53, the SQLite adapter, the fingerprint key file, bounds
   without early eviction, restart repair and the quarantine's invalidation; the
-  controller composes it and no mounted operation declares `retain`);
-- then the one retained Knowledge write of item 3;
+  controller composes it);
+- then the one retained Knowledge write of item 3 (D2b, done:
+  `knowledge.create_thread`, the first mounted operation that declares
+  `retain`);
 - the coordination-session lifecycle, before item 7 and before any cancel or
   worker report.
 

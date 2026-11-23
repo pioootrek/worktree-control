@@ -72,7 +72,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
     }
     return built.runner.readRelease(operation, context, input, options);
   };
-  const runtime = { ...built, mint: minted, runner: { readRelease, queryRelease: built.runner.queryRelease.bind(built.runner) } } satisfies OperationsHttpRuntime;
+  const runtime = { ...built, mint: minted, runner: { readRelease, queryRelease: built.runner.queryRelease.bind(built.runner), mutationRelease: built.runner.mutationRelease.bind(built.runner) } } satisfies OperationsHttpRuntime;
   const adapter = createOperationsMcp({ runtime, limits });
   const httpAdapter = createOperationsHttp({ runtime, listener: "api", limits });
   // Fault owners are deliberate negative controls; the actual adapter is unchanged.
@@ -116,7 +116,7 @@ async function exactNegative(assertion: string, observed: unknown, expected: unk
 describe("request-scoped MCP adapter", () => {
   it.each(["open", "token", "better-auth"])("%s: real SDK sequential initialize, notification, list and call, with no usage writer", async mode => {
     const f = await fixture(mode), client = await f.client(f.credential);
-    expect((await client.listTools()).tools.map(t => t.name)).toEqual(["project_list", "project_status", "project_worktrees", "session_describe"]);
+    expect((await client.listTools()).tools.map(t => t.name)).toEqual(["knowledge_create_thread", "project_list", "project_status", "project_worktrees", "session_describe"]);
     const result = await client.callTool({ name: "session_describe", arguments: {} });
     expect(result.structuredContent).toMatchObject({ mode, listener: "mcp", actor: { kind: mode === "better-auth" ? "agent" : "installation", accountId: mode === "better-auth" ? "agent" : null } });
     expect(f.minted).toHaveBeenCalledTimes(4);
@@ -221,7 +221,7 @@ describe("request-scoped MCP adapter", () => {
     expect(Buffer.byteLength(JSON.stringify(http.body))).toBeLessThanOrEqual(MAX_DESCRIBED_BYTES);
     // initialize and notification use the same release witness as tools/call.
     const client = await f.client();
-    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["project_list", "project_status", "project_worktrees", "session_describe"]);
+    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["knowledge_create_thread", "project_list", "project_status", "project_worktrees", "session_describe"]);
     const sent = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
     const result = await client.callTool({ name: "session_describe", arguments: {} });
     expect(result.structuredContent).toEqual(dto);
@@ -324,7 +324,8 @@ describe("request-scoped MCP adapter", () => {
   });
 
   it.each(["oversized", "strict JSON"] as const)("preserves an examined %s refusal when stop also aborts the request", async kind => {
-    const f = await fixture("open", { bodyBytes: 200 });
+    // Without a declared larger tool ceiling the outer read is bounded at bodyBytes, so the oversized body is refused while it streams.
+    const f = await fixture("open", { bodyBytes: 200, operationBodyBytes: {} });
     f.hooks.beforeHandle = request => {
       const stop = () => { f.adapter.stop(); };
       // The refusal wins settlement; abort before its outer catch runs.
@@ -336,6 +337,29 @@ describe("request-scoped MCP adapter", () => {
     expect(reply.status).toBe(oversized ? 413 : 400);
     expect(reply.headers["retry-after"]).toBeUndefined();
     expect(reply.body).toEqual({ error: { category: oversized ? "payload_too_large" : "invalid_request", reason: oversized ? "request_too_large" : "invalid_request", status: oversized ? 413 : 400, retry: "none", effect: null } });
+    expect(f.minted).not.toHaveBeenCalled(); await f.adapter.drain();
+  });
+
+  // The companion of the case above in the production configuration: the outer read admits the larger
+  // tool class, so a message above bodyBytes that is no such call is refused only after it was read and
+  // classified. A stop at the end of that read, or once the refusal is being written, must not replace it.
+  it.each(["at the end of the read", "while the refusal is written"] as const)("preserves the lower-class refusal of the production ceilings when stop aborts %s", async point => {
+    const f = await fixture("open");
+    const size = OPERATIONS_HTTP_LIMITS.bodyBytes + 1;
+    expect(size).toBeLessThan(Math.max(...Object.values(OPERATIONS_HTTP_LIMITS.operationBodyBytes)));
+    let written = 0;
+    f.hooks.beforeHandle = (request, response) => {
+      const stop = () => { f.adapter.stop(); };
+      if (point === "at the end of the read") { request.once("end", () => queueMicrotask(stop)); return; }
+      const head = response.writeHead.bind(response) as (...args: unknown[]) => ServerResponse;
+      response.writeHead = ((...args: unknown[]) => { written++; stop(); return head(...args); }) as ServerResponse["writeHead"];
+    };
+    const text = JSON.stringify(list);
+    const reply = await f.send(list, undefined, {}, { body: text + " ".repeat(size - Buffer.byteLength(text)) }).reply;
+    expect(reply.status).toBe(413);
+    expect(reply.headers["retry-after"]).toBeUndefined();
+    expect(reply.body).toEqual({ error: { category: "payload_too_large", reason: "request_too_large", status: 413, retry: "none", effect: null } });
+    if (point === "while the refusal is written") expect(written).toBe(1);
     expect(f.minted).not.toHaveBeenCalled(); await f.adapter.drain();
   });
 

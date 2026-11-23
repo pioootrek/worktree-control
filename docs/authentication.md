@@ -336,6 +336,64 @@ worktree-control projects worktrees example --data-dir /tmp/wtc-example/data --s
 The legacy `project list` command and the legacy MCP and HTTP project routes are
 unchanged until their families are migrated.
 
+## Write a Knowledge thread through each listener (integration branch)
+
+`knowledge.create_thread` (D2b-2) is the first write on the new surface. It is
+served on the API listener, the private unix socket, MCP and the CLI, never on
+the HTTPS worker listener. It needs `knowledge:write` and `knowledge:read` on the
+project (an `operator` role or more), or full authority. An archived project
+refuses `project_archived` (409). `title` and `body` are trimmed: 1 to 200 and 1
+to 65,536 UTF-8 bytes. Pass an idempotency key to make a retry safe; without
+one, repeating the call after an uncertain answer can create a second thread.
+
+```bash
+curl --fail-with-body "$WTC_API/api/operations/knowledge.create_thread" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: plan-2026-11-23' \
+  --data '{"projectId":"example","title":"Release plan","body":"First draft."}'
+```
+
+The answer is `{"thread":{...}}` with `id`, `projectId`, `title`, `body`,
+`revision`, `createdBy`, `createdAt` and `updatedAt`. The same request with the
+same key from the same caller returns the same answer and writes nothing; the
+same key with a different request refuses `idempotency_conflict` (409). Keys are
+1 to 128 characters of `A-Z a-z 0-9 . _ : -`. Keys are separate per caller and
+per surface family: a key used here never matches one used with the legacy
+`knowledge create_thread` command or tool. A human, an agent or the installation is
+recorded as the author as on the legacy write. The local operator is recorded as
+`installation` with method `none` in this integration build.
+
+Over MCP the tool is `knowledge_create_thread`, with the key as the optional
+`idempotencyKey` argument. A refusal is a JSON-RPC error whose `data` is the
+public error, not a tool result with `isError`:
+
+```bash
+curl --fail-with-body "$WTC_MCP/mcp/operations" \
+  -H "@$WTC_HEADER_FILE" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' --data-binary @- <<'JSON'
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"knowledge_create_thread","arguments":{"projectId":"example","title":"Release plan","body":"First draft.","idempotencyKey":"plan-2026-11-23"}}}
+JSON
+```
+
+The local operator uses the CLI. It goes through the private socket while a
+controller owns the lock and writes offline otherwise. Offline, a key is
+refused with `idempotency_unavailable` before anything is written, so an offline
+write runs only without one. Read the body from a file or from standard input
+with `--body-file PATH` or `--body-file -` (at most 256 KiB):
+
+```bash
+worktree-control knowledge threads create --project example --title "Release plan" \
+  --body-file notes.md --idempotency-key plan-2026-11-23 \
+  --data-dir /tmp/wtc-example/data --state-dir /tmp/wtc-example/state
+```
+
+If the socket breaks after the request was sent, the CLI answers
+`admin_outcome_unknown` and never retries offline: check the project's threads
+before repeating the write. If standard output fails after the thread was
+written, the CLI exits 1 with an error whose `effect` is `committed`: the thread
+exists, so do not repeat the write. The legacy `knowledge create_thread` command, tool and
+route are unchanged.
+
 ## What this release provides
 
 Implemented in `0.2.0`:

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createSessionDescribeOutput, runProjectsCommand, runSessionDescribe, SessionDescribeError } from "./session-describe";
+import { createSessionDescribeOutput, createThreadsCreateOutput, runProjectsCommand, runSessionDescribe, runThreadsCreateCommand, SessionDescribeError } from "./session-describe";
 import { buildOperationsRuntime } from "../server/bootstrap/operations-runtime";
 import { initializeOperationRetention, type OperationRetention } from "../server/bootstrap/operation-retention";
 import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
@@ -117,6 +117,14 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
   if (command === "session" || command === "projects") sessionOutput = createSessionDescribeOutput();
+  if (command === "knowledge" && process.argv[3] === "threads" && process.argv[4] === "create") {
+    // The operations thread write (D2b-2), routed before the legacy Knowledge parser and its pre-lock
+    // handoff check: lock-first, with this finite command's output handling. Option values are opaque.
+    // A failed standard output after the write is reported with effect committed.
+    sessionOutput = createThreadsCreateOutput();
+    await runThreadsCreateCommand(process.argv.slice(5), sessionOutput);
+    return;
+  }
   if (command === "upgrade") {
     // Offline maintenance before the generic start parsing, which would reject --backup-dir here.
     // It does not pass the ordinary admission check: it is how a database becomes current.
@@ -446,7 +454,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const operationListeners: { api?: import("node:http").Server; unix?: import("node:http").Server } = {};
   const operations = buildOperationsRuntime({ store, activeMode: authentication.mode(), now: Date.now, logs, retention,
     eligibility: providerAdministration, provider: providerAdministration.operationSessionAuthority(), requestBudget: providerAdministration.requestBudget,
-    projectReads: { placement: processes, git },
+    projectReads: { placement: processes, git }, knowledge: { changed: events.publishKnowledge },
     listeners: { mcp: () => mcp?.server.listening === true, worker: () => remoteVerification?.listenerOpen() === true, api: () => operationListeners.api?.listening === true, unix: () => operationListeners.unix?.listening === true } });
   mcp?.mountOperations(operations);
   const controller = createControllerServer({

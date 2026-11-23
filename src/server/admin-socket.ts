@@ -139,8 +139,11 @@ export class AdminRequestError extends Error {
 
 /** Optional wire decoder for the operations mount; legacy /auth callers keep their envelope. */
 export interface AdminSocketReply {
-  path: "/api/operations/session.describe" | "/api/operations/project.list" | "/api/operations/project.status" | "/api/operations/project.worktrees";
+  path: "/api/operations/session.describe" | "/api/operations/project.list" | "/api/operations/project.status" | "/api/operations/project.worktrees"
+    | "/api/operations/knowledge.create_thread";
   decode(status: number | undefined, value: unknown): unknown;
+  /** Sent as the singleton `Idempotency-Key` header; never generated here. */
+  idempotencyKey?: string;
 }
 
 /** Sends one request to a running controller's admin socket. */
@@ -151,7 +154,8 @@ export function requestAdminSocket(path: string, body: unknown, timeoutMs = 15_0
       socketPath: path,
       path: reply?.path ?? "/auth",
       method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload),
+        ...(reply?.idempotencyKey !== undefined ? { "Idempotency-Key": reply.idempotencyKey } : {}) },
       timeout: timeoutMs,
     }, (response) => {
       const chunks: Buffer[] = [];

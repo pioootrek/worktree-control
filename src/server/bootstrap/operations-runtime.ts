@@ -1,9 +1,10 @@
+import { randomUUID } from "node:crypto";
 import type { DatabaseAdmissionOptions } from "../database-admission";
 import type { SqliteStateStore } from "../sqlite-store";
 import type { LogWriter } from "../log-writer";
 import { AuthenticationProviderError, type VerifiedProviderSession } from "../modules/authentication";
 import {
-  AgentTokenVerifier, CoalescingWorktreeDiscovery, CompositeCredentialVerifier, createListenerBoundary, createProjectReads, InstallationVerifier,
+  AgentTokenVerifier, CoalescingWorktreeDiscovery, CompositeCredentialVerifier, createKnowledgeWrites, createListenerBoundary, createProjectReads, InstallationVerifier,
   OperationError, OperationRegistry, OperationRunner, ProviderSessionVerifier, sessionDescribe,
   sqliteGrants, SqliteResourceResolver, admissionFailureOf, classify, mintOfflineContext, publicError, resolveAcceptance,
   type AuthenticationContext, type ListenerBoundary, type OperationRuntime, type PresentedCredentials, type RegistrationPlacementReader,
@@ -42,6 +43,14 @@ export interface OperationsRuntimeOptions {
    * Only the runner receives them; the returned `runtime` carries neither.
    */
   retention?: OperationRetention | null;
+  /**
+   * The controller's scoped Knowledge change publisher, called after a fresh
+   * `knowledge.create_thread`. Absent (offline callers): nothing is published.
+   * Bootstrap adapts it into the operation's total port: a throw or a returned
+   * promise stays inside the adapter, so a missed refresh never turns a durable
+   * thread into an unknown record.
+   */
+  knowledge?: { changed(projectId: string): unknown };
 }
 
 function holds(call: () => unknown): boolean {
@@ -139,6 +148,24 @@ export function buildOperationsRuntime(options: OperationsRuntimeOptions) {
   registry.register(projectReads.list);
   registry.register(projectReads.status);
   registry.register(projectReads.worktrees);
+  // The first retained mutation (D2b-2) over the store's own thread writer. It
+  // shares no code or idempotency table with the legacy Knowledge write.
+  const publish = options.knowledge?.changed;
+  const knowledgeWrites = createKnowledgeWrites({
+    writer: store.knowledgeThreadWriter(),
+    changed(projectId) {
+      if (typeof publish !== "function") return;
+      try {
+        const returned: unknown = Reflect.apply(publish, options.knowledge, [projectId]);
+        // Do not leave a rejected promise unhandled; the refresh is best effort.
+        if (typeof returned === "object" && returned !== null && typeof (returned as { then?: unknown }).then === "function") Promise.resolve(returned).catch(() => undefined);
+      } catch {
+        try { logs.controller("operations.knowledge_notification_failed", { operationId: "knowledge.create_thread" }); } catch { /* Diagnostics never change the outcome. */ }
+      }
+    },
+    id: randomUUID,
+  });
+  registry.register(knowledgeWrites.createThread);
   const registryView = Object.freeze({
     get: registry.get.bind(registry),
     ids: registry.ids.bind(registry),

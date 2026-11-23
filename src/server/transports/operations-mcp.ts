@@ -1,21 +1,47 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, JSONRPCRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { canonicalJson, OperationError, publicError } from "../modules/operations";
 import type { PublicOperationError } from "@/shared/contracts/operations";
 import { BoundaryError, parseStrictJson, readBoundedBody } from "./authentication-http-boundary";
-import { OPERATIONS_HTTP_LIMITS, operationsFailure, operationsRequestFailure, presentedCredentials, validateOperationsSingletonHeaders,
+import { OPERATIONS_HTTP_LIMITS, operationsFailure, operationsRequestFailure, presentedCredentials, terminateOperationsResponse, validateOperationsSingletonHeaders,
   writeOperationsResponse, type OperationsHttpRuntime } from "./operations-http";
 import { parseOperationsPath } from "./operations-path";
 
 const PROJECT_ID_SCHEMA = Object.freeze({ type: "string" as const, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$" });
+/**
+ * The reserved top-level argument of a mutation tool. The adapter removes this
+ * own property before the remaining arguments reach the operation's `parse` as
+ * its raw input; it is never part of the input or its fingerprint.
+ */
+export const MCP_IDEMPOTENCY_ARGUMENT = "idempotencyKey";
+const IDEMPOTENCY_KEY_SCHEMA = Object.freeze({ type: "string" as const, pattern: "^[A-Za-z0-9._:-]{1,128}$",
+  description: "Optional. Reuse it to repeat the same request after an uncertain answer; a different request under the same key is a conflict." });
+/**
+ * JSON-RPC envelope allowance above an operation's declared request ceiling
+ * (`OPERATIONS_HTTP_LIMITS.operationBodyBytes`). The outer body read is
+ * bounded by the largest declared ceiling plus this allowance; every message
+ * that is not a call of such a tool must still fit `bodyBytes`.
+ */
+export const OPERATIONS_MCP_REQUEST_ENVELOPE_BYTES = 4 * 1024;
 /**
  * Explicit descriptors, sorted by operation ID and checked against
  * registry.idsOn("mcp") in conformance. The schema only advertises the input;
  * the registered operation's parse is the one validation on every transport.
  */
 export const OPERATIONS_MCP_TOOLS = Object.freeze([
+  Object.freeze({
+    name: "knowledge_create_thread", operation: "knowledge.create_thread",
+    description: "Create a Knowledge thread in a project. title and body are trimmed: 1 to 200 and 1 to 65536 UTF-8 bytes. Requires knowledge:write and knowledge:read on the project; an archived project refuses. Refusals are JSON-RPC errors whose data is the public error. Without idempotencyKey, repeating an uncertain call can create a second thread.",
+    inputSchema: Object.freeze({ type: "object" as const, additionalProperties: false, required: Object.freeze(["projectId", "title", "body"]),
+      properties: Object.freeze({
+        projectId: PROJECT_ID_SCHEMA,
+        title: Object.freeze({ type: "string" as const, minLength: 1 }),
+        body: Object.freeze({ type: "string" as const, minLength: 1 }),
+        [MCP_IDEMPOTENCY_ARGUMENT]: IDEMPOTENCY_KEY_SCHEMA,
+      }) }),
+  }),
   Object.freeze({
     name: "project_list", operation: "project.list",
     description: "List the projects you can read, with their registrations' port, runtime phase, worktree and claim relation. Paginated.",
@@ -42,6 +68,25 @@ export const OPERATIONS_MCP_TOOLS = Object.freeze([
   }),
 ]);
 type ToolDescriptor = typeof OPERATIONS_MCP_TOOLS[number];
+
+/**
+ * A mutation tool's arguments without the reserved key: a copy of every other
+ * own property, or the value unchanged when it is no plain object or carries no
+ * key. A key that is not a string data property is passed on as it is, so the
+ * runner refuses it as `invalid_request`/`invalid_idempotency_key` inside admission.
+ */
+export function withoutIdempotencyArgument(args: unknown): { input: unknown; key: unknown } {
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return { input: args, key: undefined };
+  const descriptor = Object.getOwnPropertyDescriptor(args, MCP_IDEMPOTENCY_ARGUMENT);
+  if (!descriptor) return { input: args, key: undefined };
+  const input = Object.create(Object.getPrototypeOf(args) as object | null) as Record<PropertyKey, unknown>;
+  for (const name of Reflect.ownKeys(args)) {
+    if (name !== MCP_IDEMPOTENCY_ARGUMENT) Object.defineProperty(input, name, Object.getOwnPropertyDescriptor(args, name)!);
+  }
+  // `undefined` would read as no key: an accessor or a missing value is refused as a malformed key instead.
+  const key = "value" in descriptor ? descriptor.value : null;
+  return { input, key: key === undefined ? null : key };
+}
 type ToolResult = { readonly ok: true; readonly serialized: string; readonly canonical: string } | { readonly ok: false; readonly error: PublicOperationError };
 
 /**
@@ -58,6 +103,28 @@ function projectToolHint(body: Record<string, unknown>): ToolDescriptor | null {
   if (own(body, "method") !== "tools/call") return null;
   const name = own(own(body, "params"), "name");
   return OPERATIONS_MCP_TOOLS.find(each => each.name === name && each.operation !== "session.describe") ?? null;
+}
+
+/**
+ * The declared request ceiling of the message's tool call. The complete
+ * message is classified against the shapes the pinned SDK accepts before it
+ * dispatches a tool call: its strict JSON-RPC request schema (`jsonrpc` "2.0",
+ * a string or integer ID, no other envelope field) and its call-tool request
+ * schema (method `tools/call`, a string tool name, `arguments` an object or
+ * absent). A call that carries task metadata (`params.task`, also `{}`) is
+ * excluded: both schemas accept it, but this server advertises no task
+ * capability, so the SDK refuses it before the registered handler runs. Only
+ * such a call of a tool whose operation declares a larger ceiling gets it;
+ * `undefined` for every other message, which must fit `bodyBytes`. This checks
+ * the message's shape only: the operation's `parse` stays the one validation
+ * of its input.
+ */
+function declaredRequestBytes(body: Record<string, unknown>, ceilings: Readonly<Record<string, number>>): number | undefined {
+  if (!JSONRPCRequestSchema.safeParse(body).success) return undefined;
+  const call = CallToolRequestSchema.safeParse(body);
+  if (!call.success || call.data.params.task !== undefined) return undefined;
+  const tool = OPERATIONS_MCP_TOOLS.find(each => each.name === call.data.params.name);
+  return tool && Object.prototype.hasOwnProperty.call(ceilings, tool.operation) ? ceilings[tool.operation] : undefined;
 }
 
 /**
@@ -80,12 +147,14 @@ export function isOperationsMcpOrigin(originHeader: string, localPort: number | 
 /** Mounted on the separate MCP listener. Each handle owns exactly one SDK pair. */
 export function createOperationsMcp(options: {
   runtime: OperationsHttpRuntime;
-  limits?: { bodyBytes?: number; responseBytes?: number; deadlineMs?: number; maxInFlight?: number };
+  limits?: { bodyBytes?: number; responseBytes?: number; deadlineMs?: number; maxInFlight?: number; operationBodyBytes?: Readonly<Record<string, number>> };
 }) {
   const { runtime } = options, limits = { ...OPERATIONS_HTTP_LIMITS, ...options.limits };
   // The structured DTO costs at most 1x; its JSON-string text copy at most
   // 2x (quotes/backslashes escaped). The two string delimiters are framing.
-  const envelopeBytes = 3 * limits.responseBytes + OPERATIONS_MCP_ENVELOPE_OVERHEAD;
+  const baseEnvelopeBytes = 3 * limits.responseBytes + OPERATIONS_MCP_ENVELOPE_OVERHEAD;
+  // Every tool shares one path and the bounded read precedes parsing, so the outer ceiling is the largest declared one.
+  const outerBodyBytes = Math.max(limits.bodyBytes, ...Object.values(limits.operationBodyBytes).map(bytes => bytes + OPERATIONS_MCP_REQUEST_ENVELOPE_BYTES));
   const accepted = new Set<Promise<void>>(), cancellations = new Set<() => void>();
   let closing = false;
   const failure = (category: ConstructorParameters<typeof OperationError>[0], reason: string) => publicError(new OperationError(category, reason));
@@ -96,6 +165,10 @@ export function createOperationsMcp(options: {
     // Settles a project tool's handler left unanswered by its release, so the SDK's work stays finite.
     let abandon: (() => void) | undefined;
     let engaged = false, rpcId: string | number | undefined;
+    // Per request: a call of a tool with a declared larger ceiling budgets its own serialized ID instead of the fixed allowance.
+    let envelopeBytes = baseEnvelopeBytes;
+    // Set once a mutation's one delivery attempt failed: nothing more is written, also from the outer catch.
+    let deliveryFailed = false;
     const cancelled = new Promise<never>((_, reject) => {
       abort.signal.addEventListener("abort", () => reject(new OperationError("unavailable", timedOut ? "request_timed_out" : "request_cancelled", { retry: "retry" })), { once: true });
     });
@@ -143,8 +216,14 @@ export function createOperationsMcp(options: {
       if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers["content-type"] ?? "")) throw new BoundaryError(400, "invalid_request");
       // Same bearer order as HTTP: strict bounded body, then admitted mint.
       const deadline = runtime.supported ? runtime.runtime.now() + limits.deadlineMs : 0;
-      const body = parseStrictJson(await readBoundedBody(request, { limit: limits.bodyBytes, timeoutMs: limits.deadlineMs, signal: abort.signal }), limits.json);
+      const text = await readBoundedBody(request, { limit: outerBodyBytes, timeoutMs: limits.deadlineMs, signal: abort.signal });
+      // The streamed bytes: the reader decodes strictly and keeps a byte order mark, so this is the count it read.
+      const streamed = Buffer.byteLength(text, "utf8");
+      const body = parseStrictJson(text, limits.json);
       if (!body || typeof body !== "object" || Array.isArray(body)) throw new BoundaryError(400, "invalid_request");
+      const declared = declaredRequestBytes(body as Record<string, unknown>, limits.operationBodyBytes);
+      if (streamed > (declared === undefined ? limits.bodyBytes : declared + OPERATIONS_MCP_REQUEST_ENVELOPE_BYTES)) throw new BoundaryError(413, "request_too_large");
+      if (declared !== undefined) envelopeBytes = 3 * limits.responseBytes + 128 + Buffer.byteLength(JSON.stringify((body as { id: unknown }).id), "utf8");
       const minted = await runtime.mint("mcp", presentedCredentials(request, "refuse"), null, { signal: abort.signal });
       if (!minted.ok) { refuse(minted.error); return; }
       if (!runtime.supported) { refuse(failure("unauthenticated", "unknown_mode")); return; }
@@ -306,6 +385,26 @@ export function createOperationsMcp(options: {
           ? { result: Object.freeze({ ok: false as const, error: failure("payload_too_large", "response_too_large") }), canonical }
           : { result: Object.freeze({ ok: true as const, serialized, canonical }), canonical };
       };
+      if (tool.kind === "mutation") {
+        // Buffered success: staged once outside admission, written by the final admitted phase. Every refusal is a
+        // JSON-RPC error written synchronously inside the phase that established it. Called outside admission with
+        // this request's signal, which the deadline timer and the caller's departure abort.
+        const { input, key } = withoutIdempotencyArgument(first.arguments);
+        const released = await runtime.runner.mutationRelease(tool, minted.context, input, {
+          ...releaseOptions, idempotencyKey: key as string | undefined,
+          async stage(value: object) {
+            const staged = toolValue(value);
+            // The size proof keeps the DTO below the ceiling; an oversized one is a failed stage, never an isError result.
+            if (!staged.result.ok) throw new OperationError("payload_too_large", "response_too_large");
+            await stageTool(staged.result);
+          },
+          commit: commitTool,
+          refuse(error: PublicOperationError) { refuse(error); },
+        });
+        if (released.status === "commit_failed") { deliveryFailed = true; terminateOperationsResponse(response); }
+        else if (released.status === "refused") refuse(released.error);
+        return;
+      }
       const refusal = { stage: (error: PublicOperationError) => stageTool(Object.freeze({ ok: false as const, error })), commit: commitTool };
       if (tool.kind === "query") {
         // Discovery runs once. The envelope is built from the value of a fresh decision and
@@ -329,7 +428,8 @@ export function createOperationsMcp(options: {
         ...releaseOptions, expectedCanonical: value.canonical, commit: commitTool });
       if (released.status !== "committed") refuse(released.error);
     } catch (error) {
-      refuse(operationsRequestFailure(error, abort.signal, timedOut));
+      if (deliveryFailed) terminateOperationsResponse(response);
+      else refuse(operationsRequestFailure(error, abort.signal, timedOut));
     } finally {
       // All application reads are awaited by this function, never by the SDK. A
       // project tool's handler waits only for this request's own answer, settled
