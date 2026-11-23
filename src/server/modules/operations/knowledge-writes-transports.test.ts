@@ -155,7 +155,8 @@ describe("knowledge.create_thread on HTTP: carriage and refusals", () => {
   it("refuses a duplicate Idempotency-Key header before mint, body or reservation", async () => {
     const t = await transports("token");
     for (const listener of ["api", "unix"] as const) {
-      const headers = ["Content-Type", "application/json", "Idempotency-Key", "k-1", "Idempotency-Key", "k-1",
+      // Raw headers: Node adds no Host to an array, and its server refuses a request without one.
+      const headers = ["Host", "127.0.0.1", "Content-Type", "application/json", "Idempotency-Key", "k-1", "Idempotency-Key", "k-1",
         ...(listener === "api" ? ["Authorization", `Bearer ${t.f.installationSecret}`] : [])];
       const reply = await t.post(listener, "knowledge.create_thread", input(), { headers }).reply;
       expect(reply).toMatchObject({ status: 400, body: refusal("invalid_request", 400, "invalid_request", "none", null) });
