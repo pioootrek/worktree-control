@@ -11,7 +11,7 @@ import { StatusService } from "@/server/modules/status";
 import { TestJobManager } from "@/server/test-job-manager";
 import type { ProofFaultInjection } from "../src/index";
 import { cleanupRoots, count, OWNER_EMAIL, OWNER_PASSWORD, readCommitted } from "./fixture";
-import { cleanupStrictRoots, gate, pauseProvisioning, sleep, strictProof } from "./strict-fixture";
+import { cleanupStrictRoots, gate, pauseProvisioning, pauseThenExpire, sleep, strictProof } from "./strict-fixture";
 
 /**
  * Live coexistence of the real pinned provider with admitted controller work on
@@ -236,8 +236,7 @@ describe("live admission of controller work beside the real provider", () => {
     const faults: ProofFaultInjection = {};
     const f = await strictProof(faults, { borrowTimeoutMs: 150 });
     try {
-      const hold = pauseProvisioning(f, faults, "commit");
-      await hold.paused;
+      const hold = await pauseThenExpire(f, faults, "commit", 150);
       expect(await hold.pending).toBe("expired");
       // Core work proceeds once the forced release rolled the library write back.
       expect(await f.run(() => f.store.listProjects().length)).toBe(0);

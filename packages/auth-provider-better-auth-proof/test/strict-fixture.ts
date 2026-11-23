@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { vi } from "vitest";
 import { SqliteStateStore } from "@/server/infrastructure/sqlite";
 import type { ExclusiveConnectionOptions } from "@/server/infrastructure/sqlite/exclusive-connection";
 import type { ProviderFactorOptions } from "@/server/modules/authentication";
@@ -36,5 +37,20 @@ export function pauseProvisioning(f: StrictProof, faults: ProofFaultInjection, o
   const pending = f.runtime.provisionLocal({ principalId: f.owner.principalId, email: OWNER_EMAIL, name: "Owner", password: OWNER_PASSWORD, actor: "test" })
     .then(() => "committed", (error: unknown) => (error as { code?: string }).code ?? "failed");
   return { paused: paused.opened, resume: resume.open, pending };
+}
+/**
+ * Pauses provisioning at its hook, then expires the borrow by advancing a fake
+ * timer, so the expiry never races the password hash that precedes the hook.
+ * Real timers are restored before returning. Release the hold in finally.
+ */
+export async function pauseThenExpire(f: StrictProof, faults: ProofFaultInjection, outcome: "rollback" | "commit", borrowTimeoutMs: number) {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const hold = pauseProvisioning(f, faults, outcome);
+    // Fail at once, not at the test timeout, if provisioning settles before its hook.
+    if (!await Promise.race([hold.paused.then(() => true), hold.pending.then(() => false)])) throw new Error("Provisioning settled before its hook.");
+    vi.advanceTimersByTime(borrowTimeoutMs);
+    return hold;
+  } finally { vi.useRealTimers(); }
 }
 export async function closeStrictProof(f: StrictProof) { await f.runtime.dispose(); await f.store.closeAfterDrain(); }
