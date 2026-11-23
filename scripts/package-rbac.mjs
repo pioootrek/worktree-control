@@ -60,6 +60,7 @@ const EXPECTED_OPERATIONS_MATRIX_KEYS = [
   "cli-offline/better-auth"
 ];
 const operationRefusal = (reason, category = "unauthenticated", status = 401, retry = "reauthenticate") => ({ error: { category, status, reason, retry, effect: null } });
+const mutationRefusal = (reason, category, status, retry = "none", effect = "not_started") => ({ error: { category, status, reason, retry, effect } });
 const matrixCell = (surface, mode, actor, listener, refusal, step) => operationsMatrix.push({ surface, mode, actor, listener, refusal, step });
 let controller, cleanupConfirmed = false;
 let native, operationsSdk, storedOwner;
@@ -262,6 +263,21 @@ async function operationSocket(mode) {
     const projectStatus = await json(currentCli, ["projects", "status", ids[0]]); assert.equal(projectStatus.projectId, ids[0]); assert.equal(projectStatus.writable, true);
     const projectWorktrees = await json(currentCli, ["projects", "worktrees", ids[0]]); assert.equal(projectWorktrees.projectId, ids[0]);
     assert.deepEqual(await refusal(currentCli, ["projects", "status", "missing-project"]), operationRefusal("resource_not_found", "not_found", 404, "none"));
+    // D2b-2 through the private socket: the operator writes a thread with a key and replays it; the CLI replays the same DTO.
+    const thread = { projectId: ids[0], title: `Installed unix ${mode} thread`, body: "Written through the private socket." }, threadKey = `installed-unix-${mode}`;
+    const writeThread = () => new Promise((accept, reject) => {
+      const call = httpRequest({ socketPath: join(directoryArgs[3], "admin.sock"), path: "/api/operations/knowledge.create_thread", method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": threadKey } }, response => {
+        const chunks = []; response.on("data", chunk => chunks.push(chunk)); response.on("error", reject);
+        response.on("end", () => { try { accept({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); } });
+      });
+      call.setTimeout(10_000, () => call.destroy(new Error("Operations socket deadline"))); call.on("error", reject); call.end(JSON.stringify(thread));
+    });
+    const written = await writeThread();
+    assert.equal(written.status, 200); assert.equal(written.body.thread.createdBy, "installation"); assert.equal(written.body.thread.title, thread.title);
+    assert.deepEqual(await writeThread(), written);
+    assert.deepEqual(await json(currentCli, ["knowledge", "threads", "create", "--project", thread.projectId, "--title", thread.title, "--body", thread.body, "--idempotency-key", threadKey]), written.body);
+    assert.equal(observe(db => db.prepare("SELECT count(*) AS n FROM knowledge_threads WHERE title=?").get(thread.title).n), 1);
     await repositoryReads(`cli-socket/${mode}`, cliRead, true);
     for (const closedStderr of [false, true]) await step(`session-describe-unix-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
       () => closedSessionOutput("socket", closedStderr));
@@ -287,6 +303,12 @@ async function operationOffline(mode) {
     for (const item of projects.items) for (const registration of item.registrations) assert.equal(registration.phase, "stopped");
     assert.deepEqual(projects.items.filter(item => item.projectId !== null).map(item => item.projectId),
       observe(db => db.prepare("SELECT id FROM knowledge_projects ORDER BY id").all().map(row => row.id)).slice(0, 50));
+    // D2b-2 offline: no retention, so an unkeyed write runs and a keyed one answers idempotency_unavailable before any effect.
+    const offlineThread = ["knowledge", "threads", "create", "--project", firstProjectId(), "--title", `Installed offline ${mode} thread`, "--body", "Written offline."];
+    const offlineWritten = await json(currentCli, offlineThread);
+    assert.equal(offlineWritten.thread.createdBy, "installation"); assert.equal(offlineWritten.thread.title, `Installed offline ${mode} thread`);
+    assert.deepEqual(await refusal(currentCli, [...offlineThread, "--idempotency-key", `installed-offline-${mode}`]), mutationRefusal("idempotency_unavailable", "unavailable", 503));
+    assert.equal(observe(db => db.prepare("SELECT count(*) AS n FROM knowledge_threads WHERE title=?").get(`Installed offline ${mode} thread`).n), 1);
     for (const closedStderr of [false, true]) await step(`session-describe-offline-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
       () => closedSessionOutput("offline", closedStderr));
     matrixCell("cli-offline", mode, "operator", "offline", "not applicable: no credential input; mode-independent upgrade-required-offline-session-describe step covers the released-baseline refusal once", `operations-offline-${mode}`);
@@ -325,14 +347,14 @@ async function operationMcp(mode, secret) {
       const response = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: JSON.stringify(message) });
       assert.equal(response.status, 200); const reply = await response.json(); assert.equal(reply.id, message.id); assert.equal(reply.error, undefined);
       if (message.method === "initialize") assert.equal(reply.result.protocolVersion, "2025-03-26");
-      if (message.method === "tools/list") assert.deepEqual(reply.result.tools.map(tool => tool.name), ["project_list", "project_status", "project_worktrees", "session_describe"]);
+      if (message.method === "tools/list") assert.deepEqual(reply.result.tools.map(tool => tool.name), ["knowledge_create_thread", "project_list", "project_status", "project_worktrees", "session_describe"]);
       if (message.method === "tools/call") { assert.equal(reply.result.structuredContent.listener, "mcp"); assert.equal(reply.result.structuredContent.mode, mode); assert.equal(reply.result.structuredContent.actor.kind, mode === "better-auth" ? "agent" : "installation"); }
     }
     const { Client, StreamableHTTPClientTransport } = operationsSdk;
     const client = new Client({ name: "installed-operations", version: "1" }); clients.push(client);
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(mcpURL + "/operations"), { requestInit: { headers: secret ? { Authorization: `Bearer ${secret}` } : {} } }));
-      assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ["project_list", "project_status", "project_worktrees", "session_describe"]);
+      assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ["knowledge_create_thread", "project_list", "project_status", "project_worktrees", "session_describe"]);
       const result = await client.callTool({ name: "session_describe", arguments: {} });
       const denied = await client.callTool({ name: "session_describe", arguments: { actor: "operator" } });
       assert.equal(denied.isError, true); assert.deepEqual(denied.structuredContent, operationRefusal("unexpected_input", "invalid_request", 400, "none"));
@@ -348,6 +370,16 @@ async function operationMcp(mode, secret) {
       assert.equal(worktrees.isError, true); assert.deepEqual(worktrees.structuredContent, operationRefusal("resource_not_found", "not_found", 404, "none"));
       await repositoryReads(`mcp/${mode}`, toolRead(client), mode !== "better-auth");
     } finally { await client.close(); }
+    const threadCall = { jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "knowledge_create_thread",
+      arguments: { projectId: firstProjectId(), title: `Installed MCP ${mode} thread`, body: "Written over MCP.", idempotencyKey: `installed-mcp-${mode}` } } };
+    const callThread = async () => (await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream",
+      ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: JSON.stringify(threadCall) })).json();
+    const mcpThread = await callThread();
+    if (mode === "better-auth") assert.deepEqual(mcpThread, { jsonrpc: "2.0", id: 21, error: { code: -32000, message: "resource_not_found", data: mutationRefusal("resource_not_found", "not_found", 404).error } });
+    else {
+      assert.equal(mcpThread.result.structuredContent.thread.createdBy, "installation");
+      assert.deepEqual(await callThread(), mcpThread);
+    }
     for (const name of ["X-Worktree-Control-Token", "X-Worktree-Switcher-Token"]) {
       const refused = await fetch(mcpURL + "/operations", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", [name]: secret ?? storedWorker },
         body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
@@ -425,6 +457,19 @@ async function operationProjectReads(mode, secret) {
       request.setTimeout(10000, () => request.destroy(new Error("Worker operations deadline"))); request.on("error", reject); request.end("{}");
     });
     assert.equal(worker.status, 404); assert.deepEqual(worker.body, operationRefusal("operation_not_found", "not_found", 404, "none"));
+    // D2b-2: the thread write with the Idempotency-Key header, then its replay.
+    const apiThread = async () => {
+      const reply = await fetch(endpoint + "/api/operations/knowledge.create_thread", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": `installed-api-${mode}`,
+        ...(secret ? { Authorization: `Bearer ${secret}` } : {}) }, body: JSON.stringify({ projectId, title: `Installed API ${mode} thread`, body: "Written over the API." }) });
+      return { status: reply.status, body: await reply.json() };
+    };
+    const apiWritten = await apiThread();
+    if (mode === "better-auth") assert.deepEqual(apiWritten, { status: 404, body: mutationRefusal("resource_not_found", "not_found", 404) });
+    else {
+      assert.equal(apiWritten.status, 200); assert.equal(apiWritten.body.thread.createdBy, "installation");
+      assert.deepEqual(await apiThread(), apiWritten);
+      assert.equal(observe(db => db.prepare("SELECT count(*) AS n FROM knowledge_threads WHERE title=?").get(`Installed API ${mode} thread`).n), 1);
+    }
     await repositoryReads(`api-bearer/${mode}`, bearerRead(secret), mode !== "better-auth");
   });
 }

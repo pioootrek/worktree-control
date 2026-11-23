@@ -467,7 +467,7 @@ async function main() {
     const operations = new Client({ name: "portable-operations", version: "1" });
     try {
       await operations.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${mcpPort}/mcp/operations`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
-      check((await operations.listTools()).tools.map(tool => tool.name).join(",") === "project_list,project_status,project_worktrees,session_describe", "Installed operations descriptors differ.");
+      check((await operations.listTools()).tools.map(tool => tool.name).join(",") === "knowledge_create_thread,project_list,project_status,project_worktrees,session_describe", "Installed operations descriptors differ.");
       const result = await operations.callTool({ name: "session_describe", arguments: {} });
       check(!result.isError && result.structuredContent.actor.kind === "installation" && result.structuredContent.listener === "mcp" && result.structuredContent.mode === "token", "Installed MCP operations actor differs.");
       const projects = await operations.callTool({ name: "project_list", arguments: {} });
