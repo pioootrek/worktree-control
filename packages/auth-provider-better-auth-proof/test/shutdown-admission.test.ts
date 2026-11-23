@@ -8,7 +8,7 @@ import { ProcessManager } from "@/server/process-manager";
 import { TestJobManager } from "@/server/test-job-manager";
 import type { ProofFaultInjection } from "../src/index";
 import { readCommitted } from "./fixture";
-import { cleanupStrictRoots, closeStrictProof, pauseProvisioning, sleep, strictProof } from "./strict-fixture";
+import { cleanupStrictRoots, closeStrictProof, pauseProvisioning, pauseThenExpire, sleep, strictProof } from "./strict-fixture";
 
 afterEach(cleanupStrictRoots);
 describe("owning service shutdown with strict provider admission", () => {
@@ -59,9 +59,8 @@ describe("owning service shutdown with strict provider admission", () => {
     // Exercise the real drain with a finite fixture deadline, without changing any host setting.
     const close = f.store.closeAfterDrain.bind(f.store);
     vi.spyOn(f.store, "closeAfterDrain").mockImplementation(() => close(25));
-    const hold = pauseProvisioning(f, faults, "commit");
+    const hold = await pauseThenExpire(f, faults, "commit", 100);
     try {
-      await hold.paused;
       expect(await hold.pending).toBe("expired");
       await expect(f.runtime.dispose({ timeoutMs: 25 })).rejects.toMatchObject({ code: "disposal_unconfirmed" });
       await expect(service.shutdown()).rejects.toThrow("zasobów kontrolera");

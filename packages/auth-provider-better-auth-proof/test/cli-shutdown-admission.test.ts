@@ -1,3 +1,4 @@
+import { scrypt } from "node:crypto";
 import { existsSync } from "node:fs";
 import { request as httpRequest, type Server } from "node:http";
 import { join } from "node:path";
@@ -17,7 +18,7 @@ import { createRemoteVerificationServer } from "@/server/transports/remote-verif
 import type { RemoteVerificationController } from "@/server/modules/remote-verification";
 import type { ProofFaultInjection } from "../src/index";
 import { readCommitted } from "./fixture";
-import { cleanupStrictRoots, closeStrictProof, gate, pauseProvisioning, strictProof } from "./strict-fixture";
+import { cleanupStrictRoots, closeStrictProof, gate, pauseProvisioning, pauseThenExpire, strictProof } from "./strict-fixture";
 
 afterEach(cleanupStrictRoots);
 async function listen(server: Server, path: string) {
@@ -68,6 +69,27 @@ async function fixture(options = {}) {
     cleanup: async () => { await Promise.allSettled([remote.close(), mcp.close(), controller.close(), admin.close()]); await service.shutdown(); controllerLock.release(); await closeStrictProof(f); } };
 }
 
+function occupyThreadpool() {
+  const N = 16384, r = 16;
+  return new Promise<void>((resolve, reject) => scrypt("load", "salt", 64, { N, r, p: 1, maxmem: 128 * N * r * 2 }, error => error ? reject(error) : resolve()));
+}
+async function retainsOwnersWhenProviderDrainIsUnconfirmed(beforeProvisioning?: () => void) {
+  const f = await fixture({ borrowTimeoutMs: 100 });
+  const close = f.store.closeAfterDrain.bind(f.store);
+  vi.spyOn(f.store, "closeAfterDrain").mockImplementation(() => close(25));
+  beforeProvisioning?.();
+  const hold = await pauseThenExpire(f, f.faults, "rollback", 100);
+  try {
+    expect(await hold.pending).toBe("expired");
+    await expect(f.shutdown()).rejects.toThrow("Controller shutdown did not complete cleanly");
+    expect.soft(existsSync(`${f.path}.owner.lock`)).toBe(true);
+    expect.soft(existsSync(f.lockPath)).toBe(true);
+    expect(() => new SqliteStateStore(f.path)).toThrow();
+    await expect(f.shutdown()).rejects.toThrow("Controller shutdown did not complete cleanly");
+    expect(f.accessRemoved).not.toHaveBeenCalled();
+  } finally { hold.resume(); await hold.pending; await f.store.authenticationProviderStorage().drain(2000); await f.cleanup(); }
+}
+
 describe("owning CLI shutdown sequence with installed listeners", () => {
   it("closes installed listeners, refuses queued HTTP dispatch and drains the accepted admin write/response before releasing both locks", async () => {
     const f = await fixture();
@@ -102,19 +124,14 @@ describe("owning CLI shutdown sequence with installed listeners", () => {
   });
 
   it("retains the controller lock as well as the database owner when provider drain is unconfirmed", async () => {
-    const f = await fixture({ borrowTimeoutMs: 100 });
-    const close = f.store.closeAfterDrain.bind(f.store);
-    vi.spyOn(f.store, "closeAfterDrain").mockImplementation(() => close(25));
-    const hold = pauseProvisioning(f, f.faults, "rollback");
-    try {
-      await hold.paused; expect(await hold.pending).toBe("expired");
-      await expect(f.shutdown()).rejects.toThrow("Controller shutdown did not complete cleanly");
-      expect.soft(existsSync(`${f.path}.owner.lock`)).toBe(true);
-      expect.soft(existsSync(f.lockPath)).toBe(true);
-      expect(() => new SqliteStateStore(f.path)).toThrow();
-      await expect(f.shutdown()).rejects.toThrow("Controller shutdown did not complete cleanly");
-      expect(f.accessRemoved).not.toHaveBeenCalled();
-    } finally { hold.resume(); await hold.pending; await f.store.authenticationProviderStorage().drain(2000); await f.cleanup(); }
+    await retainsOwnersWhenProviderDrainIsUnconfirmed();
+  });
+
+  it("expires the borrow at the provider hook independently of password-hash time on a saturated threadpool", async () => {
+    // Four scrypt jobs with Better Auth's parameters occupy libuv's default
+    // threadpool, so the provisioning hash finishes after the 100 ms borrow.
+    const load: Promise<void>[] = [];
+    try { await retainsOwnersWhenProviderDrainIsUnconfirmed(() => { for (let i = 0; i < 4; i++) load.push(occupyThreadpool()); }); } finally { await Promise.all(load); }
   });
 
   it("retains ownership when an installed listener cannot confirm closure", async () => {
