@@ -162,7 +162,11 @@ schema-43 result does not prove an upgrade from the public `0.1.1` release.
 For `0.2.0`:
 
 1. Use both artifacts from the same successful CI run and attempt on the final
-   merged release commit on `main`, within the seven-day retention. Documentation
+   merged release commit on `main`, within the seven-day retention. The run must
+   have succeeded on its first attempt: after a re-run, a job can receive an
+   artifact that an earlier attempt uploaded under the same name. If the run
+   needed a re-run, start a new `Verify` run on the same commit and use that
+   one. Documentation
    changes alter the shipped guides, so earlier artifacts cannot be reused as
    final release bytes. Verify their checksums and that both provenances are
    clean, name the same commit/run/attempt and identify Community version `0.2.0`.
