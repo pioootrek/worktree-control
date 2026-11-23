@@ -9,7 +9,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { createOperationsHttp, OPERATIONS_HTTP_LIMITS } from "@/server/transports/operations-http";
 import { createOperationsMcp, OPERATIONS_MCP_REQUEST_ENVELOPE_BYTES } from "@/server/transports/operations-mcp";
 import type { OperationRetention } from "@/server/bootstrap/operation-retention";
-import { answer, knowledgeFixture, type KnowledgeFixture, type StoredMode } from "./knowledge-writes-fixture";
+import { answer, knowledgeFixture, type GrantRows, type KnowledgeFixture, type StoredMode } from "./knowledge-writes-fixture";
+import { NOW } from "./adapters/credential-verifier-fixture";
 import type { IdempotencyStore } from "./runner";
 
 /**
@@ -20,6 +21,15 @@ import type { IdempotencyStore } from "./runner";
  * sides of each body ceiling, the worker refusal, an unknown mode, concurrent
  * keys, and ownership around the commit point.
  */
+/** Project grants rows, written directly: no release command grants a project role yet. */
+const grants: GrantRows = {
+  insert: (database, account, role, projectId) => database.prepare(
+    "INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES(?,?,'project',?,?)").run(account, role, projectId, new Date(NOW).toISOString()),
+  remove: (database, account, role) => {
+    if (role) database.prepare("DELETE FROM account_grants WHERE account_id=? AND role=?").run(account, role);
+    else database.prepare("DELETE FROM account_grants WHERE account_id=?").run(account);
+  },
+};
 const fixtures: KnowledgeFixture[] = [];
 const cleanups: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -31,7 +41,7 @@ type Reply = { status: number; body: Record<string, unknown>; headers: IncomingM
 type Listener = "api" | "unix" | "worker";
 
 async function transports(mode: StoredMode, setup: { humans?: boolean } = {}) {
-  const f = await knowledgeFixture(mode, setup); fixtures.push(f);
+  const f = await knowledgeFixture(mode, { ...setup, grants }); fixtures.push(f);
   const hooks: { reserved?: () => void; written?: () => void; staged?: () => void } = {};
   // Observation points inside the admitted phases, on the real writer and the real idempotency store.
   const store = f.store, writerOf = store.knowledgeThreadWriter.bind(store);

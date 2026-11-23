@@ -8,7 +8,7 @@ import { IDEMPOTENCY_RECORD_BYTES } from "./adapters/sqlite-idempotency";
 import type { AuthenticationContext, CurrentAuthority } from "./authentication-context";
 import { decideWith } from "./decide";
 import type { EffectivePermissions } from "./grants";
-import { answer, knowledgeFixture, type KnowledgeFixture, type Mode } from "./knowledge-writes-fixture";
+import { answer, knowledgeFixture, type GrantRows, type KnowledgeFixture, type Mode } from "./knowledge-writes-fixture";
 import { KNOWLEDGE_THREAD_BODY_BYTES, KNOWLEDGE_THREAD_BODY_JSON_BYTES, KNOWLEDGE_THREAD_TITLE_BYTES, type KnowledgeThreadWriter } from "./knowledge-writes";
 import { OperationRunner, type IdempotencyStore } from "./runner";
 
@@ -20,6 +20,15 @@ import { OperationRunner, type IdempotencyStore } from "./runner";
  * the operations idempotency record, and `knowledge_idempotency`, which this
  * path never touches) are read through the real gate.
  */
+/** Project grants rows, written directly: no release command grants a project role yet. */
+const grants: GrantRows = {
+  insert: (database, account, role, projectId) => database.prepare(
+    "INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES(?,?,'project',?,?)").run(account, role, projectId, new Date(NOW).toISOString()),
+  remove: (database, account, role) => {
+    if (role) database.prepare("DELETE FROM account_grants WHERE account_id=? AND role=?").run(account, role);
+    else database.prepare("DELETE FROM account_grants WHERE account_id=?").run(account);
+  },
+};
 const fixtures: KnowledgeFixture[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.cleanup(); });
 
@@ -30,7 +39,7 @@ const compose = (f: KnowledgeFixture): Composition => {
   return built;
 };
 async function world(mode: Mode = "better-auth", setup: { retention?: boolean; humans?: boolean } = {}) {
-  const f = await knowledgeFixture(mode, setup); fixtures.push(f);
+  const f = await knowledgeFixture(mode, { ...setup, grants }); fixtures.push(f);
   const c = compose(f);
   const mint = async (listener: "api" | "mcp" | "unix", presented = none(), session: Parameters<Composition["mint"]>[2] = null) => {
     const minted = await c.mint(listener, presented, session, {});
@@ -499,7 +508,7 @@ describe("knowledge.create_thread: notification", () => {
 
 describe("knowledge.create_thread in the production composition", () => {
   it("is registered with its writer, and the publisher adapter is total: a throwing publisher still leaves a completed record", async () => {
-    const f = await knowledgeFixture("better-auth"); fixtures.push(f);
+    const f = await knowledgeFixture("better-auth", { grants }); fixtures.push(f);
     const published: string[] = [];
     const built = buildOperationsRuntime({ ...f.runtimeOptions(), knowledge: { changed: (projectId: string) => { published.push(projectId); throw new Error("subscriber gone /secret"); } } });
     if (!built.supported) throw new Error("unsupported");

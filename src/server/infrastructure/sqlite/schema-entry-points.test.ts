@@ -343,6 +343,7 @@ const OPENINGS: ReadonlyArray<Opening & { class: OpeningClass; why: string }> = 
   { file: "src/cli/remote-verification.ts", kind: "SqliteStateStore", context: "body of runRemoteVerificationCommand", args: "paths.databasePath", class: "ordinary", why: "remote provision and revoke-token" },
   { file: "src/cli/sandbox.ts", kind: "SqliteStateStore", context: "body of prepareSandboxInstallation", args: "paths.databasePath", class: "ordinary", why: "the sandbox's fresh store" },
   { file: "src/cli/session-describe.ts", kind: "SqliteStateStore", context: "body of runLockFirstRead", args: "paths.databasePath", class: "ordinary", why: "lock-first offline session description and project reads after restore-handoff admission" },
+  { file: "src/cli/session-describe.ts", kind: "SqliteStateStore", context: "body of runThreadsCreateCommand", args: "paths.databasePath", class: "ordinary", why: "lock-first offline thread write (D2b-2) after restore-handoff admission" },
   { file: "src/server/controller-backup.ts", kind: "better-sqlite3", context: "body of createControllerBackup", args: "databaseFile,{fileMustExist:true}", class: "maintenance", why: "the backup's own snapshot copy" },
   { file: "src/server/controller-backup.ts", kind: "acquireDatabaseOwnership", context: "body of restoreControllerBackup", args: "databasePath", class: "maintenance", why: "offline restore" },
   { file: "src/server/controller-storage.ts", kind: "SqliteStateStore", context: "body of openControllerStore", args: "databasePath", class: "ordinary", why: "controller start" },
@@ -377,6 +378,7 @@ const OPENINGS: ReadonlyArray<Opening & { class: OpeningClass; why: string }> = 
   { file: "src/server/modules/dev-vault/test-fixture.ts", kind: "SqliteStateStore", context: "body of vaultFixture", args: "path", class: "test support", why: "vault fixture" },
   { file: "src/server/modules/dev-vault/test-fixture.ts", kind: "SqliteStateStore", context: "body of vaultFixture", args: "path", class: "test support", why: "vault fixture, reopened" },
   { file: "src/server/modules/remote-verification/fixtures/remote-worker-process.ts", kind: "SqliteStateStore", context: "module level", args: "databasePath", class: "test support", why: "remote worker process" },
+  { file: "src/server/modules/operations/knowledge-writes-fixture.ts", kind: "SqliteStateStore", context: "body of knowledgeFixture", args: "paths.databasePath", class: "test support", why: "thread write fixture, opened again on each reopen" },
   { file: "src/server/modules/status/scoped-diagnostics-fixture.ts", kind: "SqliteStateStore", context: "body of diagnosticsFixture", args: "join(root,\"state.sqlite3\")", class: "test support", why: "diagnostics fixture" },
   { file: "src/server/unmanaged-sqlite-fixture.ts", kind: "better-sqlite3", context: "body of unmanagedFixtureDatabase", args: "filename,options", class: "test support", why: "unmanaged fixture connections" },
 ]);

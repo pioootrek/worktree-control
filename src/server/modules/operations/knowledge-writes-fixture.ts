@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type Database from "better-sqlite3";
 import { FileProviderConfiguration } from "@/server/authentication-provider-configuration";
 import { createControllerOperationEligibility } from "@/server/bootstrap/authentication-provider-lifetime";
 import { AuthenticationRequestBudget } from "@/server/bootstrap/authentication-request-budget";
@@ -31,7 +32,17 @@ export type Mode = "open" | "token" | "better-auth";
 export type StoredMode = Mode | "legacy";
 export interface Written { kind: "commit" | "refuse"; value: unknown; admitted: number }
 
-export async function knowledgeFixture(mode: StoredMode, setup: { retention?: boolean; humans?: boolean } = {}) {
+/**
+ * Writes and deletes project grants rows. Supplied by each suite: only the
+ * listed readers and the upgrade's acts may name the grants table outside tests
+ * (`schema-entry-points.test.ts`), and no release command grants a project role.
+ */
+export interface GrantRows {
+  insert(database: Database.Database, account: string, role: string, projectId: string): void;
+  remove(database: Database.Database, account: string, role?: string): void;
+}
+
+export async function knowledgeFixture(mode: StoredMode, setup: { retention?: boolean; humans?: boolean; grants?: GrantRows } = {}) {
   const root = mkdtempSync(join(tmpdir(), "knowledge-writes-"));
   const paths: AppPaths = resolveAppPaths(join(root, "data"), join(root, "state"));
   const clock = { now: NOW };
@@ -83,8 +94,10 @@ export async function knowledgeFixture(mode: StoredMode, setup: { retention?: bo
     for (const id of ["project-a", "project-b"]) store.saveKnowledgeProject({ id, name: id, status: "active", revision: 1, createdAt: iso(NOW), updatedAt: iso(NOW) }, "fixture");
   });
 
-  const grantNow = (account: string, role: string, projectId: string) => current.database.prepare(
-    "INSERT INTO account_grants(account_id,role,scope_kind,project_id,granted_at) VALUES(?,?,'project',?,?)").run(account, role, projectId, iso(NOW));
+  const grantNow = (account: string, role: string, projectId: string) => {
+    if (!setup.grants) throw new Error("this suite supplies no grant rows");
+    setup.grants.insert(current.database, account, role, projectId);
+  };
   /** An agent principal with one active token, and optional grants. */
   const agent = async (id: string, grants: ReadonlyArray<[role: string, projectId: string]> = []) => {
     const credentialId = randomUUID(), secret = token("wts", credentialId);
@@ -108,8 +121,8 @@ export async function knowledgeFixture(mode: StoredMode, setup: { retention?: bo
   };
   const grant = (account: string, role: string, projectId: string) => admitted(() => { grantNow(account, role, projectId); });
   const revoke = (account: string, role?: string) => admitted(() => {
-    if (role) current.database.prepare("DELETE FROM account_grants WHERE account_id=? AND role=?").run(account, role);
-    else current.database.prepare("DELETE FROM account_grants WHERE account_id=?").run(account);
+    if (!setup.grants) throw new Error("this suite supplies no grant rows");
+    setup.grants.remove(current.database, account, role);
   });
   /** Archives or restores a project through the store's own project write (the next revision). */
   const setProjectStatus = (projectId: string, status: "active" | "archived") => admitted(() => {
