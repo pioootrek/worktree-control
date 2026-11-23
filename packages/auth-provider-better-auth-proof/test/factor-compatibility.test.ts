@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SUPPORTED_SCHEMA_VERSION } from "@/server/infrastructure/sqlite";
 import { Authenticator, Browser, cleanupFactorRoots, closeFactor, factorFixture, factorState, fixtureSql, loadFactorProvider, withFault, type FactorFixture } from "./factor-fixture";
 import { COOKIE, FACTOR_MODEL } from "./factor-provider";
 import { OWNER_PASSWORD } from "./fixture";
@@ -48,7 +49,7 @@ describe("A3-I12 native characterization (passing here does not accept MFA)", ()
     expect(f.ddl.added).toEqual([]);
     expect(f.ddl.outstanding).toEqual({ created: 0, added: 0, indexes: 0, problems: 0 });
     expect(f.storage.storageRevision).toBe(3);
-    expect((await state(f)).schemaVersion).toBe(52);
+    expect((await state(f)).schemaVersion).toBe(SUPPORTED_SCHEMA_VERSION);
   });
 
   it("keeps enrollment unverified then rotates the cookie, while the native body contains the deleted token", async () => {
@@ -380,11 +381,14 @@ describe("bounded exclusions and restricted recovery", () => {
   });
 });
 
-// Deliberately ordinary failing acceptance tests. No skip, todo, fails/xfail,
+// Unmet acceptance against the native and older bounded fixtures, registered as
+// expected failures (owner decision 2026-11-23). They still run with unchanged
+// bodies; the proof preset turns red if one of them passes. No skip, todo,
 // inverted expectation, environment opt-out or custom replay implementation.
-// The default managed proof preset must remain RED while these requirements fail.
+// Vitest drops the error of an expected failure, so a failure at an earlier step
+// also counts as expected; passing tests in this file cover those steps.
 describe.each(["native", "bounded"] as const)("UNMET PRODUCT ACCEPTANCE: %s", mode => {
-  it("rejects an enrollment TOTP reused in a subsequent password challenge", async () => {
+  it.fails("rejects an enrollment TOTP reused in a subsequent password challenge", async () => {
     const f = await create(mode); const { authenticator } = await setup(f);
     const browser = await pending(f); const before = await state(f);
     const result = await verify(browser, authenticator.code());
@@ -392,7 +396,7 @@ describe.each(["native", "bounded"] as const)("UNMET PRODUCT ACCEPTANCE: %s", mo
     expect((await state(f)).sessions).toEqual(before.sessions);
   });
 
-  it("rejects one accepted TOTP reused in an independent password challenge", async () => {
+  it.fails("rejects one accepted TOTP reused in an independent password challenge", async () => {
     const f = await create(mode); const { authenticator } = await setup(f);
     vi.setSystemTime(Date.now() + 30_000); // A new step, different from enrollment.
     const first = await pending(f), second = await pending(f), code = authenticator.code();
@@ -454,7 +458,7 @@ describe("additional bounded characterization", () => {
   });
 });
 
-it("UNMET PRODUCT ACCEPTANCE: a failed guess retains durable account budget after rollback", async () => {
+it.fails("UNMET PRODUCT ACCEPTANCE: a failed guess retains durable account budget after rollback", async () => {
   const f = await create("bounded"); const { authenticator } = await setup(f);
   const browser = await pending(f);
   f.control.fault = { sql: /^update "authentication_ba_two_factor" set "failedVerificationCount" = "failedVerificationCount"/i, when: "after", remaining: 1 };

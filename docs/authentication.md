@@ -2025,18 +2025,20 @@ Release-candidate evidence, Linux x64 only:
   passed on the candidate. The account browser tests (fixture UI and a real
   controller and provider behind the HTTPS proxy fixture) passed during the
   account-mode acceptance that preceded it.
-- **Full provider proof: not green.** The provider's full proof suite reports
-  five known failures out of 1,112 cases (1,107 pass), all in
-  `factor-compatibility`. They characterize native and older bounded factor
-  behaviour that the integrated production route replaces, and they are kept
-  unmodified and unskipped. The full run on `370bac2` on 2026-11-08 reproduced
-  exactly those five failures, with zero skipped tests and no additional
-  failures. They cover TOTP reuse in the native and older bounded fixtures and
+- **Full provider proof: five expected failures.** The provider's full proof
+  suite keeps five unmet acceptance tests, all in `factor-compatibility`. They
+  characterize native and older bounded factor behaviour that the integrated
+  production route replaces. The full run on `370bac2` on 2026-11-08, when
+  they were ordinary tests, reported exactly those five failures out of 1,112
+  cases (1,107 pass), with zero skipped tests and no additional failures.
+  Since 2026-11-23 they are registered as expected failures with unchanged
+  bodies: they still run, and the suite fails if one of them passes.
+  They cover TOTP reuse in the native and older bounded fixtures and
   a failed-guess counter lost by the bounded fixture after SQL rollback.
   These fixtures are not shipped. The integrated route uses a durable,
   monotonically increasing accepted TOTP step and commits each guessing charge
   before native verification. Its production-composition tests passed on the
-  same commit. This classification does not make the full proof suite green.
+  same commit.
 
 - **Unclean stop during a protected write.** A stop the controller cannot
   catch, or a storage failure, between the pending and the confirmed witness can

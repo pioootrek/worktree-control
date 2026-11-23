@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { existsSync } from "node:fs";
 import type Database from "better-sqlite3";
+import { SUPPORTED_SCHEMA_VERSION } from "@/server/infrastructure/sqlite";
 import { cleanupFactorRoots, Browser, fixtureSql, Authenticator, loadFactorProvider } from "./factor-fixture";
 import { newFactorControl, COOKIE } from "./factor-provider";
 import { OWNER_PASSWORD, SECRET } from "./fixture";
@@ -38,7 +39,7 @@ describe("A3-I14 pinned real passkey proof, nonauthorizing",() => {
   test("finds the frozen plugin storage and readiness verifies it",async () => owned(async f => {
     expect(f.ddl.created).toEqual([]);expect(f.ddl.outstanding).toBe(0);
     expect(f.runtime.implementationVersion).toBe(PASSKEY_IMPLEMENTATION);
-    expect((await passkeyState(f)).schema).toBe(52);
+    expect((await passkeyState(f)).schema).toBe(SUPPORTED_SCHEMA_VERSION);
     success(await new Browser(f).signIn());
     expect((await passkeyState(f)).evidence.map(e=>e.method)).toEqual(["password"]);
   }));

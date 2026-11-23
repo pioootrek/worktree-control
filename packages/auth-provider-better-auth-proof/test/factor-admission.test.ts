@@ -1,5 +1,6 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SUPPORTED_SCHEMA_VERSION } from "@/server/infrastructure/sqlite";
 import type Database from "better-sqlite3";
 import { ADMISSION, capabilityId, FixtureAdmission } from "./factor-admission";
 import { Authenticator, Browser, cleanupFactorRoots, closeFactor, factorFixture, factorState, fixtureSql, loadFactorProvider, type FactorFixture } from "./factor-fixture";
@@ -375,7 +376,7 @@ describe("A3-I13 durable admission, real library, one owner (I17 step candidate)
     expect(await rows(f, `SELECT sessionId, subject, method, observation, authenticatedAt, originalDeadline, authorizingMfa FROM ${ADMISSION.evidence}`)).toEqual(evidence);
     expect((await b.resolve())?.session.authentication).toEqual({ method: "password", factors: 1 });
     await expect(f.runtime.authenticate(new Headers({ cookie: b.cookieHeader() }))).rejects.toMatchObject({ code: "provider_unavailable" });
-    expect((await factorState(f)).schemaVersion).toBe(52);
+    expect((await factorState(f)).schemaVersion).toBe(SUPPORTED_SCHEMA_VERSION);
     f.control.failEvidence = true; const old = (await factorState(f)).sessions.length;
     expect((await new Browser(f).signIn()).status).toBe(500);
     expect((await factorState(f)).sessions.length).toBe(old); expect(await receipt(f)).toBeNull();

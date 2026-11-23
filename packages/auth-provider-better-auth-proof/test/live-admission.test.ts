@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SUPPORTED_SCHEMA_VERSION } from "@/server/infrastructure/sqlite";
 import { createControllerBackup } from "@/server/controller-backup";
 import { EventStream } from "@/server/events";
 import { nullLogWriter } from "@/server/log-writer";
@@ -260,7 +261,7 @@ describe("live admission of controller work beside the real provider", () => {
       expect(existsSync(join(f.root, "verified"))).toBe(false);
       hold.resume();
       await hold.pending;
-      expect((await copy).database.schemaVersion).toBe(52);
+      expect((await copy).database.schemaVersion).toBe(SUPPORTED_SCHEMA_VERSION);
     } finally { await f.runtime.dispose(); await f.store.closeAfterDrain(); }
   });
 });
