@@ -614,7 +614,7 @@ describe("knowledge.create_thread on MCP", () => {
     expect(await t.f.threads()).toHaveLength(1);
   });
 
-  it("refuses above 64 KiB, before mint and dispatch, every message the SDK would not dispatch as a call of the thread write", async () => {
+  it("refuses above 64 KiB, before mint and dispatch, every message the SDK would not dispatch as a call of the thread write, task requests included", async () => {
     const t = await transports("token");
     const secret = t.f.installationSecret;
     const handled = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "handleRequest");
@@ -629,6 +629,9 @@ describe("knowledge.create_thread on MCP", () => {
       ["a wrong jsonrpc value", { ...call(5), jsonrpc: "2" }],
       ["a method other than tools/call", { ...call(6), method: "tools/list" }],
       ["a tool name without a declared ceiling", { ...call(7), params: { name: "project_status", arguments: { projectId: "project-a" } } }],
+      // Both schemas accept task metadata, but this server advertises no task capability: the SDK refuses it before the handler.
+      ["empty task metadata", { ...call(9), params: { name: "knowledge_create_thread", arguments: input(), task: {} } }],
+      ["populated task metadata", { ...call(10), params: { name: "knowledge_create_thread", arguments: { ...input(), idempotencyKey: "task" }, task: { ttl: 1 } } }],
     ];
     for (const [name, message] of nearMisses) {
       expect(await t.rpc(undefined, { secret, raw: padded(message, size) }).reply, name)
@@ -722,6 +725,14 @@ describe("knowledge.create_thread on MCP", () => {
     }
     // A protocol version the SDK refuses: answered without dispatch.
     await t.rpc(tool(input(), 3), { headers: { ...t.mcpHeaders(secret), "mcp-protocol-version": "1999-01-01" } }).reply.catch(() => undefined);
+    // Task metadata within the existing ceiling: the SDK refuses it before the handler, as a JSON-RPC error.
+    for (const [id, task] of [[4, {}], [5, { ttl: 1 }]] as const) {
+      const reply = await t.rpc({ ...tool(input(), id), params: { name: "knowledge_create_thread", arguments: input(), task } }, { secret }).reply;
+      expect(reply.status).toBe(200);
+      expect(reply.body).toMatchObject({ jsonrpc: "2.0", id, error: expect.any(Object) });
+      expect("result" in reply.body).toBe(false);
+    }
+    expect(t.releases).toHaveLength(0);
     expect(await t.f.threads()).toEqual([]);
     expect(await t.f.records()).toEqual([]);
   });

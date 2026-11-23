@@ -111,15 +111,18 @@ function projectToolHint(body: Record<string, unknown>): ToolDescriptor | null {
  * dispatches a tool call: its strict JSON-RPC request schema (`jsonrpc` "2.0",
  * a string or integer ID, no other envelope field) and its call-tool request
  * schema (method `tools/call`, a string tool name, `arguments` an object or
- * absent). Only such a call of a tool whose operation declares a larger
- * ceiling gets it; `undefined` for every other message, which must fit
- * `bodyBytes`. This checks the message's shape only: the operation's `parse`
- * stays the one validation of its input.
+ * absent). A call that carries task metadata (`params.task`, also `{}`) is
+ * excluded: both schemas accept it, but this server advertises no task
+ * capability, so the SDK refuses it before the registered handler runs. Only
+ * such a call of a tool whose operation declares a larger ceiling gets it;
+ * `undefined` for every other message, which must fit `bodyBytes`. This checks
+ * the message's shape only: the operation's `parse` stays the one validation
+ * of its input.
  */
 function declaredRequestBytes(body: Record<string, unknown>, ceilings: Readonly<Record<string, number>>): number | undefined {
   if (!JSONRPCRequestSchema.safeParse(body).success) return undefined;
   const call = CallToolRequestSchema.safeParse(body);
-  if (!call.success) return undefined;
+  if (!call.success || call.data.params.task !== undefined) return undefined;
   const tool = OPERATIONS_MCP_TOOLS.find(each => each.name === call.data.params.name);
   return tool && Object.prototype.hasOwnProperty.call(ceilings, tool.operation) ? ceilings[tool.operation] : undefined;
 }
