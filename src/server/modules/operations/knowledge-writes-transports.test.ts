@@ -47,7 +47,10 @@ async function transports(mode: StoredMode, setup: { humans?: boolean } = {}) {
   } : undefined;
   const retention: OperationRetention | null = real && idempotency ? { idempotency, fingerprintKey: real.fingerprintKey } : null;
   const published: string[] = [];
-  const built = buildOperationsRuntime({ ...f.runtimeOptions(), retention, knowledge: { changed: (projectId: string) => { published.push(projectId); } } });
+  const composed = buildOperationsRuntime({ ...f.runtimeOptions(), retention, knowledge: { changed: (projectId: string) => { published.push(projectId); } } });
+  // The composition is frozen; the adapters get a copy whose mint counts its calls.
+  const minted = { count: 0 };
+  const built = composed.supported ? { ...composed, mint: (...args: Parameters<typeof composed.mint>) => { minted.count++; return composed.mint(...args); } } : composed;
   const adapters = {} as Record<Listener, ReturnType<typeof createOperationsHttp>>;
   const servers = {} as Record<Listener, HttpServer>;
   const responses: ServerResponse[] = [];
@@ -101,7 +104,7 @@ async function transports(mode: StoredMode, setup: { humans?: boolean } = {}) {
     await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(mcpServer.address() as AddressInfo).port}/mcp/operations`), { requestInit: { headers: secret ? { Authorization: `Bearer ${secret}` } : {} } }));
     return c;
   };
-  return { f, built, hooks, adapters, servers, responses, published, post, send, mcp, mcpServer, rpc, mcpHeaders, client };
+  return { f, built, minted, hooks, adapters, servers, responses, published, post, send, mcp, mcpServer, rpc, mcpHeaders, client };
 }
 const input = (extra: Record<string, unknown> = {}) => ({ projectId: "project-a", title: "Release plan", body: "First draft.", ...extra });
 const refusal = (category: string, status: number, reason: string, retry = "none", effect: string | null = "not_started") => ({ error: answer(category, status, reason, retry, effect) });
@@ -141,14 +144,13 @@ describe("knowledge.create_thread on HTTP: carriage and refusals", () => {
 
   it("refuses a duplicate Idempotency-Key header before mint, body or reservation", async () => {
     const t = await transports("token");
-    const mint = vi.spyOn(t.built, "mint");
     for (const listener of ["api", "unix"] as const) {
       const headers = ["Content-Type", "application/json", "Idempotency-Key", "k-1", "Idempotency-Key", "k-1",
         ...(listener === "api" ? ["Authorization", `Bearer ${t.f.installationSecret}`] : [])];
       const reply = await t.post(listener, "knowledge.create_thread", input(), { headers }).reply;
       expect(reply).toMatchObject({ status: 400, body: refusal("invalid_request", 400, "invalid_request", "none", null) });
     }
-    expect(mint).not.toHaveBeenCalled();
+    expect(t.minted.count).toBe(0);
     expect(await t.f.records()).toEqual([]);
     expect(await t.f.threads()).toEqual([]);
   });
@@ -267,21 +269,20 @@ describe("knowledge.create_thread on HTTP: ownership around the commit point", (
 
   it("API disconnect after the reservation and before the effect: no rows, reservation released", async () => {
     const t = await transports("token");
-    const borrowed: { release?: () => void; held?: Promise<void> } = {};
-    let call: ReturnType<typeof t.post>["call"] | undefined;
-    t.hooks.reserved = () => {
-      // Hold the real gate so phase 3 waits; the client goes away meanwhile.
-      borrowed.held = t.f.store.authenticationProviderStorage().borrow(() => new Promise<void>(resolve => { borrowed.release = resolve; })) as Promise<void>;
-      call?.destroy();
-    };
+    let reserved!: () => void;
+    const reservation = new Promise<void>(resolve => { reserved = resolve; });
+    t.hooks.reserved = () => { reserved(); };
     const sent = t.post("api", "knowledge.create_thread", input(), { secret: t.f.installationSecret, key: "k" });
-    call = sent.call;
+    await reservation;
+    // Outside the admitted phase, before phase 3 asks for admission: hold the real gate (FIFO), then leave.
+    let release!: () => void;
+    const held = t.f.store.authenticationProviderStorage().borrow(() => new Promise<void>(resolve => { release = resolve; }));
+    sent.call.destroy();
     await expect(sent.reply).rejects.toThrow();
-    const response = await vi.waitFor(() => { const last = t.responses.at(-1); if (!last?.destroyed) throw new Error("not closed yet"); return last; });
-    expect(response.destroyed).toBe(true);
-    await vi.waitFor(() => { if (!borrowed.release) throw new Error("not held yet"); });
-    borrowed.release!();
-    await borrowed.held;
+    await vi.waitFor(() => { if (!t.responses.at(-1)?.destroyed) throw new Error("not closed yet"); });
+    await vi.waitFor(() => { if (!release) throw new Error("not held yet"); });
+    release();
+    await held;
     await t.adapters.api.drain();
     expect(await t.f.records()).toEqual([]);
     expect(await t.f.threads()).toEqual([]);
@@ -402,7 +403,7 @@ describe("knowledge.create_thread on MCP", () => {
     expect(over).toMatchObject({ status: 413, body: refusal("payload_too_large", 413, "request_too_large", "none", null) });
     const list = { jsonrpc: "2.0", id: 3, method: "tools/list" };
     expect((await t.rpc(undefined, { secret, raw: padded(list, OPERATIONS_HTTP_LIMITS.bodyBytes) }).reply).status).toBe(200);
-    const mint = vi.spyOn(t.built, "mint");
+    const before = t.minted.count;
     // Not a strictly classified call of the thread write: the existing ceiling, refused before mint.
     const unclassified = [
       list,
@@ -416,7 +417,7 @@ describe("knowledge.create_thread on MCP", () => {
       expect(await t.rpc(undefined, { secret, raw: padded(message, OPERATIONS_HTTP_LIMITS.bodyBytes + 1) }).reply, JSON.stringify(message).slice(0, 80))
         .toMatchObject({ status: 413, body: refusal("payload_too_large", 413, "request_too_large", "none", null) });
     }
-    expect(mint).not.toHaveBeenCalled();
+    expect(t.minted.count).toBe(before);
     expect(await t.f.threads()).toHaveLength(1);
   });
 
