@@ -1,3 +1,4 @@
+// test-tier: heavy (network listeners)
 import type { AddressInfo } from "node:net";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";

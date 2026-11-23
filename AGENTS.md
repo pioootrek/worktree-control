@@ -107,6 +107,15 @@ Use nearby `*.test.ts` files to cover behavior at risk. Documentation-only
 changes need `git diff --check` and applicable documentation validation below.
 Report actual results and unverified behavior.
 
+While working, run `pnpm test:fast` (preset `node:test:fast`) for a result
+in about two minutes. It runs lint, typecheck and the fast unit-test tier, and
+leaves out heavy unit-test files and the `scripts/*.test.mjs` tests. The full
+`pnpm check` is still required before a pull request. A unit-test file is fast
+unless its leading comment lines declare
+`// test-tier: heavy (<short reason>)`, with a few truthful words such as
+`child processes`; add that line when the gate reports a file over its budget.
+A malformed or misplaced marker fails the gate.
+
 When registered-project verification presets are available through MCP, use
 `list_test_presets`, then `run_test` with the exact path from `list_worktrees`.
 Reuse the idempotency key when retrying one request and poll `get_test_run` to

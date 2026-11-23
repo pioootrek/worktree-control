@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes, durable SQLite stores)
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { openProtectedUpgradeFixture } from "./fixtures/protected-security";
 import { establishSecurityFenceWithBackup, maintainSecurityFence } from "@/server/bootstrap/security-maintenance";

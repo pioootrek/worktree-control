@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite migrations)
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";

@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

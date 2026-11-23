@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite backups)
 import { unmanagedFixtureDatabase } from "./unmanaged-sqlite-fixture";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";

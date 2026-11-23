@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { resumeFixtureSecurity } from "../../infrastructure/sqlite/fixtures/protected-security";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

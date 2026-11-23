@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes)
 import { userScheduleMutationKey } from "@/shared/contracts/user-backups";
 import { randomUUID } from "node:crypto";
 import fs, { chmodSync, existsSync, linkSync, lstatSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";

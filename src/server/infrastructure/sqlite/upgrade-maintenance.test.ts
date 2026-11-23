@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite migrations)
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

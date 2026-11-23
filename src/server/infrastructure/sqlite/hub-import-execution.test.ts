@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { unmanagedFixtureDatabase, ownedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { openStoreAt49 } from "./fixtures/released-schema";

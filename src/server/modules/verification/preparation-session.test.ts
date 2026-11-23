@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes)
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";

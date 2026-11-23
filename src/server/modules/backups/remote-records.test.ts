@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes, durable SQLite stores)
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";

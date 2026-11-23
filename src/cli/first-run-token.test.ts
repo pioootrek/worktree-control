@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { unmanagedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";

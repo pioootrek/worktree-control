@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes, real clocks)
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

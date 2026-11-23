@@ -14,10 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check-build:
+  static-checks:
     runs-on: ubuntu-24.04
-    # With the integration branch's tests the job has run close to 30 minutes on a slow hosted runner. The limit only stops a hung job.
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
@@ -31,23 +30,153 @@ jobs:
           node-version: 22.23.2
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check
-        id: check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test:resources
+
+  unit-tests:
+    runs-on: ubuntu-24.04
+    # One shard can take over 15 minutes on a slow hosted runner when its failure diagnosis reruns the heaviest files one at a time.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # unit-test-totals expects one report from each of these four shards.
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11.22.0
+          run_install: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Naming reporters replaces vitest's defaults, so github-actions is listed to keep failure annotations.
+      - name: Run unit-test shard ${{ matrix.shard }} of 4
+        id: unit
+        run: pnpm test --shard=${{ matrix.shard }}/4 --reporter=default --reporter=github-actions --reporter=blob --outputFile.blob="$RUNNER_TEMP/vitest-blob/blob-${{ matrix.shard }}-4.json"
+      # A failed shard still writes its report, so the merged summary shows the failure.
+      - name: Retain unit-test shard report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unit-test-blob-${{ matrix.shard }}
+          path: ${{ runner.temp }}/vitest-blob/blob-${{ matrix.shard }}-4.json
+          retention-days: 1
+          if-no-files-found: error
       - name: Diagnose failed unit checks without changing their result
-        if: failure() && steps.check.outcome == 'failure'
+        if: failure() && steps.unit.outcome == 'failure'
         run: |
           node -e 'const os=require("node:os");console.log(JSON.stringify({node:process.version,availableParallelism:os.availableParallelism(),memoryBytes:os.totalmem(),load:os.loadavg()}))'
           df -h . /tmp
           pnpm test src/server/restore-recovery.test.ts src/server/test-job-manager.test.ts src/server/infrastructure/sqlite/durable-migrations.test.ts src/server/infrastructure/sqlite/sqlite-state-store.test.ts --maxWorkers=1 --reporter=json --outputFile=unit-failure-diagnostic.json
       - name: Retain unit failure timings
-        if: failure() && steps.check.outcome == 'failure'
+        if: failure() && steps.unit.outcome == 'failure'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: unit-failure-diagnostic
+          name: unit-failure-diagnostic-shard-${{ matrix.shard }}
           path: unit-failure-diagnostic.json
           retention-days: 7
           if-no-files-found: warn
+
+  unit-test-totals:
+    needs: unit-tests
+    # Also runs after a failed shard, so the merged summary shows every result; that failure still fails this job.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11.22.0
+          run_install: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: unit-test-blob-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/vitest-blobs
+      # Merging silently accepts a partial set of reports.
+      - name: Require every shard report
+        run: node scripts/unit-test-totals.mjs blobs "$RUNNER_TEMP/vitest-blobs" 4
+      - name: List unit-test files of the configuration
+        run: pnpm exec vitest list --filesOnly --json="$RUNNER_TEMP/unit-test-files.json"
+      - name: Merge shard reports
+        run: pnpm exec vitest run --merge-reports="$RUNNER_TEMP/vitest-blobs" --reporter=default --reporter=./scripts/unit-test-totals.mjs --outputFile.totals="$RUNNER_TEMP/unit-test-durations.json"
+      - name: Require every listed file in the merged report
+        run: node scripts/unit-test-totals.mjs files "$RUNNER_TEMP/unit-test-files.json" "$RUNNER_TEMP/unit-test-durations.json"
+      - name: Retain unit-test durations per file
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unit-test-durations
+          path: ${{ runner.temp }}/unit-test-durations.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11.22.0
+          run_install: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # Artifacts drop file modes; the archive keeps the executable CLI entries that npm pack ships.
+      - name: Archive build output
+        run: tar -cf "$RUNNER_TEMP/build-output.tar" dist out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-output
+          path: ${{ runner.temp }}/build-output.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  https-tests:
+    needs: build
+    runs-on: ubuntu-24.04
+    # Browser dependencies have downloaded for over ten minutes from a slow APT mirror.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11.22.0
+          run_install: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: build-output
+          path: ${{ runner.temp }}/build-output
+      - name: Restore build output
+        run: tar -xpf "$RUNNER_TEMP/build-output/build-output.tar"
       - name: Install verified Caddy fixture
         shell: bash
         run: |
@@ -79,17 +208,173 @@ jobs:
           fi
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:https
+
+  # The suite drives the built CLI and controller with Node, Git and OpenSSL only; it starts no browser and no Caddy.
+  integration-tests:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11.22.0
+          run_install: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: build-output
+          path: ${{ runner.temp }}/build-output
+      - name: Restore build output
+        run: tar -xpf "$RUNNER_TEMP/build-output/build-output.tar"
       - run: pnpm test:integration
+
+  ui-tests:
+    needs: build
+    runs-on: ubuntu-24.04
+    # Browser dependencies have downloaded for over ten minutes from a slow APT mirror, before a suite of about seven minutes.
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11.22.0
+          run_install: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: build-output
+          path: ${{ runner.temp }}/build-output
+      - name: Restore build output
+        run: tar -xpf "$RUNNER_TEMP/build-output/build-output.tar"
+      # test:ui has no fingerprint check of its own; the dashboard it loads must come from these sources.
+      - name: Check build output against the sources
+        run: node scripts/build-fingerprint.mjs --check
+      - name: Use Ubuntu HTTPS mirrors for browser dependencies
+        shell: bash
+        run: |
+          # Azure's mirror delivered ~26 MB at ~40 kB/s in both attempts of run 40330287767.
+          # Speed-up only: drop the plain-HTTP Azure mirror when the runner image lists
+          # HTTPS fallbacks behind it (actions/runner-images, configure-apt-sources.sh).
+          # Any other layout keeps the image's package sources unchanged and is printed,
+          # so a new image never fails the build here (image 20261103.629 varied by runner).
+          mirrors=/etc/apt/apt-mirrors.txt
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          azure='^http://([a-z0-9-]+\.)?azure\.archive\.ubuntu\.com/ubuntu/[[:space:]]'
+          if grep -Fxq 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' "$sources" 2>/dev/null &&
+             grep -Eq "$azure" "$mirrors" 2>/dev/null &&
+             grep -Ev "$azure" "$mirrors" | grep -q '^https://'; then
+            sudo sed -E -i "\|$azure|d" "$mirrors"
+            echo 'APT mirrors in use:'
+            cat "$mirrors"
+          else
+            echo '::warning::Unrecognized Ubuntu APT mirror layout; keeping the runner image package sources.'
+            grep -H '' "$sources" "$mirrors" 2>/dev/null || true
+          fi
+      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:ui
+      - name: Retain failed browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: browser-failure-diagnostics-ui
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e-tests:
+    needs: build
+    runs-on: ubuntu-24.04
+    # Browser dependencies have downloaded for over ten minutes from a slow APT mirror.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11.22.0
+          run_install: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: build-output
+          path: ${{ runner.temp }}/build-output
+      - name: Restore build output
+        run: tar -xpf "$RUNNER_TEMP/build-output/build-output.tar"
+      - name: Use Ubuntu HTTPS mirrors for browser dependencies
+        shell: bash
+        run: |
+          # Azure's mirror delivered ~26 MB at ~40 kB/s in both attempts of run 40330287767.
+          # Speed-up only: drop the plain-HTTP Azure mirror when the runner image lists
+          # HTTPS fallbacks behind it (actions/runner-images, configure-apt-sources.sh).
+          # Any other layout keeps the image's package sources unchanged and is printed,
+          # so a new image never fails the build here (image 20261103.629 varied by runner).
+          mirrors=/etc/apt/apt-mirrors.txt
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          azure='^http://([a-z0-9-]+\.)?azure\.archive\.ubuntu\.com/ubuntu/[[:space:]]'
+          if grep -Fxq 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' "$sources" 2>/dev/null &&
+             grep -Eq "$azure" "$mirrors" 2>/dev/null &&
+             grep -Ev "$azure" "$mirrors" | grep -q '^https://'; then
+            sudo sed -E -i "\|$azure|d" "$mirrors"
+            echo 'APT mirrors in use:'
+            cat "$mirrors"
+          else
+            echo '::warning::Unrecognized Ubuntu APT mirror layout; keeping the runner image package sources.'
+            grep -H '' "$sources" "$mirrors" 2>/dev/null || true
+          fi
+      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
       - name: Retain failed browser diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: browser-failure-diagnostics
+          name: browser-failure-diagnostics-e2e
           path: test-results/
           retention-days: 7
           if-no-files-found: ignore
+
+  package-artifacts:
+    # The two packages exist only when every check of this run passed.
+    needs: [static-checks, unit-tests, unit-test-totals, build, https-tests, integration-tests, ui-tests, e2e-tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11.22.0
+          run_install: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Downloaded outside the workspace: both packers record any untracked file as a dirty source.
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: build-output
+          path: ${{ runner.temp }}/build-output
+      - name: Restore build output
+        run: tar -xpf "$RUNNER_TEMP/build-output/build-output.tar"
       # A separate artifact, never part of portable-package. Written outside the
       # workspace and before the Community pack, so both clean-tree checks hold.
       - name: Pack optional account provider
@@ -117,7 +402,7 @@ jobs:
 
   package-rbac-acceptance:
     # Exact CI artifacts in fresh prefixes; the checkout supplies only the harness.
-    needs: check-build
+    needs: package-artifacts
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -197,7 +482,7 @@ jobs:
           if-no-files-found: error
 
   package-smoke:
-    needs: check-build
+    needs: package-artifacts
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -228,7 +513,7 @@ jobs:
           if-no-files-found: ignore
 
   package-service-lifecycle:
-    needs: check-build
+    needs: package-artifacts
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

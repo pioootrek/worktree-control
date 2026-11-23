@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite backups)
 import { resumeFixtureSecurity } from "./infrastructure/sqlite/fixtures/protected-security";
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

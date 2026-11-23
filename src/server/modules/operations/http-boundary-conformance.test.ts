@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes, network listeners)
 import * as nodeHttp from "node:http";
 import * as nodeHttps from "node:https";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
