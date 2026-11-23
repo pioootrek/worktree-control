@@ -1885,10 +1885,17 @@ validates only its own framing:
 **MCP request ceiling.** Every tool shares one path, and the bounded read
 precedes parsing, so the outer body ceiling cannot depend on the tool. It is
 262,144 bytes plus 4,096 bytes of envelope, counted on the bytes actually
-streamed, chunked bodies included. After strict classification (a JSON-RPC 2.0
-`tools/call` with a string or number ID naming a tool whose operation declares
-a larger ceiling), every other message must still fit 65,536 bytes, else
-`payload_too_large`/`request_too_large` before mint. The cost: up to 32
+streamed, chunked bodies included. The larger class is decided on the parsed
+message against the schemas the pinned MCP SDK uses before it dispatches a tool
+call: its strict JSON-RPC request schema (`jsonrpc` `"2.0"`, a string or
+integer ID, no other envelope field) and its call-tool request schema (method
+`tools/call`, a string tool name, `arguments` an object or absent). Only such a
+call of a tool whose operation declares a larger ceiling is in it. Every other
+message, a fractional ID, non-object `arguments` and a tool without a declared
+ceiling included, must still fit 65,536 bytes, else
+`payload_too_large`/`request_too_large` before mint and before any SDK or
+application dispatch. The classification checks the message's shape only; the
+operation's `parse` stays the one validation of its input. The cost: up to 32
 in-flight requests of about 260 KiB each before authentication, about 8 MiB
 instead of 2 MiB. Existing messages keep the fixed 64 KiB allowance for an
 echoed ID. A classified call budgets its own serialized ID, escaped strings
@@ -1915,6 +1922,18 @@ the lock. An unkeyed write repeated after an ambiguous delivery can create a
 second thread; the CLI help says so. A refusal is written to standard error
 inside the admitted phase that established it.
 
+The command writes the DTO to standard output only after its outcome is known,
+so a failed standard output reports the committed effect, unlike the read
+commands' `output_unavailable` with effect `null`. A write that fails
+synchronously is, offline, the runner's failed delivery
+(`internal`/`release_commit_failed`, effect `committed`); through the socket,
+where the controller had answered 200, it is
+`unavailable`/`output_unavailable` with effect `committed`. A stream error after
+an accepted write is `unavailable`/`output_unavailable` with effect `committed`.
+Each case writes one diagnostic to standard error and exits 1; retry is `none`,
+since the thread exists. A stream error before any write only sets exit code 1;
+the command's own answer is then the one diagnostic.
+
 **Rollback limit.** Neither content table has a fence trigger, and the
 idempotency records are unfenced (D1b's accepted deviation). A latched fence
 still refuses keyed and unkeyed calls as any store call. Restoring an older
@@ -1925,14 +1944,34 @@ with the thread absent or present. Startup repair converts a surviving
 `started` record to `unknown`. Inspect the stored thread and history before
 repeating an uncertain write.
 
-**Tests.** `knowledge-writes.test.ts` (the operation over the real store:
-bounds, round trip, size proof, grants, authorship, the answer table, replay
-after revocation and archiving, a changed resolution, a failure between the two
-inserts, reopen and replay, a crash after the commit point, notifications and
-coexistence with the legacy readers), `knowledge-writes-transports.test.ts`
-(API, unix, the externally owned admin socket and MCP), the cookie POST cases
-in `http-boundary-conformance.test.ts` and the CLI cases in
-`src/cli/session-describe.test.ts`.
+**Tests.** The runner's own suites cover the complete answer table of
+`mutationRelease` with fixture operations. The suites of this operation assert
+these rows over the real store and its content tables:
+
+- `knowledge-writes.test.ts`: bounds, round trip and size proof; grants;
+  authorship for every actor, an `owner` principal row of a human included; a
+  success and its replay; invalid input and key; denial; an archived project;
+  `idempotency_conflict`, `request_in_progress` and
+  `previous_attempt_outcome_unknown`; a failed `commit` delivery and a failed
+  `refuse` delivery; a fresh denial after a confirmed effect and after an
+  unknown effect; an unconfirmed cleanup; replay after revocation and
+  archiving; a changed resolution; a failure between the two inserts; reopen
+  and replay; a crash after the commit point; notifications; coexistence with
+  the legacy readers. The delivery, denial and cleanup rows check the thread
+  and history rows and the record before and after a reopen of the store, and
+  the answer to the same key after it. Failed reservation,
+  `started`, completion and repair writes are covered by the runner's SQLite
+  matrices only.
+- `knowledge-writes-transports.test.ts`: API, unix, the externally owned admin
+  socket and MCP, with the strict MCP request classification, cancellation of a
+  pending SDK staging by the deadline and by the caller's departure, the MCP
+  server's policy replacement and close, the real owner shutdown holding the
+  store and the controller lock until an accepted request settled, and the
+  adapters' `commit` and `refuse` writes observed inside the real admission
+  gate, with a negative control.
+- The cookie POST cases in `http-boundary-conformance.test.ts`, the request
+  adapter's cases in `mcp-request-adapter.test.ts` and the CLI cases in
+  `src/cli/session-describe.test.ts`.
 
 ### Commit point
 

@@ -389,7 +389,9 @@ worktree-control knowledge threads create --project example --title "Release pla
 
 If the socket breaks after the request was sent, the CLI answers
 `admin_outcome_unknown` and never retries offline: check the project's threads
-before repeating the write. The legacy `knowledge create_thread` command, tool and
+before repeating the write. If standard output fails after the thread was
+written, the CLI exits 1 with an error whose `effect` is `committed`: the thread
+exists, so do not repeat the write. The legacy `knowledge create_thread` command, tool and
 route are unchanged.
 
 ## What this release provides
