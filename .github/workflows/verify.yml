@@ -59,14 +59,16 @@ jobs:
       # Naming reporters replaces vitest's defaults, so github-actions is listed to keep failure annotations.
       - name: Run unit-test shard ${{ matrix.shard }} of 4
         id: unit
-        run: pnpm test --shard=${{ matrix.shard }}/4 --reporter=default --reporter=github-actions --reporter=blob --outputFile.blob="$RUNNER_TEMP/vitest-blob/blob-${{ matrix.shard }}-4.json"
+        run: pnpm test --shard=${{ matrix.shard }}/4 --reporter=default --reporter=github-actions --reporter=blob --outputFile.blob="$RUNNER_TEMP/vitest-blob/blob-${{ matrix.shard }}-4-attempt-${{ github.run_attempt }}.json"
       # A failed shard still writes its report, so the merged summary shows the failure.
+      # Artifact IDs do not follow upload order and a download keeps only the highest ID of a name,
+      # so each run attempt keeps its report under a name of its own.
       - name: Retain unit-test shard report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: unit-test-blob-${{ matrix.shard }}
-          path: ${{ runner.temp }}/vitest-blob/blob-${{ matrix.shard }}-4.json
+          name: unit-test-blob-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vitest-blob/blob-${{ matrix.shard }}-4-attempt-${{ github.run_attempt }}.json
           retention-days: 1
           if-no-files-found: error
       - name: Diagnose failed unit checks without changing their result
@@ -108,20 +110,21 @@ jobs:
           pattern: unit-test-blob-*
           merge-multiple: true
           path: ${{ runner.temp }}/vitest-blobs
-      # Merging silently accepts a partial set of reports.
-      - name: Require every shard report
-        run: node scripts/unit-test-totals.mjs blobs "$RUNNER_TEMP/vitest-blobs" 4
+      # Merging silently accepts a partial set of reports, and a shard run again keeps the reports of its earlier attempts.
+      - name: Require every shard report and keep the latest attempt of each
+        run: node scripts/unit-test-totals.mjs blobs "$RUNNER_TEMP/vitest-blobs" 4 "$RUNNER_TEMP/vitest-blobs-latest"
       - name: List unit-test files of the configuration
         run: pnpm exec vitest list --filesOnly --json="$RUNNER_TEMP/unit-test-files.json"
       - name: Merge shard reports
-        run: pnpm exec vitest run --merge-reports="$RUNNER_TEMP/vitest-blobs" --reporter=default --reporter=./scripts/unit-test-totals.mjs --outputFile.totals="$RUNNER_TEMP/unit-test-durations.json"
+        run: pnpm exec vitest run --merge-reports="$RUNNER_TEMP/vitest-blobs-latest" --reporter=default --reporter=./scripts/unit-test-totals.mjs --outputFile.totals="$RUNNER_TEMP/unit-test-durations.json"
       - name: Require every listed file in the merged report
         run: node scripts/unit-test-totals.mjs files "$RUNNER_TEMP/unit-test-files.json" "$RUNNER_TEMP/unit-test-durations.json"
+      # One name per run attempt, so a download by name gets the durations of that attempt.
       - name: Retain unit-test durations per file
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: unit-test-durations
+          name: unit-test-durations-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/unit-test-durations.json
           retention-days: 7
           if-no-files-found: warn
