@@ -24,12 +24,35 @@ export type OperationsHttpRuntime = { supported: false; mint: Mint } | {
   providerSessionEligibility(): ProviderSessionEligibility;
   runtime: Pick<OperationRuntime, "now">;
   registry: Pick<OperationRegistry, "get" | "idsOn">;
-  runner: Pick<OperationRunner, "readRelease" | "queryRelease">;
+  runner: Pick<OperationRunner, "readRelease" | "queryRelease" | "mutationRelease">;
 };
 
-/** API's existing 64 KiB ceiling; unix's ordinary-command ceiling is stricter. */
+/**
+ * API's existing 64 KiB ceiling; unix's ordinary-command ceiling is stricter.
+ * An operation listed in `operationBodyBytes` has that ceiling on API and unix
+ * instead, chosen from the validated raw path before the body is read.
+ */
 export const OPERATIONS_HTTP_LIMITS = Object.freeze({ bodyBytes: 64 * 1024, unixBodyBytes: 16 * 1024,
+  operationBodyBytes: Object.freeze({ "knowledge.create_thread": 256 * 1024 }) as Readonly<Record<string, number>>,
   responseBytes: 256 * 1024, deadlineMs: 10_000, maxInFlight: 32, json: Object.freeze({ maxDepth: 8, maxFields: 128 }) });
+
+/** The request header that carries an idempotency key; a singleton like the other transport fields. */
+export const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
+
+/** The body ceiling of one validated operation path on an HTTP listener. */
+export function operationsBodyLimit(limits: Pick<typeof OPERATIONS_HTTP_LIMITS, "bodyBytes" | "unixBodyBytes" | "operationBodyBytes">, listener: string, operation: string): number {
+  if (Object.prototype.hasOwnProperty.call(limits.operationBodyBytes, operation)) return limits.operationBodyBytes[operation];
+  return listener === "unix" ? Math.min(limits.bodyBytes, limits.unixBodyBytes) : limits.bodyBytes;
+}
+
+/**
+ * The adapter's handling of a failed delivery (`commit_failed`): the one
+ * attempt may have written part of a response, so it is ended or destroyed and
+ * nothing more is written.
+ */
+export function terminateOperationsResponse(response: ServerResponse): void {
+  if (!response.writableEnded && !response.destroyed) response.destroy();
+}
 
 /** Preserve raw multiplicity, including headers Node would otherwise discard. */
 export function presentedCredentials(request: IncomingMessage, legacyHeaders: "tokens" | "refuse" = "tokens"): PresentedCredentials {
@@ -120,6 +143,8 @@ export function createOperationsHttp(options: {
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; cancel(); }, limits.deadlineMs); timer.unref();
     const connected = () => !abort.signal.aborted && !response.destroyed && !response.writableEnded;
+    // Set once a mutation's one delivery attempt failed: nothing more is written, also from the outer catch.
+    let deliveryFailed = false;
     try {
       const parsed = path(request);
       if (!parsed.claimed || !parsed.operation || parsed.surface !== "api") {
@@ -171,12 +196,12 @@ export function createOperationsHttp(options: {
       }
       if (!cookie && options.originAllowed && !options.originAllowed(request)) { operationsFailure(response, failure("forbidden", "origin_forbidden")); return; }
       // Do not let Node collapse singleton transport fields into an accepted value.
-      validateOperationsSingletonHeaders(request);
+      validateOperationsSingletonHeaders(request, [IDEMPOTENCY_KEY_HEADER]);
       if (cookie) authenticationJsonContentType(request);
       if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers["content-type"] ?? "")) throw new BoundaryError(400, "invalid_request");
       const deadline = runtime.runtime.now() + limits.deadlineMs;
       const body = parseStrictJson(await readBoundedBody(request, {
-        limit: listener === "unix" ? Math.min(limits.bodyBytes, limits.unixBodyBytes) : limits.bodyBytes,
+        limit: operationsBodyLimit(limits, listener, parsed.operation),
         timeoutMs: limits.deadlineMs, signal: abort.signal,
       }), limits.json);
       if (!body || typeof body !== "object" || Array.isArray(body)) throw new BoundaryError(400, "invalid_request");
@@ -190,8 +215,29 @@ export function createOperationsHttp(options: {
       if (!minted.ok) { operationsFailure(response, minted.error); return; }
       const operation = runtime.registry.get(parsed.operation);
       if (!operation) { operationsFailure(response, failure("not_found", "operation_not_found")); return; }
+      // Passed for every kind: the runner refuses a key on anything that does not retain.
+      const header = request.headers[IDEMPOTENCY_KEY_HEADER];
+      const idempotencyKey = typeof header === "string" ? header : undefined;
+      if (operation.kind === "mutation") {
+        const released = await runtime.runner.mutationRelease(operation, minted.context, body, {
+          eligible: () => !closing && runtime.eligible(), connected, deadline, signal: abort.signal, idempotencyKey,
+          commit(value: object) {
+            const serialized = JSON.stringify(value);
+            // The operation's size proof keeps its DTO below the ceiling. An oversized one is a failed
+            // delivery (the runner classifies it with this invocation's effect), never a misleading envelope.
+            if (Buffer.byteLength(serialized) > limits.responseBytes) throw new OperationError("payload_too_large", "response_too_large");
+            writeOperationsResponse(response, 200, serialized);
+          },
+          // Inside the admitted phase that established the refusal.
+          refuse(error: PublicOperationError) { operationsFailure(response, error); },
+        });
+        if (released.status === "commit_failed") { deliveryFailed = true; terminateOperationsResponse(response); }
+        // Only the runner's returned refusals (policy, refused admission, invalid options) are written here, as returned.
+        else if (released.status === "refused") operationsFailure(response, released.error);
+        return;
+      }
       const releaseOptions = {
-        eligible: () => !closing && runtime.eligible(), connected, deadline, signal: abort.signal,
+        eligible: () => !closing && runtime.eligible(), connected, deadline, signal: abort.signal, idempotencyKey,
         commit(value: object) {
           const serialized = JSON.stringify(value);
           if (Buffer.byteLength(serialized) > limits.responseBytes) {
@@ -202,13 +248,14 @@ export function createOperationsHttp(options: {
           writeOperationsResponse(response, 200, serialized);
         },
       };
-      // Reads and queries both release inside an admitted phase; the registry holds no other kind yet.
+      // Reads and queries release their values inside an admitted phase; their refusals are still written here.
       const result = operation.kind === "query"
         ? await runtime.runner.queryRelease(operation, minted.context, body, releaseOptions)
         : await runtime.runner.readRelease(operation, minted.context, body, releaseOptions);
       if (result.status !== "committed") operationsFailure(response, result.error);
     } catch (error) {
-      operationsFailure(response, operationsRequestFailure(error, abort.signal, timedOut));
+      if (deliveryFailed) terminateOperationsResponse(response);
+      else operationsFailure(response, operationsRequestFailure(error, abort.signal, timedOut));
     } finally {
       // Never relinquish ownership merely because the handler returned or the client disconnected.
       // settle is called once; failed cleanup retains capacity. No race against

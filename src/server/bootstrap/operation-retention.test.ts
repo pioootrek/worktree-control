@@ -255,12 +255,12 @@ describe("composition", () => {
     requestBudget: new AuthenticationRequestBudget(16, 4), provider: null,
     eligibility: { controllerEligible: () => true, providerSessionEligible: () => false }, listeners: { unix: () => true } });
 
-  it("gives the store and key to the runner only, and keeps the registry at the four production operations", async () => {
+  it("gives the store and key to the runner only, and keeps the registry at the five production operations", async () => {
     const paths = installation();
     const { store, retention } = await start(paths, T0);
     const built = buildOperationsRuntime({ ...options(store), retention });
     if (!built.supported) throw new Error("expected supported mode");
-    expect([...built.registry.ids()].sort()).toEqual(["project.list", "project.status", "project.worktrees", "session.describe"]);
+    expect([...built.registry.ids()].sort()).toEqual(["knowledge.create_thread", "project.list", "project.status", "project.worktrees", "session.describe"]);
     expect("fingerprintKey" in built.runtime).toBe(false);
     expect("idempotency" in built.runtime).toBe(false);
     const key = Buffer.from(retention!.fingerprintKey).toString("hex");

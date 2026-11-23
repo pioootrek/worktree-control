@@ -52,7 +52,7 @@ describe("knowledge.create_thread: definition and input", () => {
   it("is a declared, retained, admitted mutation on the project, excluded from the worker listener", async () => {
     const { f } = await world();
     const op = f.operation();
-    expect(op).toMatchObject({ id: "knowledge.create_thread", kind: "mutation", retain: true, excludedListeners: ["worker"], publicKeys: ["thread"] });
+    expect(op).toMatchObject({ id: "knowledge.create_thread", kind: "mutation", retain: true, excludedListeners: ["worker", "mcp"], publicKeys: ["thread"] });
     expect(op.effect).toMatchObject({ mode: "admitted", commitPoint: "declared" });
     expect("acquire" in op).toBe(false);
     expect(op.resources(op.parse(input()))).toEqual({ project: { kind: "project", id: "project-a" } });
@@ -414,7 +414,7 @@ describe("knowledge.create_thread: authorship (decision 8)", () => {
 
   it("agent: the account ID and agent_token", async () => {
     const { f, c, mint } = await world();
-    expect(await authored(f, c.runner, await mint("mcp", await f.agent("bot", [["operator", "project-a"]]))))
+    expect(await authored(f, c.runner, await mint("api", await f.agent("bot", [["operator", "project-a"]]))))
       .toEqual({ createdBy: "bot", created_by: "bot", principal_id: "bot", authentication_method: "agent_token" });
   });
 
@@ -426,7 +426,7 @@ describe("knowledge.create_thread: authorship (decision 8)", () => {
 
   it("installation in open mode: installation and none", async () => {
     const { f, c, mint } = await world("open");
-    expect(await authored(f, c.runner, await mint("mcp")))
+    expect(await authored(f, c.runner, await mint("api")))
       .toEqual({ createdBy: "installation", created_by: "installation", principal_id: "installation", authentication_method: "none" });
   });
 
@@ -494,6 +494,41 @@ describe("knowledge.create_thread: notification", () => {
     await f.admitted(() => f.database.exec("CREATE TRIGGER fail_thread BEFORE INSERT ON knowledge_threads BEGIN SELECT RAISE(ABORT, 'injected'); END"));
     await f.release(c.runner, op, agent, input({ title: "Second" }));
     expect(f.notifications).toEqual(["project-a"]);
+  });
+});
+
+describe("knowledge.create_thread in the production composition", () => {
+  it("is registered with its writer, and the publisher adapter is total: a throwing publisher still leaves a completed record", async () => {
+    const f = await knowledgeFixture("better-auth"); fixtures.push(f);
+    const published: string[] = [];
+    const built = buildOperationsRuntime({ ...f.runtimeOptions(), knowledge: { changed: (projectId: string) => { published.push(projectId); throw new Error("subscriber gone /secret"); } } });
+    if (!built.supported) throw new Error("unsupported");
+    const minted = await built.mint("api", await f.agent("agent", [["operator", "project-a"]]), null, {});
+    if (!minted.ok) throw new Error("mint");
+    const op = built.registry.get("knowledge.create_thread");
+    if (!op) throw new Error("not registered");
+    const first = await f.release(built.runner, op, minted.context, input(), { idempotencyKey: "k" });
+    expect(first.result).toEqual(committed);
+    expect(published).toEqual(["project-a"]);
+    expect(await f.records()).toEqual(["k account:agent completed"]);
+    expect(f.logs.lines).toEqual(expect.arrayContaining([{ message: "operations.knowledge_notification_failed", details: { operationId: "knowledge.create_thread" } }]));
+    expect(JSON.stringify(f.logs.lines)).not.toContain("secret");
+    // A rejected promise is absorbed the same way; the replay publishes nothing.
+    const rejecting = buildOperationsRuntime({ ...f.runtimeOptions(), knowledge: { changed: (projectId: string) => { published.push(projectId); return Promise.reject(new Error("later")); } } });
+    if (!rejecting.supported) throw new Error("unsupported");
+    const again = await rejecting.mint("api", presentedBearer(f.agents.get("agent")!), null, {});
+    if (!again.ok) throw new Error("mint");
+    expect((await f.release(rejecting.runner, rejecting.registry.get("knowledge.create_thread")!, again.context, input(), { idempotencyKey: "k" })).writes).toEqual(first.writes);
+    expect((await f.release(rejecting.runner, rejecting.registry.get("knowledge.create_thread")!, again.context, input({ title: "Second" }), { idempotencyKey: "k2" })).result).toEqual(committed);
+    expect(published).toEqual(["project-a", "project-a"]);
+    expect(await f.records()).toEqual(["k account:agent completed", "k2 account:agent completed"]);
+  });
+
+  it("publishes nothing without a publisher (offline)", async () => {
+    const { f, c, offline } = await world();
+    const op = c.registry.get("knowledge.create_thread")!;
+    expect((await f.release(c.runner, op, await offline(), input())).result).toEqual(committed);
+    expect(await f.threads()).toHaveLength(1);
   });
 });
 

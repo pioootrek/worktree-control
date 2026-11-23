@@ -27,9 +27,11 @@ import type { MutationReleaseOptions, MutationReleaseResult } from "./runner";
  * importer list.
  */
 export type Mode = "open" | "token" | "better-auth";
+/** `legacy`: a stored mode outside the contract; the composition builds no registry for it. */
+export type StoredMode = Mode | "legacy";
 export interface Written { kind: "commit" | "refuse"; value: unknown; admitted: number }
 
-export async function knowledgeFixture(mode: Mode, setup: { retention?: boolean; humans?: boolean } = {}) {
+export async function knowledgeFixture(mode: StoredMode, setup: { retention?: boolean; humans?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "knowledge-writes-"));
   const paths: AppPaths = resolveAppPaths(join(root, "data"), join(root, "state"));
   const clock = { now: NOW };

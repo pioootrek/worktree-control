@@ -150,7 +150,8 @@ function createThreadOperation(ports: KnowledgeWritePorts): MutationOperation<Cr
     id: "knowledge.create_thread",
     kind: "mutation",
     // H (API on TCP and the unix socket), MCP and CLI: never the worker listener.
-    excludedListeners: Object.freeze(["worker"] as const),
+    // MCP is excluded until its tool descriptor is mounted with it.
+    excludedListeners: Object.freeze(["worker", "mcp"] as const),
     // Writes also require knowledge:read: the response carries the retained content.
     requirement: Object.freeze({ require: allOf(onProject("knowledge:write", "project"), onProject("knowledge:read", "project")) }),
     retain: true,

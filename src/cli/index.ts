@@ -446,7 +446,7 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const operationListeners: { api?: import("node:http").Server; unix?: import("node:http").Server } = {};
   const operations = buildOperationsRuntime({ store, activeMode: authentication.mode(), now: Date.now, logs, retention,
     eligibility: providerAdministration, provider: providerAdministration.operationSessionAuthority(), requestBudget: providerAdministration.requestBudget,
-    projectReads: { placement: processes, git },
+    projectReads: { placement: processes, git }, knowledge: { changed: events.publishKnowledge },
     listeners: { mcp: () => mcp?.server.listening === true, worker: () => remoteVerification?.listenerOpen() === true, api: () => operationListeners.api?.listening === true, unix: () => operationListeners.unix?.listening === true } });
   mcp?.mountOperations(operations);
   const controller = createControllerServer({

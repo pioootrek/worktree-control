@@ -72,7 +72,7 @@ async function fixture(mode = "open", limits?: Parameters<typeof createOperation
     }
     return built.runner.readRelease(operation, context, input, options);
   };
-  const runtime = { ...built, mint: minted, runner: { readRelease, queryRelease: built.runner.queryRelease.bind(built.runner) } } satisfies OperationsHttpRuntime;
+  const runtime = { ...built, mint: minted, runner: { readRelease, queryRelease: built.runner.queryRelease.bind(built.runner), mutationRelease: built.runner.mutationRelease.bind(built.runner) } } satisfies OperationsHttpRuntime;
   const adapter = createOperationsMcp({ runtime, limits });
   const httpAdapter = createOperationsHttp({ runtime, listener: "api", limits });
   // Fault owners are deliberate negative controls; the actual adapter is unchanged.
