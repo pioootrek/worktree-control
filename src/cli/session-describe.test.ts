@@ -38,7 +38,7 @@ import { createProviderWorld } from "../server/modules/operations/adapters/provi
 import { sessionDescribe } from "../server/modules/operations";
 import { resolveAppPaths } from "../server/paths";
 import { SystemGitWorktreeReader } from "../server/git-worktrees";
-import { createSessionDescribeOutput, parseProjectsCommand, parseThreadsCreateCommand, readThreadBody, runProjectsCommand, runSessionDescribe, runThreadsCreateCommand, THREAD_BODY_FILE_BYTES } from "./session-describe";
+import { createSessionDescribeOutput, createThreadsCreateOutput, parseProjectsCommand, parseThreadsCreateCommand, readThreadBody, runProjectsCommand, runSessionDescribe, runThreadsCreateCommand, THREAD_BODY_FILE_BYTES } from "./session-describe";
 import { Readable } from "node:stream";
 import { initializeOperationRetention } from "../server/bootstrap/operation-retention";
 
@@ -800,6 +800,171 @@ describe("knowledge threads create CLI mount (D2b-2)", () => {
     expect(seen.opened).toHaveLength(0);
     expect(f.lines).toEqual([]);
   });
+
+  /** A controller owning the lock, with its real admin socket over a retained composition. */
+  const controller = async (f: ReturnType<typeof fixture>) => {
+    owner(f);
+    const store = new stores.SqliteStateStore(f.paths.databasePath);
+    cleanup.push(() => store.closeAfterDrain());
+    const retention = await initializeOperationRetention({ store, now: Date.now, logs: { controller: vi.fn() } });
+    const server = await listenAdminSocket(f.paths.adminSocketPath, vi.fn(), buildOperationsRuntime({ ...options(store, "token"), retention }));
+    cleanup.push(() => server.close());
+    return store;
+  };
+  /** The real thread-write output over synthetic streams; diagnostics are the fd 2 writes. */
+  const streams = () => {
+    const chunks: Buffer[] = [], diagnostics: string[] = [];
+    const stdout = new Writable({ write(chunk, _encoding, done) { chunks.push(Buffer.from(chunk)); done(); } });
+    const stderr = new Writable({ write(_chunk, _encoding, done) { done(); } });
+    let exitCode = 0;
+    const fail = vi.fn(() => { exitCode = 1; });
+    const real = fs.writeSync;
+    vi.spyOn(fs, "writeSync").mockImplementation(((fd: number, ...rest: unknown[]) => {
+      if (fd !== 2) return (real as (...args: unknown[]) => number)(fd, ...rest);
+      diagnostics.push(rest[0] as string); return Buffer.byteLength(rest[0] as string);
+    }) as typeof fs.writeSync);
+    const io = createThreadsCreateOutput(stdout, stderr, fail);
+    /** As the entry point does: a rejected command is reported once through the same output. */
+    const run = (args: string[]) => runThreadsCreateCommand(args, io).catch((error: { error?: unknown }) => { io.reportError(JSON.stringify({ error: error.error })); });
+    return { stdout, stderr, fail, chunks, diagnostics, io, run, get exitCode() { return exitCode; } };
+  };
+  const committedOutput = { category: "unavailable", status: 503, reason: "output_unavailable", retry: "none", effect: "committed" };
+
+  it.each(["offline", "socket"] as const)("%s: standard output failing synchronously after the write reports the committed effect once, exit 1", async path => {
+    const f = fixture("token"); seed(f);
+    const owned = path === "socket" ? await controller(f) : null;
+    const o = streams();
+    o.stdout.destroy();
+    await o.run([...threadInput, "--data-dir", join(f.root, "data"), "--state-dir", join(f.root, "state")]);
+    // Offline the runner classified the failed commit with its effect; through the socket the controller had answered 200.
+    const expected = path === "offline" ? { category: "internal", status: 500, reason: "release_commit_failed", retry: "none", effect: "committed" } : committedOutput;
+    expect(o.diagnostics.map(line => JSON.parse(line))).toEqual([{ error: expected }]);
+    expect(o.fail).toHaveBeenCalledTimes(1); expect(o.exitCode).toBe(1); expect(o.chunks).toEqual([]);
+    expect(existsSync(f.paths.controllerLockPath)).toBe(path === "socket");
+    vi.restoreAllMocks();
+    // The thread exists either way: the failure came after the effect.
+    const count = owned ? await owned.admission.run(() => (ownedFixtureDatabase(owned).prepare("SELECT count(*) AS n FROM knowledge_threads").get() as { n: number }).n)
+      : rows(f).threads.length;
+    expect(count).toBe(1);
+  });
+
+  it.each(["offline", "socket"] as const)("%s: a late standard output error after the write reports the committed effect once, exit 1", async path => {
+    const f = fixture("token"); seed(f);
+    if (path === "socket") await controller(f);
+    const o = streams();
+    const failed = new Promise<void>(resolve => o.stdout.once("error", () => resolve()));
+    o.stdout._write = (_chunk, _encoding, done) => { process.nextTick(() => done(new Error("late private EPIPE"))); };
+    const dirs = ["--data-dir", join(f.root, "data"), "--state-dir", join(f.root, "state")];
+    await o.run([...threadInput, ...(path === "socket" ? ["--idempotency-key", "late"] : []), ...dirs]);
+    await failed;
+    o.stdout.emit("error", new Error("duplicate private error")); o.io.reportError("duplicate");
+    expect(o.diagnostics.map(line => JSON.parse(line))).toEqual([{ error: committedOutput }]);
+    expect(o.fail).toHaveBeenCalledTimes(1); expect(o.exitCode).toBe(1);
+  });
+
+  it("a standard output error before any write only sets the exit code; the command's own answer is the one diagnostic", async () => {
+    const f = fixture("token"); seed(f);
+    const o = streams();
+    o.stdout.emit("error", new Error("early private error"));
+    expect(o.diagnostics).toEqual([]); expect(o.exitCode).toBe(1);
+    // A keyed offline write is refused before any effect: that refusal is reported, not the output failure.
+    await o.run([...threadInput, "--idempotency-key", "k", "--data-dir", join(f.root, "data"), "--state-dir", join(f.root, "state")]);
+    expect(o.diagnostics.map(line => JSON.parse(line))).toEqual([{ error: { category: "unavailable", status: 503, reason: "idempotency_unavailable", retry: "none", effect: "not_started" } }]);
+  });
+
+  it("the socket decoder: status, category, retry and effect invariants decide between the controller's answer and an unknown outcome", async () => {
+    const f = fixture("token"); seed(f);
+    owner(f);
+    const dirs = ["--data-dir", join(f.root, "data"), "--state-dir", join(f.root, "state")];
+    let next: { status: number; body: unknown } = { status: 200, body: {} };
+    const fake = createServer((request, response) => {
+      request.resume();
+      request.on("end", () => { response.writeHead(next.status, { "Content-Type": "application/json" }); response.end(JSON.stringify(next.body)); });
+    });
+    await new Promise<void>(resolve => fake.listen(f.paths.adminSocketPath, resolve));
+    cleanup.push(() => { fake.closeAllConnections(); return new Promise<void>(resolve => fake.close(() => resolve())); });
+    const error = (category: string, status: number, reason: string, retry: string, effect: string | null) => ({ category, status, reason, retry, effect });
+    const thread = { id: "t-1", projectId: "project-a", title: "T", body: "B", revision: 1, createdBy: "installation", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
+    const unknown = error("outcome_unknown", 409, "admin_outcome_unknown", "inspect_first", "unknown");
+    const decoded: ReadonlyArray<[name: string, status: number, value: ReturnType<typeof error>]> = [
+      ["a boundary error", 400, error("invalid_request", 400, "invalid_request", "none", null)],
+      ["an unauthenticated refusal", 401, error("unauthenticated", 401, "unknown_mode", "reauthenticate", null)],
+      ["a retryable refusal before the effect", 503, error("unavailable", 503, "request_cancelled", "retry", "not_started")],
+      ["a refusal after a committed effect", 503, error("unavailable", 503, "release_not_eligible", "none", "committed")],
+      ["an unknown outcome", 409, error("outcome_unknown", 409, "previous_attempt_outcome_unknown", "inspect_first", "unknown")],
+      ["an unconfirmed cleanup", 503, error("unavailable", 503, "finalization_unconfirmed", "inspect_first", "cleanup_unconfirmed")],
+    ];
+    for (const [name, status, value] of decoded) {
+      next = { status, body: { error: value } };
+      await expect(runThreadsCreateCommand([...threadInput, ...dirs], { write: f.write, reportError: () => undefined }), name).rejects.toMatchObject({ error: value });
+    }
+    const rejected: ReadonlyArray<[name: string, status: number, body: unknown]> = [
+      ["an HTTP status other than the error's", 500, { error: error("unavailable", 503, "x", "none", "committed") }],
+      ["a status that is not its category's", 409, { error: error("unavailable", 409, "x", "none", "committed") }],
+      ["retry after the effect began", 503, { error: error("unavailable", 503, "x", "retry", "committed") }],
+      ["busy after the effect began", 503, { error: error("busy", 503, "x", "none", "committed") }],
+      ["an unknown effect outside outcome_unknown", 409, { error: error("conflict", 409, "x", "inspect_first", "unknown") }],
+      ["an unknown effect without inspect_first", 409, { error: error("outcome_unknown", 409, "x", "none", "unknown") }],
+      ["an unconfirmed cleanup without inspect_first", 500, { error: error("internal", 500, "x", "none", "cleanup_unconfirmed") }],
+      ["an effect outside the vocabulary", 409, { error: error("conflict", 409, "x", "none", "maybe" as never) }],
+      ["an extra error field", 409, { error: { ...error("conflict", 409, "x", "none", "not_started"), detail: "private" } }],
+      ["a missing effect", 409, { error: { category: "conflict", status: 409, reason: "x", retry: "none" } }],
+      ["a success with an extra field", 200, { thread, replayed: true }],
+      ["a success with another revision", 200, { thread: { ...thread, revision: 2 } }],
+    ];
+    for (const [name, status, body] of rejected) {
+      next = { status, body };
+      await expect(runThreadsCreateCommand([...threadInput, ...dirs], { write: f.write, reportError: () => undefined }), name).rejects.toMatchObject({ error: unknown });
+    }
+    expect(f.lines).toEqual([]);
+    next = { status: 200, body: { thread } };
+    await runThreadsCreateCommand([...threadInput, ...dirs], { write: f.write, reportError: () => undefined });
+    expect(JSON.parse(f.lines.pop()!)).toEqual({ thread });
+  });
+
+  it("a real socket timeout after submission is an unknown outcome, never an offline fallback", async () => {
+    const f = fixture("token"); seed(f);
+    owner(f);
+    const silent = createServer(request => { request.resume(); });
+    await new Promise<void>(resolve => silent.listen(f.paths.adminSocketPath, resolve));
+    cleanup.push(() => { silent.closeAllConnections(); return new Promise<void>(resolve => silent.close(() => resolve())); });
+    const seen = observe();
+    await expect(runThreadsCreateCommand([...threadInput, "--data-dir", join(f.root, "data"), "--state-dir", join(f.root, "state")],
+      { write: f.write, reportError: () => undefined }, undefined, 300))
+      .rejects.toMatchObject({ error: { category: "outcome_unknown", status: 409, reason: "admin_outcome_unknown", retry: "inspect_first", effect: "unknown" } });
+    expect(seen.opened).toHaveLength(0); expect(f.lines).toEqual([]);
+  });
+
+  // Spawns the real CLI three times, including TypeScript loader startup.
+  it("the entry point routes knowledge threads create before the legacy parser, with its exit codes", async () => {
+    const f = fixture("token"); seed(f);
+    const repository = fileURLToPath(new URL("../../", import.meta.url));
+    const cli = (extra: string[], stdout: "pipe" | "gone") => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, ["--import", "tsx", join(repository, "src/cli/index.ts"), "knowledge", "threads", "create", ...threadInput, ...extra,
+        "--data-dir", f.paths.dataDirectory, "--state-dir", f.paths.stateDirectory], {
+        cwd: repository, env: { PATH: process.env.PATH, HOME: f.root, NODE_ENV: "test" }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "", err = "";
+      const timer = setTimeout(() => { child.kill("SIGKILL"); }, 20_000);
+      // A reader that is gone before the command writes.
+      if (stdout === "gone") child.stdout.destroy(); else child.stdout.on("data", chunk => { out += chunk; });
+      child.stderr.on("data", chunk => { err += chunk; });
+      child.once("error", reject); child.once("close", code => { clearTimeout(timer); resolve({ code, stdout: out, stderr: err }); });
+    });
+    const created = await cli([], "pipe");
+    expect(created.stderr).toBe(""); expect(created.code).toBe(0);
+    expect(JSON.parse(created.stdout)).toMatchObject({ thread: { projectId: "project-a", title: "From the CLI", createdBy: "installation", revision: 1 } });
+    const keyed = await cli(["--idempotency-key", "k"], "pipe");
+    expect(keyed).toEqual({ code: 1, stdout: "", stderr: `${JSON.stringify({ error: { category: "unavailable", status: 503, reason: "idempotency_unavailable", retry: "none", effect: "not_started" } })}\n` });
+    const gone = await cli([], "gone");
+    expect(gone.code).toBe(1);
+    const reported = JSON.parse(gone.stderr) as { error: { reason: string; effect: string } };
+    // The thread was written before its output failed: the diagnostic carries the committed effect.
+    expect(reported.error.effect).toBe("committed");
+    expect(["output_unavailable", "release_commit_failed"]).toContain(reported.error.reason);
+    expect(rows(f).threads).toHaveLength(2);
+    expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+  }, 90_000);
 
   it("an archived project is refused offline before the commit point, written inside admission", async () => {
     const f = fixture("open"); seed(f, "archived");
