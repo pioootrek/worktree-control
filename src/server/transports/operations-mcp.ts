@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, JSONRPCRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { canonicalJson, OperationError, publicError } from "../modules/operations";
 import type { PublicOperationError } from "@/shared/contracts/operations";
 import { BoundaryError, parseStrictJson, readBoundedBody } from "./authentication-http-boundary";
@@ -106,21 +106,21 @@ function projectToolHint(body: Record<string, unknown>): ToolDescriptor | null {
 }
 
 /**
- * The declared request ceiling of the message's tool call, by strict
- * classification of the parsed body: a JSON-RPC 2.0 `tools/call` with a string
- * or number ID naming a tool whose operation declares a larger ceiling.
- * `undefined` for every other message, which must fit `bodyBytes`.
+ * The declared request ceiling of the message's tool call. The complete
+ * message is classified against the shapes the pinned SDK accepts before it
+ * dispatches a tool call: its strict JSON-RPC request schema (`jsonrpc` "2.0",
+ * a string or integer ID, no other envelope field) and its call-tool request
+ * schema (method `tools/call`, a string tool name, `arguments` an object or
+ * absent). Only such a call of a tool whose operation declares a larger
+ * ceiling gets it; `undefined` for every other message, which must fit
+ * `bodyBytes`. This checks the message's shape only: the operation's `parse`
+ * stays the one validation of its input.
  */
 function declaredRequestBytes(body: Record<string, unknown>, ceilings: Readonly<Record<string, number>>): number | undefined {
-  const own = (value: unknown, key: string): unknown => {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    return descriptor && "value" in descriptor ? descriptor.value : undefined;
-  };
-  const id = own(body, "id");
-  if (own(body, "jsonrpc") !== "2.0" || own(body, "method") !== "tools/call" || (typeof id !== "string" && typeof id !== "number")) return undefined;
-  const name = own(own(body, "params"), "name");
-  const tool = OPERATIONS_MCP_TOOLS.find(each => each.name === name);
+  if (!JSONRPCRequestSchema.safeParse(body).success) return undefined;
+  const call = CallToolRequestSchema.safeParse(body);
+  if (!call.success) return undefined;
+  const tool = OPERATIONS_MCP_TOOLS.find(each => each.name === call.data.params.name);
   return tool && Object.prototype.hasOwnProperty.call(ceilings, tool.operation) ? ceilings[tool.operation] : undefined;
 }
 
