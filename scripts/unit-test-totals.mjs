@@ -6,12 +6,14 @@
 // the per-file durations to <file>.
 //
 // As a command:
-//   node scripts/unit-test-totals.mjs blobs <directory> <shard count>
-//     fails unless the directory holds exactly one blob report per shard;
+//   node scripts/unit-test-totals.mjs blobs <directory> <shard count> <merge directory>
+//     fails unless the directory holds a report of every shard and nothing else,
+//     and copies the report of each shard's latest run attempt into the empty
+//     merge directory under the blob reporter's name;
 //   node scripts/unit-test-totals.mjs files <vitest list --json file> <totals file>
 //     fails unless the merged report covers exactly the files vitest lists.
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** The file names vitest's blob reporter uses for `--shard=<index>/<count>`. */
@@ -20,12 +22,36 @@ export function expectedBlobNames(count) {
   return Array.from({ length: count }, (_, index) => `blob-${index + 1}-${count}.json`);
 }
 
-/** Missing and unexpected entries of a blob directory, compared with the expected shard reports. */
-export function compareBlobNames(names, count) {
+/** A shard's report from one run attempt: blob-<index>-<count>-attempt-<run attempt>.json. */
+const attemptBlobName = /^blob-([1-9]\d*)-([1-9]\d*)-attempt-([1-9]\d*)\.json$/;
+
+/**
+ * Chooses the report of each shard's latest run attempt.
+ * `selected` maps each blob reporter name to its source entry; `superseded` lists the reports of
+ * earlier attempts, `missing` the shards without a report, `unexpected` every other entry.
+ */
+export function selectLatestBlobs(names, count) {
   const expected = expectedBlobNames(count);
+  const latest = new Map();
+  const unexpected = [];
+  for (const name of names) {
+    const match = attemptBlobName.exec(name);
+    const [index, shardCount, attempt] = match ? match.slice(1).map(Number) : [];
+    if (!match || shardCount !== count || index > count) {
+      unexpected.push(name);
+      continue;
+    }
+    const target = expected[index - 1];
+    const current = latest.get(target);
+    if (!current || attempt > current.attempt) latest.set(target, { source: name, attempt });
+  }
+  const selected = expected.filter(target => latest.has(target)).map(target => ({ target, ...latest.get(target) }));
+  const chosen = new Set(selected.map(entry => entry.source));
   return {
-    missing: expected.filter(name => !names.includes(name)),
-    unexpected: names.filter(name => !expected.includes(name)).sort(),
+    selected,
+    superseded: names.filter(name => attemptBlobName.test(name) && !unexpected.includes(name) && !chosen.has(name)).sort(),
+    missing: expected.filter(target => !latest.has(target)),
+    unexpected: unexpected.sort(),
   };
 }
 
@@ -95,17 +121,25 @@ async function readEntries(directory) {
 }
 
 async function main([command, ...args]) {
-  if (command === "blobs" && args.length === 2) {
-    const [directory, countText] = args;
+  if (command === "blobs" && args.length === 3) {
+    const [directory, countText, mergeDirectory] = args;
     const count = Number(countText);
-    const { missing, unexpected } = compareBlobNames(await readEntries(directory), count);
+    const { selected, superseded, missing, unexpected } = selectLatestBlobs(await readEntries(directory), count);
     if (missing.length || unexpected.length) {
       console.error(`Unit-test shard reports in ${directory} are incomplete.`);
       if (missing.length) console.error(`Missing: ${missing.join(", ")}`);
       if (unexpected.length) console.error(`Unexpected: ${unexpected.join(", ")}`);
       return 1;
     }
-    console.log(`All ${count} unit-test shard reports are present.`);
+    await mkdir(mergeDirectory, { recursive: true });
+    const present = await readEntries(mergeDirectory);
+    if (present.length) {
+      console.error(`The merge directory ${mergeDirectory} is not empty: ${present.sort().join(", ")}`);
+      return 1;
+    }
+    for (const { target, source } of selected) await copyFile(join(directory, source), join(mergeDirectory, target));
+    console.log(`All ${count} unit-test shard reports are present: ${selected.map(({ source }) => source).join(", ")}.`);
+    if (superseded.length) console.log(`Superseded by a later attempt: ${superseded.join(", ")}.`);
     return 0;
   }
   if (command === "files" && args.length === 2) {
@@ -125,7 +159,7 @@ async function main([command, ...args]) {
     }
     return 0;
   }
-  console.error("Usage: unit-test-totals.mjs blobs <directory> <shard count> | files <vitest list json> <totals json>");
+  console.error("Usage: unit-test-totals.mjs blobs <directory> <shard count> <merge directory> | files <vitest list json> <totals json>");
   return 2;
 }
 
