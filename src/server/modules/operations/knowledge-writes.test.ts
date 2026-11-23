@@ -559,6 +559,33 @@ describe("knowledge.create_thread: authorship (decision 8)", () => {
     // The seeded row itself is active.
     expect(await f.admitted(() => writer.principal("installation"))).toEqual({ kind: "installation", status: "active" });
   });
+
+  /**
+   * A stored principal ID outside the ID grammar (attack P3) never authenticates on this surface: both
+   * verifiers brand the account ID, so the production mint refuses it before any release can reserve or
+   * write. The valid ID beside it is the positive control. Transport coverage with and without a key is in
+   * knowledge-writes-transports.test.ts; a key is read only after the mint.
+   */
+  it.each(["agent token", "provider session"] as const)("refuses a stored principal ID outside the ID grammar at the production mint (%s)", async kind => {
+    const { f, c, mint } = await world("better-auth", { humans: kind === "provider session" });
+    const credential = async (id: string) => {
+      if (kind === "agent token") return { presented: await f.agent(id, [["operator", "project-a"]]), session: null };
+      const h = await f.human(id, [["operator", "project-a"]]);
+      return { presented: h.presented, session: h.session };
+    };
+    const malformed = await credential("legacy user");
+    for (const listener of kind === "agent token" ? ["api", "mcp"] as const : ["api"] as const) {
+      expect(await c.mint(listener, malformed.presented, malformed.session, {}), listener)
+        .toEqual({ ok: false, error: answer("unauthenticated", 401, "invalid_credential", "reauthenticate", null) });
+    }
+    expect(await f.records()).toEqual([]);
+    expect(await f.threads()).toEqual([]);
+    expect(await f.history()).toEqual([]);
+    const valid = await credential("legacy-user");
+    expect(await authored(f, c.runner, await mint("api", valid.presented, valid.session)))
+      .toEqual({ createdBy: "legacy-user", created_by: "legacy-user", principal_id: "legacy-user",
+        authentication_method: kind === "agent token" ? "agent_token" : "provider_session" });
+  });
 });
 
 describe("knowledge.create_thread: notification", () => {

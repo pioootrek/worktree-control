@@ -32,12 +32,12 @@ import type { IdempotencyStore, MutationReleaseResult } from "./runner";
  * production composition (store, verifiers, grants, resolver, retention) on
  * the API, unix and worker adapters, and on the externally owned admin socket.
  * Covers header carriage, the singleton key header, a key on a read, both
- * sides of each body ceiling, the worker refusal, an unknown mode, concurrent
- * keys, and ownership around the commit point; on MCP, the strict request
- * classification, a pending SDK staging and its late settlement, the server's
- * closes, the real owner shutdown (with a held response and with a finished
- * one under an unsettled handler), and where each adapter writes relative to
- * the real gate.
+ * sides of each body ceiling, the worker refusal, an unknown mode, a principal
+ * ID outside the grammar, concurrent keys, and ownership around the commit
+ * point; on MCP, the strict request classification, a pending SDK staging and
+ * its late settlement, the server's closes, the real owner shutdown (with a
+ * held response and with a finished one under an unsettled handler), and where
+ * each adapter writes relative to the real gate.
  */
 /** Project grants rows, written directly: no release command grants a project role yet. */
 const grants: GrantRows = {
@@ -335,6 +335,31 @@ describe("knowledge.create_thread on HTTP: carriage and refusals", () => {
     expect((await t.post("api", "knowledge.create_thread", input(), { secret: t.f.agents.get("other"), key: "k" }).reply))
       .toMatchObject({ status: 404, body: refusal("not_found", 404, "resource_not_found") });
     expect(await t.f.records()).toEqual([]);
+  });
+
+  it("refuses at the mint an agent whose stored principal ID is outside the ID grammar, on API and MCP, with and without a key", async () => {
+    const t = await transports("better-auth");
+    await t.f.agent("legacy user", [["operator", "project-a"]]);
+    await t.f.agent("legacy-user", [["operator", "project-a"]]);
+    const secret = t.f.agents.get("legacy user")!;
+    const counted = { reserved: 0, written: 0 };
+    t.hooks.reserved = () => { counted.reserved++; }; t.hooks.written = () => { counted.written++; };
+    const refused = refusal("unauthenticated", 401, "invalid_credential", "reauthenticate", null);
+    for (const key of [undefined, "legacy"]) {
+      expect(await t.post("api", "knowledge.create_thread", input(), { secret, key }).reply, `api ${String(key)}`).toMatchObject({ status: 401, body: refused });
+      const args = key === undefined ? input() : { ...input(), idempotencyKey: key };
+      expect(await t.rpc(tool(args, 51), { secret }).reply, `mcp ${String(key)}`).toMatchObject({ status: 401, body: refused });
+    }
+    expect(t.minted.count).toBe(4);
+    expect(counted).toEqual({ reserved: 0, written: 0 });
+    expect(t.releases).toHaveLength(0);
+    expect(await t.f.records()).toEqual([]);
+    expect(await t.f.threads()).toEqual([]);
+    expect(await t.f.history()).toEqual([]);
+    // The positive control: the same grants under an ID inside the grammar.
+    expect((await t.post("api", "knowledge.create_thread", input(), { secret: t.f.agents.get("legacy-user"), key: "legacy" }).reply).status).toBe(200);
+    expect(counted).toEqual({ reserved: 1, written: 1 });
+    expect(await t.f.records()).toEqual(["legacy account:legacy-user completed"]);
   });
 
   it("answers an archived project as a conflict before the commit point, with no record", async () => {
