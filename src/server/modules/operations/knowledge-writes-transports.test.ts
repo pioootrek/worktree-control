@@ -11,6 +11,8 @@ import type { ControlService } from "@/server/control-service";
 import { DirectoryBrowser } from "@/server/directory-browser";
 import { EventStream } from "@/server/events";
 import { createControllerServer } from "@/server/http-server";
+import { createHttpServerCloser } from "@/server/http-server-lifecycle";
+import { ExclusiveSqliteConnection } from "@/server/infrastructure/sqlite/exclusive-connection";
 import { createMcpControllerServer } from "@/server/mcp-http-server";
 import { SqliteStateStore } from "@/server/sqlite-store";
 import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
@@ -32,8 +34,10 @@ import type { IdempotencyStore, MutationReleaseResult } from "./runner";
  * Covers header carriage, the singleton key header, a key on a read, both
  * sides of each body ceiling, the worker refusal, an unknown mode, concurrent
  * keys, and ownership around the commit point; on MCP, the strict request
- * classification, a pending SDK staging, the server's closes, the real owner
- * shutdown, and where each adapter writes relative to the real gate.
+ * classification, a pending SDK staging and its late settlement, the server's
+ * closes, the real owner shutdown (with a held response and with a finished
+ * one under an unsettled handler), and where each adapter writes relative to
+ * the real gate.
  */
 /** Project grants rows, written directly: no release command grants a project role yet. */
 const grants: GrantRows = {
@@ -59,7 +63,8 @@ const pause = () => { let done!: () => void; const promise = new Promise<void>(r
 async function transports(mode: StoredMode, setup: { humans?: boolean; mcpDeadlineMs?: number } = {}) {
   const f = await knowledgeFixture(mode, { humans: setup.humans, grants }); fixtures.push(f);
   // `respond` sees every server-side response before its adapter handles the request.
-  const hooks: { reserved?: () => void; written?: () => void; staged?: () => void; respond?: (response: ServerResponse) => void } = {};
+  // `returning` runs after a mutation release has returned, before the adapter sees its result: outside admission.
+  const hooks: { reserved?: () => void; written?: () => void; staged?: () => void; returning?: () => Promise<void>; respond?: (response: ServerResponse) => void } = {};
   // Observation points inside the admitted phases, on the real writer and the real idempotency store.
   const store = f.store, writerOf = store.knowledgeThreadWriter.bind(store);
   store.knowledgeThreadWriter = () => {
@@ -98,7 +103,8 @@ async function transports(mode: StoredMode, setup: { humans?: boolean; mcpDeadli
       const released = runner.mutationRelease(operation, context, raw, options.stage ? { ...options,
         async stage(value: Parameters<NonNullable<typeof options.stage>>[0]) { await options.stage!.call(options, value); hooks.staged?.(); } } : options);
       releases.push(released);
-      return released;
+      const returning = hooks.returning;
+      return returning ? released.then(async result => { await returning(); return result; }) : released;
     }) as typeof runner.mutationRelease,
   } } : built;
   const mcp = createOperationsMcp({ runtime: mcpRuntime, limits: setup.mcpDeadlineMs === undefined ? undefined : { deadlineMs: setup.mcpDeadlineMs } });
@@ -156,8 +162,12 @@ function countWrites(t: Transports): number[] {
  * (API), the externally owned admin socket (unix), the MCP server, a real
  * controller lock and the real shutdown sequence. `disposed` and `unlocked`
  * count the store's close and the lock's release.
+ *
+ * `drainAccepted: false` builds the negative control: the same shutdown whose
+ * three listener closers only close their Node servers through the generic
+ * HTTP closer, without the owners' explicit join of accepted handlers.
  */
-async function owners(t: Transports) {
+async function owners(t: Transports, setup: { drainAccepted?: boolean } = {}) {
   const runtime = t.mcpRuntime as OperationsHttpRuntime;
   writeFileSync(join(t.f.root, "index.html"), "fixture");
   const controller = createControllerServer({ service: {} as unknown as ControlService, directoryBrowser: new DirectoryBrowser(t.f.root),
@@ -178,10 +188,14 @@ async function owners(t: Transports) {
   const lock = acquireControllerLock(join(t.f.root, "controller.lock"));
   cleanups.push(() => { try { lock.release(); } catch { /* released by the shutdown */ } });
   const counts = { disposed: 0, unlocked: 0 };
+  const untracked = setup.drainAccepted === false;
+  const closers = untracked
+    ? { mcp: { close: createHttpServerCloser(mcp.server) }, controller: { close: createHttpServerCloser(controller.server) }, adminSocket: { close: createHttpServerCloser(admin.server) } }
+    : { mcp, controller, adminSocket: admin };
   const shutdown = createControllerShutdown({
     service: { closeAdmission() {}, async shutdown() { await t.f.store.closeAfterDrain(); counts.disposed++; } },
     stopping: mcp.stopOperations, userSchedules: undefined, backups: { close() {} }, remoteVerification: null,
-    mcp, controller, adminSocket: admin, controllerLock: { ...lock, release() { counts.unlocked++; lock.release(); } }, removeServiceAccess() {},
+    ...closers, controllerLock: { ...lock, release() { counts.unlocked++; lock.release(); } }, removeServiceAccess() {},
   });
   const port = (server: HttpServer) => (server.address() as AddressInfo).port;
   /** One thread write on a listener of these owners. */
@@ -782,14 +796,26 @@ describe("knowledge.create_thread on MCP", () => {
 });
 
 describe("knowledge.create_thread on MCP: a pending SDK staging and the owner's closes", () => {
-  /** Holds the SDK's send of the tool result forever: `stage` stays pending after the effect and its completion. */
+  /**
+   * Holds the SDK's send of the tool result: `stage` stays pending after the effect and its completion until
+   * the test settles the held send through `held`, or forever.
+   */
   const holdSend = () => {
     const entered = pause();
-    vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send").mockImplementation(() => { entered.done(); return new Promise<void>(() => undefined); });
-    return entered;
+    const held: { fulfil?: () => void; reject?: (error: unknown) => void } = {};
+    vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send").mockImplementation(() => {
+      entered.done();
+      return new Promise<void>((resolve, reject) => { held.fulfil = () => { resolve(); }; held.reject = reject; });
+    });
+    return { ...entered, held };
   };
 
-  it.each(["deadline", "departure"] as const)("the %s aborts a pending staging: the cancellation, one pair, the record, no write after the abort", async kind => {
+  it.each([["deadline", "fulfils"], ["deadline", "rejects"], ["departure", "fulfils"], ["departure", "rejects"]] as const)(
+    "the %s aborts a pending staging: the cancellation, one pair, the record, no write after the abort; when the held send %s late, nothing follows", async (kind, late) => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    cleanups.push(() => { process.off("unhandledRejection", onUnhandled); });
     const t = await transports("token", kind === "deadline" ? { mcpDeadlineMs: 2_000 } : {});
     const writes = countWrites(t);
     const entered = holdSend();
@@ -813,6 +839,20 @@ describe("knowledge.create_thread on MCP: a pending SDK staging and the owner's 
     expect(await t.f.threads()).toHaveLength(1);
     expect(await t.f.history()).toHaveLength(1);
     expect(t.published).toEqual(["project-a"]);
+    // The SDK's held send settles after the release returned and the handler drained: no admission, no write follows.
+    const admissions = [vi.spyOn(ExclusiveSqliteConnection.prototype, "runCore"), vi.spyOn(ExclusiveSqliteConnection.prototype, "runDetached"),
+      vi.spyOn(ExclusiveSqliteConnection.prototype, "tryCore")];
+    const before = [...writes];
+    if (late === "fulfils") entered.held.fulfil!(); else entered.held.reject!(new Error("late send /secret"));
+    for (let tick = 0; tick < 5; tick++) await new Promise<void>(resolve => setImmediate(resolve));
+    expect(writes).toEqual(before);
+    for (const spy of admissions) expect(spy).not.toHaveBeenCalled();
+    expect(t.releases).toHaveLength(1);
+    expect(t.published).toEqual(["project-a"]);
+    expect(unhandled).toEqual([]);
+    for (const spy of admissions) spy.mockRestore();
+    expect(await t.f.records()).toEqual(["held installation completed"]);
+    expect(await t.f.threads()).toHaveLength(1);
   });
 
   it.each(["policy replacement", "server close"] as const)("a mutation in flight through the MCP server's %s settles before the close resolves", async kind => {
@@ -871,6 +911,56 @@ describe("knowledge.create_thread: the real owner shutdown and an unsettled acce
     await o.shutdown();
     expect(o.counts).toEqual({ disposed: 1, unlocked: 1 });
   });
+
+  /**
+   * No socket holds the listener here: the response has finished and the client has read it, and the Node
+   * listener has closed. The accepted handler is still unsettled, outside admission: the release waits on a
+   * latch after its real effect, record and response delivery, before it returns to the adapter. Only the
+   * owners' explicit join of accepted handlers keeps the store open and the lock held. The untracked owner is
+   * the negative control: the same shutdown without that join disposes both while the latch is closed.
+   */
+  it.each([["api", "tracked"], ["unix", "tracked"], ["mcp", "tracked"], ["api", "untracked"], ["unix", "untracked"], ["mcp", "untracked"]] as const)(
+    "%s, %s owner: a handler unsettled after its response finished holds the store and the lock until it settles", async (listener, variant) => {
+      const t = await transports("token");
+      const o = await owners(t, { drainAccepted: variant === "tracked" });
+      const latch = pause(), waiting = pause();
+      const outside: number[] = [];
+      t.hooks.returning = async () => { outside.push(t.f.store.admissionSnapshot().coreActive); waiting.done(); await latch.promise; };
+      const record = `finished ${listener === "unix" ? "operator" : "installation"} completed`;
+      const sent = o.create(listener, "finished", listener === "unix" ? undefined : t.f.installationSecret);
+      await waiting.promise;
+      // The release returned committed after its effect and record; the client has the whole answer.
+      expect(await t.releases[0]).toEqual({ status: "committed" });
+      const reply = await sent.reply;
+      expect(reply.status).toBe(200);
+      expect(listener === "mcp" ? (reply.body as { result?: { structuredContent?: unknown } }).result?.structuredContent : reply.body).toMatchObject({ thread: { title: "Release plan" } });
+      expect(outside).toEqual([0]);
+      expect(await t.f.records()).toEqual([record]);
+      let done = false;
+      const closed = new Promise<void>(resolve => { o.servers[listener].once("close", () => { resolve(); }); });
+      const stopping = o.shutdown().then(() => { done = true; });
+      // The Node listener closes: nothing on the network keeps the shutdown pending.
+      await closed;
+      expect(o.servers[listener].listening).toBe(false);
+      // The same bounded wait in both variants: long enough for an unheld shutdown to finish.
+      await vi.waitFor(() => { if (!done) throw new Error("shutdown pending"); }, { timeout: 500, interval: 10 }).catch(() => undefined);
+      const observed = { done, counts: { ...o.counts }, held: o.lock.held() };
+      const holding = { done: false, counts: { disposed: 0, unlocked: 0 }, held: true };
+      if (variant === "tracked") {
+        expect(observed).toEqual(holding);
+        // The store is still open and usable through the real gate.
+        expect(await t.f.records()).toEqual([record]);
+      } else {
+        // Negative control: without the join the store is closed and the lock released under the unsettled handler.
+        expect(observed).not.toEqual(holding);
+        expect(observed).toEqual({ done: true, counts: { disposed: 1, unlocked: 1 }, held: false });
+      }
+      latch.done();
+      await stopping;
+      expect(o.counts).toEqual({ disposed: 1, unlocked: 1 });
+      expect(o.lock.held()).toBe(false);
+      expect(durable(t.f)).toEqual({ threads: 1, history: 1, records: [record] });
+    });
 });
 
 describe("knowledge.create_thread: the adapters write inside admission", () => {
