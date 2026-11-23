@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createSessionDescribeOutput, runProjectsCommand, runSessionDescribe, SessionDescribeError } from "./session-describe";
+import { createSessionDescribeOutput, runProjectsCommand, runSessionDescribe, runThreadsCreateCommand, SessionDescribeError } from "./session-describe";
 import { buildOperationsRuntime } from "../server/bootstrap/operations-runtime";
 import { initializeOperationRetention, type OperationRetention } from "../server/bootstrap/operation-retention";
 import { createControllerRestoreFailure, createControllerShutdown } from "../server/bootstrap/controller-shutdown";
@@ -117,6 +117,13 @@ async function main(retainedLock?: ControllerLock): Promise<void> {
   const locale = systemLocale(process.env);
   const command = process.argv[2] && !process.argv[2].startsWith("-") ? process.argv[2] : "start";
   if (command === "session" || command === "projects") sessionOutput = createSessionDescribeOutput();
+  if (command === "knowledge" && process.argv[3] === "threads" && process.argv[4] === "create") {
+    // The operations thread write (D2b-2), routed before the legacy Knowledge parser and its pre-lock
+    // handoff check: lock-first, with this finite command's output handling. Option values are opaque.
+    sessionOutput = createSessionDescribeOutput();
+    await runThreadsCreateCommand(process.argv.slice(5), sessionOutput);
+    return;
+  }
   if (command === "upgrade") {
     // Offline maintenance before the generic start parsing, which would reject --backup-dir here.
     // It does not pass the ordinary admission check: it is how a database becomes current.

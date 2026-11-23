@@ -38,7 +38,9 @@ import { createProviderWorld } from "../server/modules/operations/adapters/provi
 import { sessionDescribe } from "../server/modules/operations";
 import { resolveAppPaths } from "../server/paths";
 import { SystemGitWorktreeReader } from "../server/git-worktrees";
-import { createSessionDescribeOutput, parseProjectsCommand, runProjectsCommand, runSessionDescribe } from "./session-describe";
+import { createSessionDescribeOutput, parseProjectsCommand, parseThreadsCreateCommand, readThreadBody, runProjectsCommand, runSessionDescribe, runThreadsCreateCommand, THREAD_BODY_FILE_BYTES } from "./session-describe";
+import { Readable } from "node:stream";
+import { initializeOperationRetention } from "../server/bootstrap/operation-retention";
 
 vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>() }));
 
@@ -676,5 +678,134 @@ describe("projects CLI mount (D2a)", () => {
     expect(await run(["status", "project-a"])).toEqual(offlineStatus);
     expect(await run(["worktrees", "project-a"])).toEqual(offlineWorktrees);
     await expect(runProjectsCommand(["status", "missing"], f.paths, f.write)).rejects.toMatchObject({ error: operationError("resource_not_found", "not_found", "none", 404) });
+  });
+});
+
+describe("knowledge threads create CLI mount (D2b-2)", () => {
+  const threadInput = ["--project", "project-a", "--title", "From the CLI", "--body", "Written by the operator."];
+  const seed = (f: ReturnType<typeof fixture>, status: "active" | "archived" = "active") => {
+    const seeded = new stores.SqliteStateStore(f.paths.databasePath);
+    seeded.saveKnowledgeProject({ id: "project-a", name: "Alpha", status, revision: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, "fixture");
+    seeded.close();
+  };
+  const rows = (f: ReturnType<typeof fixture>) => {
+    const store = new RealStore(f.paths.databasePath);
+    try {
+      const db = ownedFixtureDatabase(store);
+      return {
+        threads: db.prepare("SELECT t.title, t.created_by, h.principal_id, h.authentication_method FROM knowledge_threads t JOIN knowledge_history h ON h.record_id=t.id AND h.record_kind='thread'").all(),
+        records: (db.prepare("SELECT idempotency_key, principal, state FROM operation_idempotency").all() as Array<Record<string, unknown>>).map(row => `${row.idempotency_key} ${row.principal} ${row.state}`),
+        legacy: (db.prepare("SELECT count(*) AS n FROM knowledge_idempotency").get() as { n: number }).n,
+      };
+    } finally { store.close(); }
+  };
+  const io = (f: ReturnType<typeof fixture>) => { const errors: string[] = []; return { errors, output: { write: f.write, reportError: (line: string) => { errors.push(line); } } }; };
+
+  it("parses opaque option values and refuses everything else", () => {
+    expect(parseThreadsCreateCommand(threadInput)).toEqual({ projectId: "project-a", title: "From the CLI", body: { text: "Written by the operator." } });
+    expect(parseThreadsCreateCommand(["--title", "--body", "--project", "--data-dir", "--body-file", "-", "--idempotency-key", "--k", "--data-dir", "/d", "--state-dir", "/s"]))
+      .toEqual({ projectId: "--data-dir", title: "--body", body: { file: "-" }, idempotencyKey: "--k", dataDir: "/d", stateDir: "/s" });
+    for (const args of [[], ["--project", "p", "--title", "t"], [...threadInput, "--body-file", "x"], [...threadInput, "--title", "again"], [...threadInput, "--other", "x"],
+      [...threadInput, "--idempotency-key"], ["--project", "p", "--title", "t", "--body"]]) {
+      expect(() => parseThreadsCreateCommand(args), args.join(" ")).toThrow(/Usage: knowledge threads create/);
+    }
+  });
+
+  it("bounds a body file and standard input before the lock, and refuses invalid UTF-8", async () => {
+    const f = fixture("token");
+    const file = join(f.root, "body.txt");
+    writeFileSync(file, "x".repeat(THREAD_BODY_FILE_BYTES));
+    expect(await readThreadBody(file)).toHaveLength(THREAD_BODY_FILE_BYTES);
+    writeFileSync(file, "x".repeat(THREAD_BODY_FILE_BYTES + 1));
+    const { output, errors } = io(f);
+    await expect(runThreadsCreateCommand(["--project", "project-a", "--title", "t", "--body-file", file, "--data-dir", join(f.root, "data"), "--state-dir", join(f.root, "state")], output))
+      .rejects.toMatchObject({ error: { category: "payload_too_large", status: 413, reason: "body_too_large", retry: "none", effect: "not_started" } });
+    expect(existsSync(f.paths.controllerLockPath)).toBe(false); expect(errors).toEqual([]);
+    await expect(readThreadBody("-", Readable.from([Buffer.alloc(THREAD_BODY_FILE_BYTES), Buffer.alloc(1)]))).rejects.toMatchObject({ error: { reason: "body_too_large" } });
+    expect(await readThreadBody("-", Readable.from([Buffer.from("from stdin")]))).toBe("from stdin");
+    await expect(readThreadBody("-", Readable.from([Buffer.from([0xff, 0xfe])]))).rejects.toMatchObject({ error: { reason: "invalid_body", effect: "not_started" } });
+    await expect(readThreadBody(join(f.root, "missing"))).rejects.toMatchObject({ error: { reason: "body_file_unreadable" } });
+  });
+
+  it.each(["open", "token", "better-auth"])("offline %s: an unkeyed write runs inside admission; a keyed one answers idempotency_unavailable before any effect", async mode => {
+    const f = fixture(mode); seed(f);
+    const seen = observe(), events: string[] = [];
+    const dirs = ["--data-dir", join(f.root, "data"), "--state-dir", join(f.root, "state")];
+    const errors: string[] = [];
+    await runThreadsCreateCommand([...threadInput, ...dirs], { write: line => { seen.opened[0].getAuthenticationPolicy(); events.push("write"); f.write(line); },
+      reportError: line => { errors.push(line); } });
+    expect(events).toEqual(["write"]); expect(errors).toEqual([]);
+    expect(JSON.parse(f.lines.pop()!)).toMatchObject({ thread: { projectId: "project-a", title: "From the CLI", body: "Written by the operator.", createdBy: "installation", revision: 1 } });
+    // Keyed offline: refused inside admission (the write proves it), before any reservation or thread.
+    await runThreadsCreateCommand([...threadInput, "--idempotency-key", "k", ...dirs], { write: f.write,
+      reportError: line => { seen.opened[1].getAuthenticationPolicy(); errors.push(line); } });
+    expect(errors.map(line => JSON.parse(line))).toEqual([{ error: { category: "unavailable", status: 503, reason: "idempotency_unavailable", retry: "none", effect: "not_started" } }]);
+    expect(f.lines).toEqual([]);
+    expect(existsSync(f.paths.controllerLockPath)).toBe(false);
+    vi.restoreAllMocks();
+    expect(rows(f)).toEqual({ threads: [{ title: "From the CLI", created_by: "installation", principal_id: "installation", authentication_method: "none" }], records: [], legacy: 0 });
+  });
+
+  it("through the private socket: the key is the header, the replay is the same DTO, a mutation error decodes with its effect", async () => {
+    const f = fixture("token"); seed(f);
+    owner(f);
+    const store = new stores.SqliteStateStore(f.paths.databasePath);
+    cleanup.push(() => store.closeAfterDrain());
+    const retention = await initializeOperationRetention({ store, now: Date.now, logs: { controller: vi.fn() } });
+    const server = await listenAdminSocket(f.paths.adminSocketPath, vi.fn(), buildOperationsRuntime({ ...options(store, "token"), retention }));
+    cleanup.push(() => server.close());
+    const dirs = ["--data-dir", join(f.root, "data"), "--state-dir", join(f.root, "state")];
+    const seen = observe();
+    const { output, errors } = io(f);
+    await runThreadsCreateCommand([...threadInput, "--idempotency-key", "k-1", ...dirs], output);
+    await runThreadsCreateCommand([...threadInput, "--idempotency-key", "k-1", ...dirs], output);
+    const [first, replay] = f.lines.splice(0).map(line => JSON.parse(line));
+    expect(replay).toEqual(first); expect(first.thread).toMatchObject({ createdBy: "installation", title: "From the CLI" });
+    await expect(runThreadsCreateCommand([...threadInput.slice(0, 4), "--body", "Different.", "--idempotency-key", "k-1", ...dirs], output))
+      .rejects.toMatchObject({ error: { category: "conflict", status: 409, reason: "idempotency_conflict", retry: "none", effect: "not_started" } });
+    await expect(runThreadsCreateCommand(["--project", "missing", "--title", "t", "--body", "b", ...dirs], output))
+      .rejects.toMatchObject({ error: { category: "not_found", status: 404, reason: "resource_not_found", retry: "none", effect: "not_started" } });
+    // A key that cannot be framed as a header is refused locally, before anything is submitted.
+    await expect(runThreadsCreateCommand([...threadInput, "--idempotency-key", "not a key", ...dirs], output))
+      .rejects.toMatchObject({ error: { reason: "invalid_idempotency_key", effect: "not_started" } });
+    expect(errors).toEqual([]);
+    expect(seen.opened).toHaveLength(0);
+    expect(await store.admission.run(() => (ownedFixtureDatabase(store).prepare("SELECT count(*) AS n FROM knowledge_threads").get() as { n: number }).n)).toBe(1);
+  });
+
+  it("an unknown outcome after a broken socket or an invalid reply, and never an offline fallback", async () => {
+    const f = fixture("token"); seed(f);
+    owner(f);
+    const dirs = ["--data-dir", join(f.root, "data"), "--state-dir", join(f.root, "state")];
+    const seen = observe();
+    const { output } = io(f);
+    // Missing socket: the connection never opened, nothing was submitted.
+    await expect(runThreadsCreateCommand([...threadInput, ...dirs], output))
+      .rejects.toMatchObject({ error: { category: "unavailable", reason: "admin_socket_missing", effect: "not_started" } });
+    const unknown = { category: "outcome_unknown", status: 409, reason: "admin_outcome_unknown", retry: "inspect_first", effect: "unknown" };
+    for (const behaviour of ["destroy", "invalid"] as const) {
+      const fake = createServer((request, response) => {
+        request.resume();
+        request.on("end", () => {
+          if (behaviour === "destroy") { response.socket?.destroy(); return; }
+          response.writeHead(409, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({ error: { category: "conflict", status: 409, reason: "x", retry: "none", effect: "bogus" } }));
+        });
+      });
+      await new Promise<void>(resolve => fake.listen(f.paths.adminSocketPath, resolve));
+      try {
+        await expect(runThreadsCreateCommand([...threadInput, ...dirs], output)).rejects.toMatchObject({ error: unknown });
+      } finally { await new Promise<void>(resolve => fake.close(() => resolve())); }
+    }
+    expect(seen.opened).toHaveLength(0);
+    expect(f.lines).toEqual([]);
+  });
+
+  it("an archived project is refused offline before the commit point, written inside admission", async () => {
+    const f = fixture("open"); seed(f, "archived");
+    const { output, errors } = io(f);
+    await runThreadsCreateCommand([...threadInput, "--data-dir", join(f.root, "data"), "--state-dir", join(f.root, "state")], output);
+    expect(errors.map(line => JSON.parse(line))).toEqual([{ error: { category: "conflict", status: 409, reason: "project_archived", retry: "none", effect: "not_started" } }]);
+    expect(rows(f).threads).toEqual([]);
   });
 });
