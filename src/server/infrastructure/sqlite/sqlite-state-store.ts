@@ -70,6 +70,7 @@ import { AccountGrantsQueries } from "./account-grants-queries";
 import { OperationIdempotencyQueries } from "./operation-idempotency-queries";
 import { ProjectCatalogQueries, ProjectDirectoryQueries, type ProjectId, type RegistrationId } from "./project-directory-queries";
 import { KnowledgeQueries } from "./knowledge-queries";
+import { KnowledgeThreadWriterQueries } from "./knowledge-thread-writer";
 import type { KnowledgeTaskStateView, TaskCurrentState } from "@/shared/contracts/knowledge-task-state";
 import type { TaskStateFacts } from "@/server/modules/knowledge";
 import { mapProject, type ProjectRow } from "./project-mapping";
@@ -991,6 +992,23 @@ export class SqliteStateStore implements StateStore, AuthenticationStore, Identi
       projects: () => catalog.projects(),
       project: (id: string) => catalog.project(id),
       registrations: (now: string, projectId?: string) => catalog.registrations(now, projectId),
+    };
+  }
+
+  /**
+   * The write port of the operations `knowledge.create_thread` (D2b-2) on this
+   * owner's core connection: the project status, the author's principal row,
+   * and the thread with its `created` history row in one transaction. Call
+   * within an admitted core phase; validation belongs to the caller. Shares no
+   * code or idempotency table with the legacy Knowledge write.
+   */
+  knowledgeThreadWriter() {
+    const writer = new KnowledgeThreadWriterQueries(this.database);
+    return {
+      projectStatus: (projectId: string) => writer.projectStatus(projectId),
+      principal: (id: string) => writer.principal(id),
+      createThread: (thread: Parameters<KnowledgeThreadWriterQueries["createThread"]>[0], author: Parameters<KnowledgeThreadWriterQueries["createThread"]>[1]) =>
+        writer.createThread(thread, author),
     };
   }
 

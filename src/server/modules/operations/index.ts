@@ -46,6 +46,10 @@ export {
   createProjectReads, MAX_PROJECT_REGISTRATIONS, MAX_PROJECT_WORKTREES, PROJECT_LIST_DEFAULT_LIMIT, PROJECT_WORKTREES_TIMEOUT_MS,
   type ProjectCatalogReader, type ProjectReadPorts, type RegistrationPlacementReader, type RepositoryDiscovery, type WorktreeDiscoveryPort, type WorktreeFact,
 } from "./project-reads";
+export {
+  createKnowledgeWrites, KNOWLEDGE_THREAD_BODY_BYTES, KNOWLEDGE_THREAD_BODY_JSON_BYTES, KNOWLEDGE_THREAD_TITLE_BYTES,
+  type KnowledgeThreadWriter, type KnowledgeWritePorts,
+} from "./knowledge-writes";
 export { CoalescingWorktreeDiscovery, WORKTREE_DISCOVERY_LIMITS, type WorktreeDiscoveryLimits, type WorktreeGit } from "./adapters/worktree-discovery";
 export { InstallationVerifier, type InstallationPolicy, type InstallationPolicyReader, type InstallationVerifierOptions } from "./adapters/installation-verifier";
 export { AgentTokenVerifier, type AgentCredentialReader, type AgentCredentialRecord, type AgentTokenVerifierOptions } from "./adapters/agent-token-verifier";
