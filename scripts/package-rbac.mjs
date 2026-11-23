@@ -307,10 +307,10 @@ async function operationOffline(mode) {
     const offlineThread = ["knowledge", "threads", "create", "--project", firstProjectId(), "--title", `Installed offline ${mode} thread`, "--body", "Written offline."];
     const offlineWritten = await json(currentCli, offlineThread);
     assert.equal(offlineWritten.thread.createdBy, "installation"); assert.equal(offlineWritten.thread.title, `Installed offline ${mode} thread`);
-    // The keyed refusal: exit 1, the error alone on stderr, nothing on stdout.
+    // The keyed refusal: exit 1, the error alone on stderr (the complete stream is its one serialized line), nothing on stdout.
     const offlineKeyed = await command(currentCli, [...offlineThread, "--idempotency-key", `installed-offline-${mode}`]);
     assert.equal(offlineKeyed.code, 1); assert.equal(offlineKeyed.stdout, "");
-    assert.deepEqual(JSON.parse(offlineKeyed.stderr.trim().split("\n").at(-1)), mutationRefusal("idempotency_unavailable", "unavailable", 503));
+    assert.equal(offlineKeyed.stderr, `${JSON.stringify(mutationRefusal("idempotency_unavailable", "unavailable", 503))}\n`);
     assert.equal(observe(db => db.prepare("SELECT count(*) AS n FROM knowledge_threads WHERE title=?").get(`Installed offline ${mode} thread`).n), 1);
     for (const closedStderr of [false, true]) await step(`session-describe-offline-${mode}-closed-stdout${closedStderr ? "-and-stderr" : ""}`,
       () => closedSessionOutput("offline", closedStderr));
