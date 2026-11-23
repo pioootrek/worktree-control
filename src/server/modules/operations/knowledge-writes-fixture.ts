@@ -7,7 +7,7 @@ import { FileProviderConfiguration } from "@/server/authentication-provider-conf
 import { createControllerOperationEligibility } from "@/server/bootstrap/authentication-provider-lifetime";
 import { AuthenticationRequestBudget } from "@/server/bootstrap/authentication-request-budget";
 import { initializeOperationRetention, type OperationRetention } from "@/server/bootstrap/operation-retention";
-import { SqliteStateStore } from "@/server/infrastructure/sqlite/sqlite-state-store";
+import { SqliteStateStore } from "@/server/sqlite-store";
 import { resolveAppPaths, type AppPaths } from "@/server/paths";
 import { ownedFixtureDatabase } from "@/server/unmanaged-sqlite-fixture";
 import type { PublicOperationError } from "@/shared/contracts/operations";
