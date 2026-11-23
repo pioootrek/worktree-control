@@ -484,8 +484,6 @@ describe("real operations composition under strict admission", () => {
   it("pins the production registry and logs disposal failures without thrown values or credential facts", async () => {
     const f = await fixture("open"), c = f.composition!;
     const all = ["knowledge.create_thread", "project.list", "project.status", "project.worktrees", "session.describe"];
-    // The MCP descriptor of knowledge.create_thread lands with its MCP mount.
-    const onMcp = all.filter(id => id !== "knowledge.create_thread");
     expect(c.registry.ids()).toEqual(all);
     expect(Object.isFrozen(c.registry)).toBe(true);
     expect("register" in c.registry).toBe(false);
@@ -498,8 +496,8 @@ describe("real operations composition under strict admission", () => {
     expect(ids()).toEqual(all);
     for (const listener of ["api", "mcp", "worker", "unix", "offline"] as const) {
       // Project reads and the thread write are HTTP (API and unix), MCP and CLI operations; the worker listener serves describe only.
-      expect(idsOn(listener)).toEqual(listener === "worker" ? ["session.describe"] : listener === "mcp" ? onMcp : all);
-      for (const id of all) expect(availableOn(id, listener)).toBe(id === "session.describe" || (listener !== "worker" && (listener !== "mcp" || onMcp.includes(id))));
+      expect(idsOn(listener)).toEqual(listener === "worker" ? ["session.describe"] : all);
+      for (const id of all) expect(availableOn(id, listener)).toBe(id === "session.describe" || listener !== "worker");
       expect(availableOn("session.describe", listener)).toBe(true);
       expect(availableOn("session.another", listener)).toBe(false);
     }

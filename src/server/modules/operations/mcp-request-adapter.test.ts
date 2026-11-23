@@ -116,7 +116,7 @@ async function exactNegative(assertion: string, observed: unknown, expected: unk
 describe("request-scoped MCP adapter", () => {
   it.each(["open", "token", "better-auth"])("%s: real SDK sequential initialize, notification, list and call, with no usage writer", async mode => {
     const f = await fixture(mode), client = await f.client(f.credential);
-    expect((await client.listTools()).tools.map(t => t.name)).toEqual(["project_list", "project_status", "project_worktrees", "session_describe"]);
+    expect((await client.listTools()).tools.map(t => t.name)).toEqual(["knowledge_create_thread", "project_list", "project_status", "project_worktrees", "session_describe"]);
     const result = await client.callTool({ name: "session_describe", arguments: {} });
     expect(result.structuredContent).toMatchObject({ mode, listener: "mcp", actor: { kind: mode === "better-auth" ? "agent" : "installation", accountId: mode === "better-auth" ? "agent" : null } });
     expect(f.minted).toHaveBeenCalledTimes(4);
@@ -221,7 +221,7 @@ describe("request-scoped MCP adapter", () => {
     expect(Buffer.byteLength(JSON.stringify(http.body))).toBeLessThanOrEqual(MAX_DESCRIBED_BYTES);
     // initialize and notification use the same release witness as tools/call.
     const client = await f.client();
-    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["project_list", "project_status", "project_worktrees", "session_describe"]);
+    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["knowledge_create_thread", "project_list", "project_status", "project_worktrees", "session_describe"]);
     const sent = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "send");
     const result = await client.callTool({ name: "session_describe", arguments: {} });
     expect(result.structuredContent).toEqual(dto);
@@ -324,7 +324,8 @@ describe("request-scoped MCP adapter", () => {
   });
 
   it.each(["oversized", "strict JSON"] as const)("preserves an examined %s refusal when stop also aborts the request", async kind => {
-    const f = await fixture("open", { bodyBytes: 200 });
+    // Without a declared larger tool ceiling the outer read is bounded at bodyBytes, so the oversized body is refused while it streams.
+    const f = await fixture("open", { bodyBytes: 200, operationBodyBytes: {} });
     f.hooks.beforeHandle = request => {
       const stop = () => { f.adapter.stop(); };
       // The refusal wins settlement; abort before its outer catch runs.

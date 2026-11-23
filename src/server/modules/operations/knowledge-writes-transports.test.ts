@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { listenAdminSocket } from "@/server/admin-socket";
 import { buildOperationsRuntime } from "@/server/bootstrap/operations-runtime";
-import { createOperationsHttp } from "@/server/transports/operations-http";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { createOperationsHttp, OPERATIONS_HTTP_LIMITS } from "@/server/transports/operations-http";
+import { createOperationsMcp, OPERATIONS_MCP_REQUEST_ENVELOPE_BYTES } from "@/server/transports/operations-mcp";
 import type { OperationRetention } from "@/server/bootstrap/operation-retention";
 import { answer, knowledgeFixture, type KnowledgeFixture, type StoredMode } from "./knowledge-writes-fixture";
 import type { IdempotencyStore } from "./runner";
@@ -29,7 +32,7 @@ type Listener = "api" | "unix" | "worker";
 
 async function transports(mode: StoredMode, setup: { humans?: boolean } = {}) {
   const f = await knowledgeFixture(mode, setup); fixtures.push(f);
-  const hooks: { reserved?: () => void; written?: () => void } = {};
+  const hooks: { reserved?: () => void; written?: () => void; staged?: () => void } = {};
   // Observation points inside the admitted phases, on the real writer and the real idempotency store.
   const store = f.store, writerOf = store.knowledgeThreadWriter.bind(store);
   store.knowledgeThreadWriter = () => {
@@ -55,6 +58,17 @@ async function transports(mode: StoredMode, setup: { humans?: boolean } = {}) {
     cleanups.push(async () => { adapter.stop(); await adapter.drain(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
     adapters[listener] = adapter; servers[listener] = server;
   }
+  // The MCP adapter over the same composition; `staged` observes the moment the SDK holds the buffered output.
+  const runner = built.supported ? built.runner : undefined;
+  const mcpRuntime = built.supported && runner ? { ...built, runner: {
+    readRelease: runner.readRelease.bind(runner), queryRelease: runner.queryRelease.bind(runner),
+    mutationRelease: ((operation, context, raw, options) => runner.mutationRelease(operation, context, raw, options.stage ? { ...options,
+      async stage(value: object) { await options.stage!.call(options, value); hooks.staged?.(); } } : options)) as typeof runner.mutationRelease,
+  } } : built;
+  const mcp = createOperationsMcp({ runtime: mcpRuntime });
+  const mcpServer = createServer((request, response) => { responses.push(response); void mcp.handle(request, response); });
+  await new Promise<void>(resolve => mcpServer.listen(0, "127.0.0.1", resolve));
+  cleanups.push(async () => { mcp.stop(); await mcp.drain(); mcpServer.closeAllConnections(); await new Promise<void>(resolve => mcpServer.close(() => resolve())); });
   const send = (target: { port?: number; socketPath?: string }, path: string, body: string, headers: Record<string, string> | string[]) => {
     let call!: ReturnType<typeof httpRequest>;
     const reply = new Promise<Reply>((resolve, reject) => {
@@ -78,7 +92,16 @@ async function transports(mode: StoredMode, setup: { humans?: boolean } = {}) {
     };
     return send({ port: (servers[listener].address() as AddressInfo).port }, `/api/operations/${operation}`, options.raw ?? JSON.stringify(input), headers);
   };
-  return { f, built, hooks, adapters, servers, responses, published, post, send };
+  const mcpHeaders = (secret?: string): Record<string, string> => ({ "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(secret ? { Authorization: `Bearer ${secret}` } : {}) });
+  /** One raw JSON-RPC POST to the MCP adapter; `raw` replaces the serialized message. */
+  const rpc = (message: unknown, options: { secret?: string; raw?: string; headers?: Record<string, string> } = {}) =>
+    send({ port: (mcpServer.address() as AddressInfo).port }, "/mcp/operations", options.raw ?? JSON.stringify(message), options.headers ?? mcpHeaders(options.secret));
+  const client = async (secret?: string) => {
+    const c = new Client({ name: "knowledge-writes", version: "1" }); cleanups.push(() => c.close());
+    await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(mcpServer.address() as AddressInfo).port}/mcp/operations`), { requestInit: { headers: secret ? { Authorization: `Bearer ${secret}` } : {} } }));
+    return c;
+  };
+  return { f, built, hooks, adapters, servers, responses, published, post, send, mcp, mcpServer, rpc, mcpHeaders, client };
 }
 const input = (extra: Record<string, unknown> = {}) => ({ projectId: "project-a", title: "Release plan", body: "First draft.", ...extra });
 const refusal = (category: string, status: number, reason: string, retry = "none", effect: string | null = "not_started") => ({ error: answer(category, status, reason, retry, effect) });
@@ -306,5 +329,182 @@ describe("knowledge.create_thread on HTTP: ownership around the commit point", (
     const cookie = await t.send({ socketPath }, path, JSON.stringify(input()), { "Content-Type": "application/json", Cookie: "__Secure-wtc.session_token=x" }).reply;
     expect(cookie).toMatchObject({ status: 401, body: refusal("unauthenticated", 401, "provider_cookie_not_supported", "reauthenticate", null) });
     expect(await t.f.threads()).toHaveLength(1);
+  });
+});
+
+const tool = (args: unknown, id: string | number = 7) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "knowledge_create_thread", arguments: args } });
+/** The JSON-RPC error the adapter writes for a refusal after SDK dispatch. */
+const rpcError = (id: string | number, error: ReturnType<typeof answer>) => ({ jsonrpc: "2.0", id, error: { code: -32000, message: error.reason, data: error } });
+
+describe("knowledge.create_thread on MCP", () => {
+  it("carries the reserved idempotencyKey argument; the buffered success and the replay are the same tool result", async () => {
+    const t = await transports("token");
+    const c = await t.client(t.f.installationSecret);
+    expect((await c.listTools()).tools.map(each => each.name)).toEqual(["knowledge_create_thread", "project_list", "project_status", "project_worktrees", "session_describe"]);
+    const described = (await c.listTools()).tools[0];
+    expect(described.inputSchema).toMatchObject({ required: ["projectId", "title", "body"], additionalProperties: false, properties: { idempotencyKey: { type: "string" } } });
+    const first = await c.callTool({ name: "knowledge_create_thread", arguments: { ...input(), idempotencyKey: "m-1" } });
+    expect(first.isError).toBeFalsy();
+    const thread = (first.structuredContent as { thread: Record<string, unknown> }).thread;
+    expect(thread).toMatchObject({ projectId: "project-a", title: "Release plan", createdBy: "installation" });
+    expect(JSON.parse((first.content as Array<{ text: string }>)[0].text)).toEqual(first.structuredContent);
+    const replay = await c.callTool({ name: "knowledge_create_thread", arguments: { ...input(), idempotencyKey: "m-1" } });
+    expect(replay.structuredContent).toEqual(first.structuredContent);
+    expect(await t.f.records()).toEqual(["m-1 installation completed"]);
+    expect((await t.f.history()).map(row => [row.principal_id, row.authentication_method])).toEqual([["installation", "installation_token"]]);
+    expect(t.published).toEqual(["project-a"]);
+    // The same key from the same principal over HTTP replays the MCP attempt: one effect across transports.
+    expect((await t.post("api", "knowledge.create_thread", input(), { secret: t.f.installationSecret, key: "m-1" }).reply).body).toEqual(first.structuredContent);
+    expect(await t.f.threads()).toHaveLength(1);
+  });
+
+  it("answers every refusal after dispatch as a JSON-RPC error with the request ID, written by the adapter", async () => {
+    const t = await transports("better-auth");
+    await t.f.agent("agent", [["operator", "project-a"]]);
+    await t.f.agent("stranger");
+    const secret = t.f.agents.get("agent")!;
+    const nonString = await t.rpc(tool({ ...input(), idempotencyKey: 7 }, "a-1"), { secret }).reply;
+    expect(nonString).toMatchObject({ status: 200, body: rpcError("a-1", answer("invalid_request", 400, "invalid_idempotency_key", "none", "not_started")) });
+    const nullKey = await t.rpc(tool({ ...input(), idempotencyKey: null }, 2), { secret }).reply;
+    expect(nullKey.body).toEqual(rpcError(2, answer("invalid_request", 400, "invalid_idempotency_key", "none", "not_started")));
+    expect((await t.rpc(tool({ ...input(), title: " " }, 3), { secret }).reply).body).toEqual(rpcError(3, answer("invalid_request", 400, "invalid_title", "none", "not_started")));
+    expect((await t.rpc(tool(input(), 4), { secret: t.f.agents.get("stranger") }).reply).body).toEqual(rpcError(4, answer("not_found", 404, "resource_not_found", "none", "not_started")));
+    await t.f.setProjectStatus("project-a", "archived");
+    const archived = await t.rpc(tool({ ...input(), idempotencyKey: "k" }, 5), { secret }).reply;
+    expect(archived.body).toEqual(rpcError(5, answer("conflict", 409, "project_archived", "none", "not_started")));
+    expect(archived.headers["retry-after"]).toBeUndefined();
+    expect(await t.f.records()).toEqual([]);
+    expect(await t.f.threads()).toEqual([]);
+  });
+
+  it("no mounted mutation's parse accepts the reserved argument name", async () => {
+    const t = await transports("open");
+    if (!t.built.supported) throw new Error("unsupported");
+    // A valid input of every mounted mutation; the table must cover them all.
+    const valid: Record<string, unknown> = { "knowledge.create_thread": input() };
+    const mutations = t.built.registry.idsOn("mcp").filter(id => t.built.supported && t.built.registry.get(id)?.kind === "mutation");
+    expect(Object.keys(valid).sort()).toEqual(mutations);
+    for (const id of mutations) {
+      const operation = t.built.registry.get(id)!;
+      expect(() => operation.parse(valid[id])).not.toThrow();
+      expect(() => operation.parse({ ...(valid[id] as object), idempotencyKey: "k" }), id).toThrow();
+    }
+  });
+
+  it("bounds the request: 256 KiB plus the envelope for the thread write, the existing 64 KiB for every other message", async () => {
+    const t = await transports("token");
+    const secret = t.f.installationSecret;
+    const outer = OPERATIONS_HTTP_LIMITS.operationBodyBytes["knowledge.create_thread"] + OPERATIONS_MCP_REQUEST_ENVELOPE_BYTES;
+    expect(outer).toBe(256 * 1024 + 4 * 1024);
+    const accepted = await t.rpc(undefined, { secret, raw: padded(tool(input(), 1), outer) }).reply;
+    expect(accepted.status).toBe(200); expect((accepted.body as { result?: unknown }).result).toBeDefined();
+    const over = await t.rpc(undefined, { secret, raw: padded(tool(input({ title: "Over" }), 2), outer + 1) }).reply;
+    expect(over).toMatchObject({ status: 413, body: refusal("payload_too_large", 413, "request_too_large", "none", null) });
+    const list = { jsonrpc: "2.0", id: 3, method: "tools/list" };
+    expect((await t.rpc(undefined, { secret, raw: padded(list, OPERATIONS_HTTP_LIMITS.bodyBytes) }).reply).status).toBe(200);
+    const mint = vi.spyOn(t.built, "mint");
+    // Not a strictly classified call of the thread write: the existing ceiling, refused before mint.
+    const unclassified = [
+      list,
+      { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "project_status", arguments: { projectId: "project-a" } } },
+      { ...tool(input(), 6), jsonrpc: "1.0" },
+      { jsonrpc: "2.0", method: "tools/call", params: { name: "knowledge_create_thread", arguments: input() } },
+      { jsonrpc: "2.0", id: null, method: "tools/call", params: { name: "knowledge_create_thread", arguments: input() } },
+      { jsonrpc: "2.0", id: 8, method: "tools/list", params: { name: "knowledge_create_thread" } },
+    ];
+    for (const message of unclassified) {
+      expect(await t.rpc(undefined, { secret, raw: padded(message, OPERATIONS_HTTP_LIMITS.bodyBytes + 1) }).reply, JSON.stringify(message).slice(0, 80))
+        .toMatchObject({ status: 413, body: refusal("payload_too_large", 413, "request_too_large", "none", null) });
+    }
+    expect(mint).not.toHaveBeenCalled();
+    expect(await t.f.threads()).toHaveLength(1);
+  });
+
+  it("counts streamed bytes of a chunked body", async () => {
+    const t = await transports("token");
+    const outer = OPERATIONS_HTTP_LIMITS.operationBodyBytes["knowledge.create_thread"] + OPERATIONS_MCP_REQUEST_ENVELOPE_BYTES;
+    const chunked = (text: string) => new Promise<Reply>((resolve, reject) => {
+      const call = httpRequest({ host: "127.0.0.1", port: (t.mcpServer.address() as AddressInfo).port, path: "/mcp/operations", method: "POST", headers: t.mcpHeaders(t.f.installationSecret) }, response => {
+        const chunks: Buffer[] = []; response.on("data", chunk => chunks.push(chunk));
+        response.on("end", () => resolve({ status: response.statusCode!, headers: response.headers, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) }));
+      });
+      call.on("error", reject);
+      // No Content-Length: Node sends chunked transfer encoding.
+      for (let index = 0; index < text.length; index += 4096) call.write(text.slice(index, index + 4096));
+      call.end();
+    });
+    expect((await chunked(padded(tool({ ...input(), idempotencyKey: "c" }, 1), outer))).status).toBe(200);
+    expect(await chunked(padded(tool(input({ title: "Over" }), 2), outer + 1))).toMatchObject({ status: 413, body: refusal("payload_too_large", 413, "request_too_large", "none", null) });
+    expect(await t.f.records()).toEqual(["c installation completed"]);
+  });
+
+  it("budgets a large escaped JSON-RPC ID of the thread write against its envelope, at send and collection", async () => {
+    const t = await transports("token");
+    const id = `"\\${"\u0001".repeat(20_000)}${"\"".repeat(60_000)}`;
+    const message = tool({ ...input(), idempotencyKey: "id" }, id);
+    expect(Buffer.byteLength(JSON.stringify(message))).toBeGreaterThan(OPERATIONS_HTTP_LIMITS.bodyBytes);
+    const reply = await t.rpc(message, { secret: t.f.installationSecret }).reply;
+    expect(reply.status).toBe(200);
+    expect((reply.body as { id: string }).id).toBe(id);
+    expect((reply.body as { result: { structuredContent: { thread: { title: string } } } }).result.structuredContent.thread.title).toBe("Release plan");
+    // A large ID on a message that is not the thread write still has the existing ceiling.
+    expect((await t.rpc({ jsonrpc: "2.0", id, method: "tools/list" }, { secret: t.f.installationSecret }).reply).status).toBe(413);
+  });
+
+  it("an undispatched protocol message runs no effect", async () => {
+    const t = await transports("token");
+    const secret = t.f.installationSecret;
+    for (const message of [{ ...tool(input(), 1), jsonrpc: "1.0" }, { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { arguments: input() } }]) {
+      const reply = await t.rpc(message, { secret }).reply.catch(() => undefined);
+      expect(reply === undefined || reply.status < 500).toBe(true);
+    }
+    // A protocol version the SDK refuses: answered without dispatch.
+    await t.rpc(tool(input(), 3), { headers: { ...t.mcpHeaders(secret), "mcp-protocol-version": "1999-01-01" } }).reply.catch(() => undefined);
+    expect(await t.f.threads()).toEqual([]);
+    expect(await t.f.records()).toEqual([]);
+  });
+
+  it("keeps refusing a cookie before any work", async () => {
+    const t = await transports("token");
+    const reply = await t.rpc(tool(input()), { headers: { ...t.mcpHeaders(t.f.installationSecret), Cookie: "__Secure-wtc.session_token=x" } }).reply;
+    expect(reply).toMatchObject({ status: 401, body: refusal("unauthenticated", 401, "provider_cookie_not_supported", "reauthenticate", null) });
+    expect(await t.f.threads()).toEqual([]);
+  });
+
+  it("one principal, one key, concurrently on API and MCP: one effect", async () => {
+    const t = await transports("token");
+    const secret = t.f.installationSecret;
+    const [api, mcp] = await Promise.all([
+      t.post("api", "knowledge.create_thread", input(), { secret, key: "both" }).reply,
+      t.rpc(tool({ ...input(), idempotencyKey: "both" }, 9), { secret }).reply,
+    ]);
+    expect(await t.f.threads()).toHaveLength(1);
+    expect(await t.f.records()).toEqual(["both installation completed"]);
+    const answers = [api.status === 200 ? "ok" : (api.body as { error: { reason: string } }).error.reason,
+      (mcp.body as { result?: unknown }).result ? "ok" : (mcp.body as { error: { data: { reason: string } } }).error.data.reason];
+    expect(answers.filter(each => each === "ok").length).toBeGreaterThanOrEqual(1);
+    for (const each of answers) expect(["ok", "request_in_progress"]).toContain(each);
+  });
+
+  it("MCP stop while the SDK holds the staged output: one pair, the completed record after drain, no stale success", async () => {
+    const t = await transports("token");
+    t.hooks.staged = () => { t.mcp.stop(); };
+    const reply = await t.rpc(tool({ ...input(), idempotencyKey: "s" }, 11), { secret: t.f.installationSecret }).reply;
+    expect(reply.body).toEqual(rpcError(11, answer("unavailable", 503, "request_cancelled", "none", "committed")));
+    await t.mcp.drain();
+    expect(await t.f.records()).toEqual(["s installation completed"]);
+    expect(await t.f.threads()).toHaveLength(1);
+    expect(await t.f.history()).toHaveLength(1);
+  });
+
+  it("MCP stop after the reservation and before the effect: no rows, the reservation released", async () => {
+    const t = await transports("token");
+    t.hooks.reserved = () => { t.mcp.stop(); };
+    const reply = await t.rpc(tool({ ...input(), idempotencyKey: "r" }, 12), { secret: t.f.installationSecret }).reply;
+    expect(reply.body).toEqual(rpcError(12, answer("unavailable", 503, "request_cancelled", "retry", "not_started")));
+    await t.mcp.drain();
+    expect(await t.f.records()).toEqual([]);
+    expect(await t.f.threads()).toEqual([]);
   });
 });

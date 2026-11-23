@@ -52,7 +52,7 @@ describe("knowledge.create_thread: definition and input", () => {
   it("is a declared, retained, admitted mutation on the project, excluded from the worker listener", async () => {
     const { f } = await world();
     const op = f.operation();
-    expect(op).toMatchObject({ id: "knowledge.create_thread", kind: "mutation", retain: true, excludedListeners: ["worker", "mcp"], publicKeys: ["thread"] });
+    expect(op).toMatchObject({ id: "knowledge.create_thread", kind: "mutation", retain: true, excludedListeners: ["worker"], publicKeys: ["thread"] });
     expect(op.effect).toMatchObject({ mode: "admitted", commitPoint: "declared" });
     expect("acquire" in op).toBe(false);
     expect(op.resources(op.parse(input()))).toEqual({ project: { kind: "project", id: "project-a" } });
@@ -414,7 +414,7 @@ describe("knowledge.create_thread: authorship (decision 8)", () => {
 
   it("agent: the account ID and agent_token", async () => {
     const { f, c, mint } = await world();
-    expect(await authored(f, c.runner, await mint("api", await f.agent("bot", [["operator", "project-a"]]))))
+    expect(await authored(f, c.runner, await mint("mcp", await f.agent("bot", [["operator", "project-a"]]))))
       .toEqual({ createdBy: "bot", created_by: "bot", principal_id: "bot", authentication_method: "agent_token" });
   });
 
@@ -426,7 +426,7 @@ describe("knowledge.create_thread: authorship (decision 8)", () => {
 
   it("installation in open mode: installation and none", async () => {
     const { f, c, mint } = await world("open");
-    expect(await authored(f, c.runner, await mint("api")))
+    expect(await authored(f, c.runner, await mint("mcp")))
       .toEqual({ createdBy: "installation", created_by: "installation", principal_id: "installation", authentication_method: "none" });
   });
 
