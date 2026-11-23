@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores, network listeners)
 import { unmanagedFixtureDatabase } from "../server/unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";

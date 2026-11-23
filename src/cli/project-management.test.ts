@@ -1,3 +1,4 @@
+// test-tier: heavy (git repositories, network listeners)
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
