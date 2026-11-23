@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { AuthenticationRequestBudget } from "@/server/bootstrap/authentication-request-budget";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";

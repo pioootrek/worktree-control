@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { afterEach, describe, expect, it } from "vitest";
 import { buildOperationsRuntime } from "@/server/bootstrap/operations-runtime";
 import { OPERATIONS_HTTP_LIMITS } from "@/server/transports/operations-http";

@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
