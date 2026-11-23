@@ -610,7 +610,8 @@ machine credential, session handles, cookies or ENV content.
 This backend slice extends the internal composition only. Public browser mounting,
 account-mode selection remain gated. P3b supplies the external restore fence below. Optional TOTP/passkey and
 signed Ed25519 vault policies remain in force. The historical five full-proof
-factor compatibility failures remain visible; these fixtures establish no
+factor compatibility failures remain visible (registered as expected failures
+since 2026-11-23); these fixtures establish no
 production-readiness claim. Evidence and acceptance belong to Knowledge A3.
 
 ### Bounded browser adapter

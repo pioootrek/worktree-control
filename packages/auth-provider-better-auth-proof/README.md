@@ -30,12 +30,19 @@ migrations. Upstream licenses are reproduced in
 
 The installed acceptance (`pnpm test:rbac-artifact` and
 `pnpm test:rbac-artifact:fresh`) and the production-composition suite exercise
-the integrated production route. The full proof suite below is not green: it
-keeps five historical failures in `factor-compatibility.test.ts`, which
-characterize native and older bounded factor behaviour. They stay unmodified
-and unskipped. The full run on `370bac2` on 2026-11-08 finished with exactly
-those five failures, 1,107 passes and zero skips; the separate production RBAC
-preset passed all 78 tests on the same commit. See the
+the integrated production route. The full proof suite below keeps five unmet
+acceptance tests in `factor-compatibility.test.ts`, which characterize native
+and older bounded factor behaviour. Until 2026-11-23 they were ordinary failing
+tests, so the suite never finished green: the full run on `370bac2` on
+2026-11-08 finished with exactly those five failures, 1,107 passes and zero
+skips; the separate production RBAC preset passed all 78 tests on the same
+commit. Since 2026-11-23 they are registered with Vitest's `it.fails`, with
+unchanged titles, bodies and assertions. They still run and Vitest reports them
+as expected failures; the suite fails if one of them passes. An expected
+failure counts whichever step fails and Vitest does not print its error, so
+the passing tests in the same file are what cover the setup, challenge and
+fault steps. The historical notes below describe these five as they stood in
+each slice, before that registration. See the
 [current verification evidence](../../docs/authentication.md#verification-status-and-known-limitations)
 for the production mechanisms and fixture distinction.
 This package makes no ASVS, compliance or hardware MFA claim;
