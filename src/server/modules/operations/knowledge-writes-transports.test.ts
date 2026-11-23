@@ -63,7 +63,7 @@ async function transports(mode: StoredMode, setup: { humans?: boolean } = {}) {
   const mcpRuntime = built.supported && runner ? { ...built, runner: {
     readRelease: runner.readRelease.bind(runner), queryRelease: runner.queryRelease.bind(runner),
     mutationRelease: ((operation, context, raw, options) => runner.mutationRelease(operation, context, raw, options.stage ? { ...options,
-      async stage(value: object) { await options.stage!.call(options, value); hooks.staged?.(); } } : options)) as typeof runner.mutationRelease,
+      async stage(value: Parameters<NonNullable<typeof options.stage>>[0]) { await options.stage!.call(options, value); hooks.staged?.(); } } : options)) as typeof runner.mutationRelease,
   } } : built;
   const mcp = createOperationsMcp({ runtime: mcpRuntime });
   const mcpServer = createServer((request, response) => { responses.push(response); void mcp.handle(request, response); });
