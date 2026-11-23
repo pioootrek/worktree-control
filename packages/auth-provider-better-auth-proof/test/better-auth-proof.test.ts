@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createControllerBackup, restoreControllerBackup } from "@/server/controller-backup";
-import { SqliteStateStore } from "@/server/infrastructure/sqlite";
+import { SqliteStateStore, SUPPORTED_SCHEMA_VERSION } from "@/server/infrastructure/sqlite";
 import { maintainSecurityFence } from "@/server/bootstrap/security-maintenance";
 import { resolveAppPaths } from "@/server/paths";
 import { AuthenticationProviderError, AuthenticationService, resolveControllerAuthentication } from "@/server/modules/authentication";
@@ -555,7 +555,7 @@ describe("Better Auth 1.7.14 proof on the controller-owned SQLite connection", (
     await upgradeFixture(restoredPath, { attachmentDirectory: join(f.root, "restored-attachments") });
     const restored = new SqliteStateStore(restoredPath);
     try {
-      expect(restored.schemaVersion()).toBe(52);
+      expect(restored.schemaVersion()).toBe(SUPPORTED_SCHEMA_VERSION);
       expect(count(restoredPath, "authentication_provider_subjects")).toBe(1);
       expect(restored.listProjects().map(project => project.name)).toEqual(["after-disposal"]);
       // The durable protected receipt permits issuance only after restored authorities are quarantined.

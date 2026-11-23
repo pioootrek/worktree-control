@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SUPPORTED_SCHEMA_VERSION } from "@/server/infrastructure/sqlite";
 import { Authenticator, Browser, cleanupFactorRoots, closeFactor, factorFixture, factorState, fixtureSql, loadFactorProvider, withFault, type FactorFixture } from "./factor-fixture";
 import { COOKIE, FACTOR_MODEL } from "./factor-provider";
 import { OWNER_PASSWORD } from "./fixture";
@@ -48,7 +49,7 @@ describe("A3-I12 native characterization (passing here does not accept MFA)", ()
     expect(f.ddl.added).toEqual([]);
     expect(f.ddl.outstanding).toEqual({ created: 0, added: 0, indexes: 0, problems: 0 });
     expect(f.storage.storageRevision).toBe(3);
-    expect((await state(f)).schemaVersion).toBe(52);
+    expect((await state(f)).schemaVersion).toBe(SUPPORTED_SCHEMA_VERSION);
   });
 
   it("keeps enrollment unverified then rotates the cookie, while the native body contains the deleted token", async () => {

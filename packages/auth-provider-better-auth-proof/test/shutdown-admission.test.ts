@@ -2,7 +2,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ControlService } from "@/server/control-service";
-import { SqliteStateStore } from "@/server/infrastructure/sqlite";
+import { SqliteStateStore, SUPPORTED_SCHEMA_VERSION } from "@/server/infrastructure/sqlite";
 import { nullLogWriter } from "@/server/log-writer";
 import { ProcessManager } from "@/server/process-manager";
 import { TestJobManager } from "@/server/test-job-manager";
@@ -76,7 +76,7 @@ describe("owning service shutdown with strict provider admission", () => {
       await service.shutdown();
       expect(existsSync(`${f.path}.owner.lock`)).toBe(false);
       const reopened = new SqliteStateStore(f.path);
-      try { expect(reopened.schemaVersion()).toBe(52); } finally { reopened.close(); }
+      try { expect(reopened.schemaVersion()).toBe(SUPPORTED_SCHEMA_VERSION); } finally { reopened.close(); }
       // No late write/notification survived the forced rollback; dispose's failed result stays idempotent.
       expect(readCommitted(f.path, db => (db.prepare("SELECT count(*) n FROM authentication_ba_user").get() as { n: number }).n)).toBe(0);
       expect(f.evidence.events).toEqual([]);
