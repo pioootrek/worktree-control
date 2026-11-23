@@ -340,6 +340,29 @@ describe("request-scoped MCP adapter", () => {
     expect(f.minted).not.toHaveBeenCalled(); await f.adapter.drain();
   });
 
+  // The companion of the case above in the production configuration: the outer read admits the larger
+  // tool class, so a message above bodyBytes that is no such call is refused only after it was read and
+  // classified. A stop at the end of that read, or once the refusal is being written, must not replace it.
+  it.each(["at the end of the read", "while the refusal is written"] as const)("preserves the lower-class refusal of the production ceilings when stop aborts %s", async point => {
+    const f = await fixture("open");
+    const size = OPERATIONS_HTTP_LIMITS.bodyBytes + 1;
+    expect(size).toBeLessThan(Math.max(...Object.values(OPERATIONS_HTTP_LIMITS.operationBodyBytes)));
+    let written = 0;
+    f.hooks.beforeHandle = (request, response) => {
+      const stop = () => { f.adapter.stop(); };
+      if (point === "at the end of the read") { request.once("end", () => queueMicrotask(stop)); return; }
+      const head = response.writeHead.bind(response) as (...args: unknown[]) => ServerResponse;
+      response.writeHead = ((...args: unknown[]) => { written++; stop(); return head(...args); }) as ServerResponse["writeHead"];
+    };
+    const text = JSON.stringify(list);
+    const reply = await f.send(list, undefined, {}, { body: text + " ".repeat(size - Buffer.byteLength(text)) }).reply;
+    expect(reply.status).toBe(413);
+    expect(reply.headers["retry-after"]).toBeUndefined();
+    expect(reply.body).toEqual({ error: { category: "payload_too_large", reason: "request_too_large", status: 413, retry: "none", effect: null } });
+    if (point === "while the refusal is written") expect(written).toBe(1);
+    expect(f.minted).not.toHaveBeenCalled(); await f.adapter.drain();
+  });
+
   it("compares canonical loopback Origins using effective HTTP ports", () => {
     for (const host of ["127.0.0.1", "localhost", "[::1]"]) {
       expect(isOperationsMcpOrigin(`http://${host}`, 80)).toBe(true);

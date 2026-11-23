@@ -277,6 +277,74 @@ describe("knowledge.create_thread over the real store", () => {
     expect(await f.threads()).toHaveLength(1);
   });
 
+  it("answers the delivery, denial and cleanup rows of the table over the real store, before and after a reopen", async () => {
+    const { f, c, mint } = await world();
+    const accounts = ["delivery", "confirmed", "unknown"] as const;
+    const presented = Object.fromEntries(await Promise.all(accounts.map(async id => [id, await f.agent(id, [["operator", "project-a"], ["operator", "project-b"]])] as const)));
+    const context = async (runtime: Composition, id: typeof accounts[number]) => {
+      const minted = await runtime.mint("api", presented[id], null, {});
+      if (!minted.ok) throw new Error(`mint refused: ${minted.error.reason}`);
+      return minted.context;
+    };
+    const writer = f.store.knowledgeThreadWriter();
+    const rows = async () => ({ threads: (await f.threads()).map(row => row.title).sort(), history: (await f.history()).length, records: await f.records() });
+    const failed = (effect: string) => answer("internal", 500, "release_commit_failed", "none", effect);
+
+    // A failed commit delivery after a fresh effect: the one attempt failed, the record stays completed.
+    const commitFailed = await f.release(c.runner, f.operation(), await context(c, "delivery"), input({ title: "commit" }),
+      { idempotencyKey: "commit", commit() { throw new Error("delivery failed"); } });
+    expect(commitFailed).toEqual({ result: { status: "commit_failed", error: failed("committed") }, writes: [] });
+    // A failed refuse delivery before the commit point: the reservation was given back first, so no record.
+    await f.setProjectStatus("project-b", "archived");
+    const refuseFailed = await f.release(c.runner, f.operation(), await context(c, "delivery"), input({ projectId: "project-b", title: "refuse" }),
+      { idempotencyKey: "refuse", refuse() { throw new Error("delivery failed"); } });
+    expect(refuseFailed).toEqual({ result: { status: "commit_failed", error: failed("not_started") }, writes: [] });
+    // A fresh denial after a confirmed effect: the grants go during the effect, the final decision denies.
+    const revoking = (account: string, then: () => void): KnowledgeThreadWriter => ({ ...writer,
+      createThread: (thread, author) => { grants.remove(f.database, account); then(); writer.createThread(thread, author); } });
+    const confirmed = await f.release(c.runner, f.operation({ writer: revoking("confirmed", () => undefined) }), await context(c, "confirmed"),
+      input({ title: "confirmed" }), { idempotencyKey: "confirmed" });
+    expect(confirmed.writes).toEqual([{ kind: "refuse", value: answer("not_found", 404, "resource_not_found", "none", "committed"), admitted: 1 }]);
+    // The same denial after an unknown effect: the insert fails after the grants went.
+    const unknown = await f.release(c.runner, f.operation({ writer: revoking("unknown", () => { throw new Error("insert failed"); }) }), await context(c, "unknown"),
+      input({ title: "unknown" }), { idempotencyKey: "unknown" });
+    expect(unknown.writes).toEqual([{ kind: "refuse", value: answer("outcome_unknown", 409, "resource_not_found", "inspect_first", "unknown"), admitted: 1 }]);
+    // An unconfirmed cleanup: finalization fails after the thread was written, so the record is unknown.
+    const cleanup = await f.release(c.runner, f.operation({ changed: () => { throw new Error("finalization failed"); } }), await context(c, "delivery"),
+      input({ title: "cleanup" }), { idempotencyKey: "cleanup" });
+    expect(cleanup.writes).toEqual([{ kind: "refuse", value: answer("unavailable", 503, "finalization_unconfirmed", "inspect_first", "cleanup_unconfirmed"), admitted: 1 }]);
+
+    const before = {
+      threads: ["cleanup", "commit", "confirmed"], history: 3,
+      records: ["cleanup account:delivery unknown", "commit account:delivery completed", "confirmed account:confirmed completed", "unknown account:unknown unknown"],
+    };
+    expect(await rows()).toEqual(before);
+    await f.reopen();
+    expect(await rows()).toEqual(before);
+    const next = compose(f);
+    const again = async (id: typeof accounts[number], key: string, raw: Record<string, unknown>) =>
+      (await f.release(next.runner, f.operation(), await context(next, id), input(raw), { idempotencyKey: key })).writes;
+    // The failed commit delivery left a replayable record: the same thread.
+    const replayed = await again("delivery", "commit", { title: "commit" });
+    expect(replayed).toEqual([{ kind: "commit", value: { thread: expect.objectContaining({ title: "commit", createdBy: "delivery" }) }, admitted: 1 }]);
+    // The failed refuse delivery left no record: the key runs fresh and is refused again, written this time.
+    expect(await again("delivery", "refuse", { projectId: "project-b", title: "refuse" }))
+      .toEqual([{ kind: "refuse", value: notStarted("conflict", 409, "project_archived"), admitted: 1 }]);
+    // Both denied accounts still have no access: the historical decision hides each record.
+    for (const id of ["confirmed", "unknown"] as const) {
+      expect(await again(id, id, { title: id })).toEqual([{ kind: "refuse", value: notStarted("not_found", 404, "resource_not_found"), admitted: 1 }]);
+    }
+    // With access again, the confirmed effect replays and the unknown one is reported as such.
+    for (const id of ["confirmed", "unknown"] as const) await f.grant(id, "operator", "project-a");
+    expect(await again("confirmed", "confirmed", { title: "confirmed" }))
+      .toEqual([{ kind: "commit", value: { thread: expect.objectContaining({ title: "confirmed", createdBy: "confirmed" }) }, admitted: 1 }]);
+    const previousUnknown = [{ kind: "refuse", value: answer("outcome_unknown", 409, "previous_attempt_outcome_unknown", "inspect_first", "unknown"), admitted: 1 }];
+    expect(await again("unknown", "unknown", { title: "unknown" })).toEqual(previousUnknown);
+    // The unconfirmed cleanup is unknown after the reopen: never a replay, never a second thread.
+    expect(await again("delivery", "cleanup", { title: "cleanup" })).toEqual(previousUnknown);
+    expect(await rows()).toEqual(before);
+  });
+
   it("keeps principals isolated: the same key from two accounts runs twice", async () => {
     const { f, c, mint } = await world();
     const one = await mint("api", await f.agent("one", [["operator", "project-a"]]));
@@ -419,6 +487,14 @@ describe("knowledge.create_thread: authorship (decision 8)", () => {
     const h = await f.human("alice", [["operator", "project-a"]]);
     expect(await authored(f, c.runner, await mint("api", h.presented, h.session)))
       .toEqual({ createdBy: "alice", created_by: "alice", principal_id: "alice", authentication_method: "provider_session" });
+  });
+
+  it("human whose principal row has kind owner: the account ID and provider_session", async () => {
+    const { f, c, mint } = await world("better-auth", { humans: true });
+    const h = await f.human("olive", [["operator", "project-a"]], "owner");
+    expect(await f.admitted(() => f.store.knowledgeThreadWriter().principal("olive"))).toEqual({ kind: "owner", status: "active" });
+    expect(await authored(f, c.runner, await mint("api", h.presented, h.session)))
+      .toEqual({ createdBy: "olive", created_by: "olive", principal_id: "olive", authentication_method: "provider_session" });
   });
 
   it("agent: the account ID and agent_token", async () => {

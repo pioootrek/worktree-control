@@ -110,13 +110,17 @@ export async function knowledgeFixture(mode: StoredMode, setup: { retention?: bo
     agents.set(id, secret);
     return presentedBearer(secret);
   };
-  /** A human principal with a provider session (better-auth), and optional grants. */
-  const human = async (id: string, grants: ReadonlyArray<[role: string, projectId: string]> = []) => {
+  /**
+   * A human account with a provider session (better-auth), and optional grants.
+   * `owner`: today's owner principal row, which the target model treats as a human account.
+   */
+  const human = async (id: string, grants: ReadonlyArray<[role: string, projectId: string]> = [], kind: "human" | "owner" = "human") => {
     await admitted(() => {
-      current.store.humanAccounts().createHumanPrincipal({ id, kind: "human", status: "active" }, "fixture");
+      if (kind === "human") current.store.humanAccounts().createHumanPrincipal({ id, kind: "human", status: "active" }, "fixture");
+      else current.store.savePrincipal({ id, kind: "owner", status: "active" }, "fixture");
       for (const [role, projectId] of grants) grantNow(id, role, projectId);
     });
-    const session = provider.passwordLogin(provider.account(id));
+    const session = provider.passwordLogin(provider.account(id, kind));
     return { session, presented: { ...none(), browserHeaders: true, providerSession: { secret: "synthetic-cookie" } } };
   };
   const grant = (account: string, role: string, projectId: string) => admitted(() => { grantNow(account, role, projectId); });
