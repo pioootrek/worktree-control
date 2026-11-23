@@ -481,7 +481,10 @@ and logs. Full data deletion is a separate, explicit operation. See
 For `0.2.0` (2026-11-09), maintainers publish the CI-built tarball. Download
 `portable-package` and `optional-auth-provider` from the same successful `Verify`
 run and attempt on the final merged release commit on `main`, within artifact
-retention. Documentation changes alter the shipped installation guides, so
+retention. Use a run that succeeded on its first attempt; if it needed a re-run,
+start a new `Verify` run on the same commit, because after a re-run a job can
+receive an artifact from an earlier attempt. Documentation changes alter the
+shipped installation guides, so
 artifacts from an earlier commit do not represent the final release. Verify
 both checksum manifests and confirm both provenances name the same full commit,
 CI run/attempt, `"dirty": false`, Community version `0.2.0` and matching tarball

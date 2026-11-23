@@ -82,18 +82,38 @@ test("a marker after the first statement is an error", () => {
   }
 });
 
-test("only the head is read and a partial last line is ignored", () => {
-  const head = `${IMPORT}\n// test-tier: hea`;
-  assert.match(parseTierMarker(head).error ?? "", /after the first statement/);
-  assert.deepEqual(parseTierMarker(head, { truncated: true }), { tier: "fast" });
+test("the whole file is scanned, so a marker attempt far below the header is an error", () => {
+  const body = `describe("x", () => {});\n`.repeat(400);
+  assert.ok(body.length > 4096);
+  for (const attempt of ["// test-tier: heavy (child processes)", "// test-tier: hea", "  /* test tier */"]) {
+    const source = `${IMPORT}\n${body}${attempt}\n${body}`;
+    assert.deepEqual(
+      parseTierMarker(source),
+      { error: "test-tier marker after the first statement; it must be in the leading comment lines", line: 402 },
+      attempt,
+    );
+  }
+  assert.equal(parseTierMarker(`${IMPORT}\n${body}// test-tier: hea`).line, 402);
+});
+
+test("a valid first-line marker in a long file still makes it heavy", () => {
+  const source = `// test-tier: heavy (child processes)\n${IMPORT}\n${`it("x", () => {});\n`.repeat(400)}`;
+  assert.ok(source.length > 4096);
+  assert.deepEqual(parseTierMarker(source), { tier: "heavy", reason: "child processes", line: 1 });
+});
+
+test("a long file without a marker is still fast", () => {
+  const source = `// Explains the fixture.\n${IMPORT}\n${`it("x", () => {}); // tiers of retries\n`.repeat(400)}`;
+  assert.ok(source.length > 4096);
+  assert.deepEqual(parseTierMarker(source), { tier: "fast" });
 });
 
 test("selection splits files into tiers and collects every error", () => {
   const result = selectTiers([
-    { file: "src/a.test.ts", head: IMPORT },
-    { file: "src/b.test.ts", head: `// test-tier: heavy (network listeners)\n${IMPORT}` },
-    { file: "src/c.test.ts", head: `// test-tier: heavy\n${IMPORT}` },
-    { file: "src/d.test.ts", head: `${IMPORT}\n// test-tier: heavy (real clocks)` },
+    { file: "src/a.test.ts", source: IMPORT },
+    { file: "src/b.test.ts", source: `// test-tier: heavy (network listeners)\n${IMPORT}` },
+    { file: "src/c.test.ts", source: `// test-tier: heavy\n${IMPORT}` },
+    { file: "src/d.test.ts", source: `${IMPORT}\n// test-tier: heavy (real clocks)` },
   ]);
   assert.deepEqual(result.fast, ["src/a.test.ts"]);
   assert.deepEqual(result.heavy, [{ file: "src/b.test.ts", reason: "network listeners" }]);

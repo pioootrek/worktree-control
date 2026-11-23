@@ -10,7 +10,7 @@
 // fails, when a tier marker is malformed or misplaced, or when a fast-tier
 // file takes longer than FAST_FILE_BUDGET_MS.
 
-import { closeSync, openSync, readSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { relative, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
@@ -25,9 +25,6 @@ import { pathToFileURL } from "node:url";
  */
 export const FAST_FILE_BUDGET_MS = 15_000;
 
-/** Bytes read from the start of each test file to find its tier marker. */
-export const HEAD_BYTES = 4096;
-
 export const MARKER_EXAMPLE = "// test-tier: heavy (<what makes it slow>)";
 
 const MARKER = /^\/\/ test-tier: (\S+) \(([^()]*)\)$/;
@@ -38,7 +35,7 @@ const MARKER_ATTEMPT = /(?:\/\/|\/\*|^\s*\*)\s*test[\s_-]*tiers?\b/i;
 const HEADER_LINE = /^\s*(?:\/\/.*)?$/;
 
 /**
- * Reads the tier marker from the head of a test file.
+ * Reads the tier marker of a test file from its whole source.
  *
  * The header is the run of lines at the top of the file that are empty or
  * line comments (`//`); the first other line (an import, a statement or a
@@ -47,16 +44,14 @@ const HEADER_LINE = /^\s*(?:\/\/.*)?$/;
  * is 3 to 60 characters of letters, digits, spaces and `,./+'-`, beginning and
  * ending with a letter or digit. A header line that resembles a marker but does
  * not match, an unknown tier, a second marker, or a marker-like comment after
- * the header is an error, so a typo cannot move a file between tiers.
+ * the header, anywhere in the rest of the file, is an error, so a typo cannot
+ * move a file between tiers.
  *
- * @param {string} head The first bytes of the file, decoded as UTF-8.
- * @param {{ truncated?: boolean }} [options] Whether the head is shorter than the file.
+ * @param {string} source The complete file, decoded as UTF-8.
  * @returns {{ tier: "fast" } | { tier: "heavy", reason: string, line: number } | { error: string, line: number }}
  */
-export function parseTierMarker(head, { truncated = false } = {}) {
-  const lines = head.replace(/^﻿/, "").split(/\r?\n/);
-  // A head cut mid-line ends with a partial line; ignore it.
-  if (truncated && lines.length > 1) lines.pop();
+export function parseTierMarker(source) {
+  const lines = source.replace(/^﻿/, "").split(/\r?\n/);
 
   let index = 0;
   let marker;
@@ -99,15 +94,15 @@ export function parseTierMarker(head, { truncated = false } = {}) {
 /**
  * Splits candidate test files into the fast and heavy tiers.
  *
- * @param {{ file: string, head: string, truncated?: boolean }[]} entries Candidate files with their heads.
+ * @param {{ file: string, source: string }[]} entries Candidate files with their complete sources.
  * @returns {{ fast: string[], heavy: { file: string, reason: string }[], errors: { file: string, line: number, message: string }[] }}
  */
 export function selectTiers(entries) {
   const fast = [];
   const heavy = [];
   const errors = [];
-  for (const { file, head, truncated } of entries) {
-    const result = parseTierMarker(head, { truncated });
+  for (const { file, source } of entries) {
+    const result = parseTierMarker(source);
     if ("error" in result) errors.push({ file, line: result.line, message: result.error });
     else if (result.tier === "heavy") heavy.push({ file, reason: result.reason });
     else fast.push(file);
@@ -157,17 +152,6 @@ export function isPlainRelativePath(file) {
   return /^[A-Za-z0-9._/-]+$/.test(file) && !file.startsWith("/") && !file.split("/").includes("..");
 }
 
-function readHead(path) {
-  const buffer = Buffer.alloc(HEAD_BYTES);
-  const fd = openSync(path, "r");
-  try {
-    const bytesRead = readSync(fd, buffer, 0, HEAD_BYTES, 0);
-    return { head: buffer.subarray(0, bytesRead).toString("utf8"), truncated: bytesRead === HEAD_BYTES };
-  } finally {
-    closeSync(fd);
-  }
-}
-
 function toPosix(path) {
   return sep === "/" ? path : path.split(sep).join("/");
 }
@@ -190,7 +174,8 @@ async function main() {
     await lister.close();
   }
 
-  const entries = candidates.map((file) => ({ file, ...readHead(`${root}/${file}`) }));
+  // Whole files: a marker attempt anywhere in a file must be seen to be rejected.
+  const entries = candidates.map((file) => ({ file, source: readFileSync(`${root}/${file}`, "utf8") }));
   const { fast, heavy, errors } = selectTiers(entries);
   const unsafe = heavy.filter(({ file }) => !isPlainRelativePath(file));
   if (errors.length > 0 || unsafe.length > 0) {
