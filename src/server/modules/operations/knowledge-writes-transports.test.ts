@@ -1,3 +1,4 @@
+// test-tier: heavy (network listeners, durable SQLite stores)
 import { writeFileSync } from "node:fs";
 import { createServer, request as httpRequest, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";

@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes, network listeners)
 import * as fs from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
