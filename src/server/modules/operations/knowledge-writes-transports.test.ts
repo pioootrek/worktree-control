@@ -7,7 +7,6 @@ import { buildOperationsRuntime } from "@/server/bootstrap/operations-runtime";
 import { createOperationsHttp } from "@/server/transports/operations-http";
 import type { OperationRetention } from "@/server/bootstrap/operation-retention";
 import { answer, knowledgeFixture, type KnowledgeFixture, type StoredMode } from "./knowledge-writes-fixture";
-import type { KnowledgeThreadWriter } from "./knowledge-writes";
 import type { IdempotencyStore } from "./runner";
 
 /**
@@ -35,7 +34,7 @@ async function transports(mode: StoredMode, setup: { humans?: boolean } = {}) {
   const store = f.store, writerOf = store.knowledgeThreadWriter.bind(store);
   store.knowledgeThreadWriter = () => {
     const writer = writerOf();
-    return { ...writer, createThread: (thread, author) => { writer.createThread(thread, author); hooks.written?.(); } } satisfies KnowledgeThreadWriter;
+    return { ...writer, createThread: (thread, author) => { writer.createThread(thread, author); hooks.written?.(); } };
   };
   const real = f.retention;
   const idempotency: IdempotencyStore | undefined = real ? {
