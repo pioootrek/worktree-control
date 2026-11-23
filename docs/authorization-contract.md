@@ -830,7 +830,11 @@ witness commit; an oversized DTO receives the same pre-dispatch HTTP 413
 escaped text copy, plus 64 KiB for the echoed request ID and 128 bytes for fixed
 JSON-RPC/tool-result framing. Both copies are retained. Other limits remain
 64 KiB request, 32 concurrent requests and a total ten-second deadline, with
-strict JSON depth 8 and 128 fields.
+strict JSON depth 8 and 128 fields. Since D2b-2 the outer body read is bounded
+at 256 KiB plus 4 KiB, and only a strictly classified call of
+`knowledge_create_thread` may use more than 64 KiB; see
+[Knowledge thread write](#knowledge-thread-write-d2b-2) for the rule, the ID
+budget of that call and the cost.
 Messages routed through SDK `transport.send` are byte-checked before Response
 allocation. SDK-generated negotiation and protocol errors construct Responses
 directly and are bounded only while buffering. Every actual Response body is
@@ -1396,9 +1400,10 @@ staged a value, and the work never runs again. A delivery combined with
 
 #### Mutation release (D2b-1)
 
-`OperationRunner.mutationRelease` releases a mutation inside admission. It is
-unmounted: no transport calls it yet, and the production registry still holds
-four operation IDs. `run()` keeps its behaviour and still returns a mutation's
+`OperationRunner.mutationRelease` releases a mutation inside admission. The HTTP
+adapter (API and unix) calls it with the direct shape and the MCP adapter with
+the buffered shape, for the one mounted mutation,
+[`knowledge.create_thread`](#knowledge-thread-write-d2b-2). `run()` keeps its behaviour and still returns a mutation's
 value or error without writing anything; it reads `signal` and
 `idempotencyKey` once, before planning, and uses that one snapshot throughout. An error can disclose project state
 (`not_found` against `forbidden`, `project_archived`, `request_in_progress`) or
@@ -1765,6 +1770,170 @@ selection: the private socket while a controller owns the lock, otherwise one
 offline store under the lock. The CLI validates socket replies against strict
 schemas of these DTOs.
 
+### Knowledge thread write (D2b-2)
+
+`knowledge.create_thread` is the first retained mutation of the new surface
+(`src/server/modules/operations/knowledge-writes.ts`, dispositions section 3.8,
+row 7.23). Bootstrap builds it over three ports: the store's thread writer
+(`SqliteStateStore.knowledgeThreadWriter()`), a total change notification and
+an ID generator (`randomUUID`). It imports nothing from the Knowledge module and
+shares no code with the legacy `create_thread`. Both paths write the same thread
+and history tables. They do not share idempotency: this path never reads or
+writes `knowledge_idempotency`, so a retry must use the same surface family and
+principal as the first attempt.
+
+| Field | Value |
+| --- | --- |
+| Kind | mutation, `retain: true`, effect `admitted` with `commitPoint: "declared"`, no `acquire` |
+| Resources | `project` from `projectId` |
+| Requirement | `allOf(knowledge:write on project, knowledge:read on project)` |
+| Surfaces | API, unix, MCP (`knowledge_create_thread`), CLI `knowledge threads create`; `excludedListeners: ["worker"]` |
+| Result | `{ thread }` with exactly `id`, `projectId`, `title`, `body`, `revision`, `createdBy`, `createdAt`, `updatedAt` |
+
+**Input.** A strict object `{ projectId, title, body }`; any other field,
+`idempotencyKey` included, is `invalid_request`/`unexpected_input`. `projectId`
+follows the contract ID grammar (`invalid_project_id`). `title` and `body` are
+trimmed and hold 1 to 200 and 1 to 65,536 UTF-8 bytes, as the legacy write does
+(`invalid_title`, `invalid_body`). The body's JSON string form,
+`Buffer.byteLength(JSON.stringify(body))`, holds at most 192 KiB
+(`invalid_body`): an escaped character can take six bytes, and this bound keeps
+the retained result below the store's 256 KiB record bound and the released DTO
+below the 256 KiB response ceiling. Text with a lone surrogate is
+`invalid_text`: it would not survive UTF-8 storage. The SQLite round-trip test
+shows every other class unchanged, controls and NUL included.
+
+**Size proof.** `knowledge-writes.test.ts` stores the largest accepted thread
+(a body of exactly 192 KiB in JSON form, a title of maximum escaping, a
+160-character project ID and author) and checks the stored record against an
+upper bound computed from those parts, below 256 KiB, the released DTO against
+the response ceiling and the MCP envelope (structured copy plus escaped text
+copy) against its own bound.
+
+**Effect.** One admitted phase on the owner's connection:
+
+1. The project's stored status. An archived project is
+   `conflict`/`project_archived` with effect `not_started`, before the commit
+   point. This is the archived rule of the legacy write, not an authorization
+   rule.
+2. The author, from the phase's authority (never from input), and its principal
+   row, which must exist, be active and have the kind expected for the actor;
+   otherwise `internal`/`author_unverified`, effect `not_started`. Then the
+   thread ID and the time from the phase clock.
+3. `commit()`, outside any transaction: the durable `started` record is never
+   written inside the thread transaction.
+4. The thread row and its `created` history row in one store transaction. A
+   failure of either insert rolls both back; the caller gets the runner's
+   `outcome_unknown`, and a keyed retry answers
+   `previous_attempt_outcome_unknown` and creates no duplicate.
+
+`finalize` notifies only after a fresh success, with the project ID, through a
+total port: bootstrap adapts the controller's scoped Knowledge publisher so that
+a throw or a returned promise stays inside the adapter, and offline nothing is
+published. A missed refresh never turns a durable thread into an `unknown`
+record. A replay notifies nothing.
+
+**Authorship.** `knowledge_threads.created_by` and
+`knowledge_history.principal_id` reference `remote_principals(id)`. No schema
+step is added:
+
+| Actor | `created_by` / `principal_id` | `authentication_method` |
+| --- | --- | --- |
+| human | the account ID | `provider_session` |
+| agent | the account ID | `agent_token` |
+| installation, token mode | `installation` | `installation_token` |
+| installation, open mode | `installation` | `none` |
+| operator (unix or offline) | `installation` | `none` |
+
+The first four rows equal the legacy attribution. The operator row is
+provisional (see [Accepted deviations](#accepted-deviations)). The
+idempotency namespace of the operator stays `operator`, independent of this
+attribution. History readers expose the stored principal and method verbatim.
+The upgrade's link-attribution query selects project link and unlink events
+only, so a thread creation cannot change that attribution.
+
+**Transports.** Each one releases the mutation through `mutationRelease` and
+validates only its own framing:
+
+- HTTP (API and unix): the direct shape. `commit` writes the 200 success (a
+  first release and a replay alike; no `replayed` flag is released) and `refuse`
+  writes the error envelope, both inside admission. A `refused` result is
+  written exactly as returned. On `commit_failed` the adapter ends or destroys
+  the response and writes nothing more, also from its outer catch. The key is
+  the `Idempotency-Key` request header, a singleton like the other transport
+  fields (a duplicate is `invalid_request`), passed to the runner for every
+  kind, so a key on a read answers `idempotency_not_supported`. The body
+  ceiling is chosen from the validated raw path before the body is read:
+  262,144 bytes for `knowledge.create_thread` on API and unix, the existing
+  ceilings (65,536 on API, 16,384 on unix) for every other operation. The
+  worker listener answers `operation_not_found`.
+- MCP: the tool `knowledge_create_thread` with the reserved top-level argument
+  `idempotencyKey`, advertised as an optional string. The adapter removes that
+  own property before the remaining arguments reach `parse`; a value that is
+  not a string is `invalid_request`/`invalid_idempotency_key`. The mutation
+  starts only on the SDK's dispatch of that tool's call. A success uses the
+  buffered shape: the SDK builds the tool result in `stage`, and the final
+  admitted phase writes it. A refusal after dispatch is a JSON-RPC error with
+  the request ID, `{"code":-32000,"message":<reason>,"data":<public error>}`,
+  built by the adapter without the SDK and written synchronously in `refuse`.
+  A mutation tool therefore answers refusals as JSON-RPC errors, unlike the
+  read tools, whose refusals are tool results with `isError: true`. Protocol
+  errors before dispatch keep their path. The adapter calls `mutationRelease`
+  outside admission and passes the request's signal, which the deadline timer
+  and the caller's departure abort.
+- CLI: see [Mounted CLI boundary](#mounted-cli-boundary-d1a-8b) and below.
+
+**MCP request ceiling.** Every tool shares one path, and the bounded read
+precedes parsing, so the outer body ceiling cannot depend on the tool. It is
+262,144 bytes plus 4,096 bytes of envelope, counted on the bytes actually
+streamed, chunked bodies included. After strict classification (a JSON-RPC 2.0
+`tools/call` with a string or number ID naming a tool whose operation declares
+a larger ceiling), every other message must still fit 65,536 bytes, else
+`payload_too_large`/`request_too_large` before mint. The cost: up to 32
+in-flight requests of about 260 KiB each before authentication, about 8 MiB
+instead of 2 MiB. Existing messages keep the fixed 64 KiB allowance for an
+echoed ID. A classified call budgets its own serialized ID, escaped strings
+included, against its envelope at SDK send and while collecting.
+
+**CLI.** `knowledge threads create --project ID --title TEXT (--body TEXT |
+--body-file PATH|-) [--idempotency-key KEY]` is routed before the legacy
+Knowledge parser and its pre-lock handoff check. Option values are opaque: each
+flag takes the next argument verbatim. A body file or standard input is read up
+to 256 KiB before the lock is taken (`payload_too_large`/`body_too_large`;
+invalid UTF-8 is `invalid_body`), and the finite-command output handling is
+installed. Selection is lock-first as for `projects`. On the socket the key is
+the `Idempotency-Key` header, and an operation-specific decoder accepts boundary
+errors (`effect: null`) and mutation errors with a valid effect state, checks
+status and outcome invariants, and validates the strict DTO; the read decoder
+keeps requiring `effect: null`. A missing or refused socket means nothing was
+submitted. Once the request was submitted, a broken socket, a timeout or an
+invalid reply is `outcome_unknown`/`admin_outcome_unknown` with retry
+`inspect_first`, and the CLI never falls back to offline execution. Offline,
+the CLI composes no store and no fingerprint key: a write without a key runs,
+and a write with a key answers `unavailable`/`idempotency_unavailable` before
+any effect. The operator holds exclusive ownership and every phase revalidates
+the lock. An unkeyed write repeated after an ambiguous delivery can create a
+second thread; the CLI help says so. A refusal is written to standard error
+inside the admitted phase that established it.
+
+**Rollback limit.** Neither content table has a fence trigger, and the
+idempotency records are unfenced (D1b's accepted deviation). A latched fence
+still refuses keyed and unkeyed calls as any store call. Restoring an older
+image can lose writes made since that image. An absent key may run fresh. A
+snapshot taken between the durable `started` write and the thread and history
+transaction, or between that transaction and completion, can retain a live key
+with the thread absent or present. Startup repair converts a surviving
+`started` record to `unknown`. Inspect the stored thread and history before
+repeating an uncertain write.
+
+**Tests.** `knowledge-writes.test.ts` (the operation over the real store:
+bounds, round trip, size proof, grants, authorship, the answer table, replay
+after revocation and archiving, a changed resolution, a failure between the two
+inserts, reopen and replay, a crash after the commit point, notifications and
+coexistence with the legacy readers), `knowledge-writes-transports.test.ts`
+(API, unix, the externally owned admin socket and MCP), the cookie POST cases
+in `http-boundary-conformance.test.ts` and the CLI cases in
+`src/cli/session-describe.test.ts`.
+
 ### Commit point
 
 Decision N. The operation definition fixes the commit point through
@@ -1858,6 +2027,18 @@ is never caller-supplied:
   and hold full authority over the same data. The same key from two such
   callers is deduplicated, or is a fingerprint conflict, instead of running
   twice.
+
+The first mounted operation that declares `retain` is
+[`knowledge.create_thread`](#knowledge-thread-write-d2b-2). The key is never part
+of the input: HTTP (API and unix) carries it as the singleton `Idempotency-Key`
+request header, MCP as the reserved top-level tool argument `idempotencyKey`,
+which the adapter removes before `parse`, and the CLI as `--idempotency-key`,
+sent as the header on the socket path. No transport generates a key for the
+caller or releases a `replayed` flag: a first release and a replay are
+equivalent. Offline, the CLI composes no store and no fingerprint key, so a
+keyed write answers `unavailable`/`idempotency_unavailable` before any effect
+and an unkeyed one runs; an unkeyed write repeated after an ambiguous delivery
+can create a second thread.
 
 The first admission phase writes a `reserved` record with the fingerprint and
 the resolved resources. It does this in the same synchronous admitted phase as
@@ -2391,6 +2572,7 @@ implementation.
 | Run-origin comparison as a replacement for the I1 original-intent lookup | Wrong as stated; see below. |
 | Retention rule as a complete idempotency contract | Wrong as stated; replaced by [Idempotency](#idempotency). |
 | Idempotency records outside the security fence (D1b) | Accepted by the lead on the owner's general delegation, until the fence repair `13e00db3`; see below. |
+| Operator thread writes attributed as `installation` with method `none` (D2b-2) | Provisional, for disposable integration fixtures only. Release item: the owner decides before the release candidate; see below. |
 
 The `run_originating_session` predicate only compares the caller's
 coordination session with the run's recorded origin session and credential.
@@ -2398,6 +2580,14 @@ It is the rule for ordinary cancel from the originating session. It is **not**
 the I1 original-intent lookup. That lookup is the `intent_origin` predicate
 (see [Original intent](#original-intent)); the query operation that uses it is
 not implemented.
+
+`knowledge.create_thread` stores a thread written by the operator (unix or
+offline) with `created_by` and `principal_id` `installation` and
+`authentication_method` `none`, because schema 53 has no operator principal or
+method. Such a row is stored like an anonymous open-mode write, and the two
+can never be told apart later. The owner decides before the release candidate
+whether to keep this or to add an operator principal and method in a schema
+step. The idempotency namespace of the operator stays `operator`.
 
 Writes of the idempotency records publish no pending witness: the table has no
 fence trigger, because the fence repair (`13e00db3`) comes first. The
@@ -2500,8 +2690,13 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   acknowledgement failure at the owned boundary (the fence's post-commit image
   check): there the fence latches and refuses every later call, no late effect
   follows, decision Z cleans up, and the fault matrix pins the reopen outcomes.
-  Still open: a retained operation's own proof of its result's domain and size,
-  and offline retention (D2b). The grants snapshot returns active grants only.
+  Each further retained operation proves its own result's domain and size, as
+  `knowledge.create_thread` does. Offline retention is closed by D2b-2: the
+  offline CLI composes no store and refuses a keyed write as
+  `unavailable`/`idempotency_unavailable` before any effect, and the contract
+  and the CLI help state that an unkeyed repeat can create a second thread
+  (see [Knowledge thread write](#knowledge-thread-write-d2b-2)). The grants
+  snapshot returns active grants only.
   The resolver keeps versions that are never reused for one reference.
 - **Coordination sessions and leases.** Issuance, lease secret, renewal,
   expiry, generation changes, disconnect and restart. The module only compares
@@ -2518,12 +2713,11 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   on MCP. A transport that mounts a mutation releases it through
   `mutationRelease` and, on `commit_failed`, ends the response without a
   further envelope.
-- **Buffered mutation release.** The first transport that passes `stage` to
-  `mutationRelease` (D2b-2, MCP) calls it outside admission, passes a `signal`
-  and aborts it when its deadline passes or its caller is gone. The runner does
-  not bound a pending
-  `stage` by the deadline, so without that abort a `stage` that never settles
-  holds the call open.
+- **Buffered mutation release.** Met by the MCP adapter (D2b-2): it calls
+  `mutationRelease` outside admission, passes the request's signal and aborts
+  it when its deadline passes or its caller is gone. The runner does not bound
+  a pending `stage` by the deadline, so every later transport that passes
+  `stage` keeps this obligation.
 - **Mutation release with `acquire` or an idle effect.** `mutationRelease`
   refuses both as `internal`/`invalid_operation` before any reservation. A
   rejected `acquire`, an invalid lease, the abort check after the wait, a
@@ -2534,6 +2728,10 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
 - **Read and query refusals on HTTP.** Reads and queries on HTTP still
   write their refusals after the runner returns, outside admission. D2b fixes
   this for mutations only.
+- **Legacy `create_thread`.** The legacy HTTP, MCP and CLI thread writes and
+  their `knowledge_idempotency` records remain until the Knowledge family step
+  removes them; until then a retry must use the surface family and principal of
+  its first attempt.
 - **Background authorization specifications.** Queued or scheduled work keeps
   an immutable authorization specification and an owner reference, never a
   closure over a request.
@@ -2566,14 +2764,15 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   the `registration` and `project` kinds only. The store exposes their read
   ports; production wires them for the one mounted read. Every other resource kind has
   no resolver and answers `internal`. The SQLite idempotency store (D1b) is
-  composed by the controller only; no mounted operation declares `retain` yet,
-  so no caller can reach it, and the offline CLI composes none. The installation-token, anonymous,
+  composed by the controller only; `knowledge.create_thread` is the one mounted
+  operation that declares `retain`, and the offline CLI composes none. The installation-token, anonymous,
   agent-token and provider-session verifiers exist, with a composite that
   dispatches without fallback (see [Actors and authentication](#actors-and-authentication)
   and [Provider sessions](#provider-sessions)). The bootstrap
   `buildOperationsRuntime` composes those adapters, one clock, the store's own
   admission, a fresh grants factory, disposal diagnostics and a registry pinned
-  to `session.describe` and the three [project reads](#project-reads-d2a), exposed through a frozen read-only view with bound read
+  to `session.describe`, the three [project reads](#project-reads-d2a) and
+  [`knowledge.create_thread`](#knowledge-thread-write-d2b-2), exposed through a frozen read-only view with bound read
   methods and no registration method. Its explicit active mode fixes both
   installation verification and each served listener boundary. Unknown modes, including
   `legacy`, construct no boundary or verifier and answer `unauthenticated` /
@@ -2643,7 +2842,8 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   new requests; unix shares its existing 32 accepted-work slots with `/auth`.
   Capacity is retained through response completion and work settlement. Close
   fences and aborts requests synchronously and drains before storage release.
-  Body ceilings are 65536 bytes on API and 16384 on unix; the response ceiling
+  Body ceilings are 65536 bytes on API and 16384 on unix (262144 on both for
+  `knowledge.create_thread`); the response ceiling
   is 262144 bytes. The total deadline is 10000 ms, including body and admission.
   The error envelope is `{ error: { category, status, reason, retry, effect } }`,
   with HTTP status taken from the public error and `Retry-After: 1` when its
@@ -2675,7 +2875,8 @@ the CLI owns lock-first socket/offline selection and offline drain before releas
   not remap them, and the grammar is not widened.
 - Coordination-session issuance and storage (`coordination.*`), any
   transport, and every product operation of the catalogue except
-  `session.describe`, `project.list`, `project.status` and `project.worktrees`.
+  `session.describe`, `project.list`, `project.status`, `project.worktrees` and
+  `knowledge.create_thread`.
   `project.wait` and the removal of the legacy project reads they replace
   (rows 1.1 to 1.4 and 1.R) are not done. The extensions of slice 4 are exercised by test
   fixtures only.
