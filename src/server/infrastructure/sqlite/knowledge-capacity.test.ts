@@ -1,3 +1,4 @@
+// test-tier: heavy (1300 attachment records)
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

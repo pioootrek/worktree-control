@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { resumeFixtureSecurity } from "../../infrastructure/sqlite/fixtures/protected-security";
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";

@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes, durable SQLite stores)
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

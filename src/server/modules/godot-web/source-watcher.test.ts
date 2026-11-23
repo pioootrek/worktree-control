@@ -1,3 +1,4 @@
+// test-tier: heavy (git repositories, file watchers)
 import { execFileSync } from "node:child_process";
 import { SystemGitWorktreeReader } from "@/server/git-worktrees";
 import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { establishFixtureSecurity } from "./fixtures/protected-security";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { stripMigrationProvenance } from "./fixtures/legacy-registry";

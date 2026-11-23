@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes, durable SQLite restores)
 import { unmanagedFixtureDatabase } from "./unmanaged-sqlite-fixture";
 import { resumeFixtureSecurity } from "./infrastructure/sqlite/fixtures/protected-security";
 import { fork } from "node:child_process";

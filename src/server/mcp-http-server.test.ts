@@ -1,3 +1,4 @@
+// test-tier: heavy (network listeners)
 import { knowledgeSchemas } from "@/shared/contracts/knowledge";
 import type { AddressInfo } from "node:net";
 

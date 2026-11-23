@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";

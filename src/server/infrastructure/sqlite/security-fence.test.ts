@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores, child processes)
 import { openRemoteRecoveryInspection } from "./remote-connection-inspection";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { createHash, randomUUID } from "node:crypto";
