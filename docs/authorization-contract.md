@@ -1889,10 +1889,13 @@ streamed, chunked bodies included. The larger class is decided on the parsed
 message against the schemas the pinned MCP SDK uses before it dispatches a tool
 call: its strict JSON-RPC request schema (`jsonrpc` `"2.0"`, a string or
 integer ID, no other envelope field) and its call-tool request schema (method
-`tools/call`, a string tool name, `arguments` an object or absent). Only such a
-call of a tool whose operation declares a larger ceiling is in it. Every other
-message, a fractional ID, non-object `arguments` and a tool without a declared
-ceiling included, must still fit 65,536 bytes, else
+`tools/call`, a string tool name, `arguments` an object or absent). A call
+that carries task metadata (`params.task`, `{}` included) is not in it: both
+schemas accept it, but this server advertises no task capability, so the SDK
+refuses it before the tool's handler runs. Only such a call without task
+metadata, of a tool whose operation declares a larger ceiling, is in it. Every
+other message, a fractional ID, non-object `arguments`, task metadata and a
+tool without a declared ceiling included, must still fit 65,536 bytes, else
 `payload_too_large`/`request_too_large` before mint and before any SDK or
 application dispatch. The classification checks the message's shape only; the
 operation's `parse` stays the one validation of its input. The cost: up to 32
@@ -1950,7 +1953,9 @@ these rows over the real store and its content tables:
 
 - `knowledge-writes.test.ts`: bounds, round trip and size proof; grants;
   authorship for every actor, an `owner` principal row of a human included; a
-  success and its replay; invalid input and key; denial; an archived project;
+  stored principal ID outside the ID grammar, refused at the production mint
+  for an agent token and a provider session; a success and its replay; invalid
+  input and key; denial; an archived project;
   `idempotency_conflict`, `request_in_progress` and
   `previous_attempt_outcome_unknown`; a failed `commit` delivery and a failed
   `refuse` delivery; a fresh denial after a confirmed effect and after an
@@ -1963,12 +1968,28 @@ these rows over the real store and its content tables:
   `started`, completion and repair writes are covered by the runner's SQLite
   matrices only.
 - `knowledge-writes-transports.test.ts`: API, unix, the externally owned admin
-  socket and MCP, with the strict MCP request classification, cancellation of a
-  pending SDK staging by the deadline and by the caller's departure, the MCP
-  server's policy replacement and close, the real owner shutdown holding the
-  store and the controller lock until an accepted request settled, and the
-  adapters' `commit` and `refuse` writes observed inside the real admission
-  gate, with a negative control.
+  socket and MCP, with the strict MCP request classification, task metadata
+  included; cancellation of a pending SDK staging by the deadline and by the
+  caller's departure, after which the held SDK send fulfils or rejects late
+  with no admission, no write and no unhandled rejection; the MCP server's
+  policy replacement and close; the adapters' `commit` and `refuse` writes
+  observed inside the real admission gate, with a negative control; and an
+  agent whose stored principal ID is outside the ID grammar, refused at the
+  mint with and without a key before any reservation or write. The real owner
+  shutdown is tested twice on API, unix and MCP. The first case holds the
+  accepted request's `response.end`, so its open socket alone keeps the
+  listener's close pending; it proves that the store and the controller lock
+  outlast the response. The second case lets the response finish and the
+  client read it, and the Node listener close; the accepted handler stays
+  unsettled outside admission, because the fixture's release waits on a latch
+  after its effect, record and delivery, before it returns to the adapter. The
+  store stays open and the lock held until the latch opens, then each is
+  released once. The negative control is the same shutdown whose listener
+  closers only close their Node servers: it closes the store and releases the
+  lock under the unsettled handler, so only the owners' explicit join of
+  accepted handlers holds them. Neither case covers the window between the
+  content transaction and completion, which the cancellation cases test
+  without the owner shutdown.
 - The cookie POST cases in `http-boundary-conformance.test.ts`, the request
   adapter's cases in `mcp-request-adapter.test.ts` and the CLI cases in
   `src/cli/session-describe.test.ts`.
