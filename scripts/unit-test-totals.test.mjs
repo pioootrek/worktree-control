@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
-import UnitTestTotalsReporter, { compareBlobNames, compareFiles, expectedBlobNames, summarizeModules } from './unit-test-totals.mjs';
+import UnitTestTotalsReporter, { compareFiles, expectedBlobNames, selectLatestBlobs, summarizeModules } from './unit-test-totals.mjs';
 
 const exec = promisify(execFile);
 const script = new URL('./unit-test-totals.mjs', import.meta.url).pathname;
@@ -22,9 +22,34 @@ function testModule(moduleId, state, cases, duration) {
 test('expects one blob report per shard under the blob reporter names', () => {
   assert.deepEqual(expectedBlobNames(4), ['blob-1-4.json', 'blob-2-4.json', 'blob-3-4.json', 'blob-4-4.json']);
   assert.throws(() => expectedBlobNames(0), /positive integer/);
-  assert.deepEqual(compareBlobNames(['blob-1-4.json', 'blob-3-4.json', 'blob-4-4.json', 'blob-5-5.json'], 4),
-    { missing: ['blob-2-4.json'], unexpected: ['blob-5-5.json'] });
-  assert.deepEqual(compareBlobNames(expectedBlobNames(4), 4), { missing: [], unexpected: [] });
+});
+
+test('selects the latest attempt of each shard and keeps shards that were not run again', () => {
+  const names = [
+    'blob-1-4-attempt-1.json', 'blob-2-4-attempt-1.json', 'blob-4-4-attempt-1.json',
+    'blob-3-4-attempt-2.json', 'blob-3-4-attempt-10.json', 'blob-3-4-attempt-1.json', 'blob-3-4-attempt-3.json',
+  ];
+  assert.deepEqual(selectLatestBlobs(names, 4), {
+    selected: [
+      { target: 'blob-1-4.json', source: 'blob-1-4-attempt-1.json', attempt: 1 },
+      { target: 'blob-2-4.json', source: 'blob-2-4-attempt-1.json', attempt: 1 },
+      { target: 'blob-3-4.json', source: 'blob-3-4-attempt-10.json', attempt: 10 },
+      { target: 'blob-4-4.json', source: 'blob-4-4-attempt-1.json', attempt: 1 },
+    ],
+    superseded: ['blob-3-4-attempt-1.json', 'blob-3-4-attempt-2.json', 'blob-3-4-attempt-3.json'],
+    missing: [],
+    unexpected: [],
+  });
+});
+
+test('reports missing shards and entries that are not attempt reports of this shard count', () => {
+  const result = selectLatestBlobs([
+    'blob-1-4-attempt-2.json', 'blob-3-4-attempt-1.json', 'blob-4-4-attempt-1.json',
+    'blob-2-4.json', 'blob-5-5-attempt-1.json', 'blob-5-4-attempt-1.json', 'blob-2-4-attempt-0.json', 'blob-02-4-attempt-1.json',
+  ], 4);
+  assert.deepEqual(result.missing, ['blob-2-4.json']);
+  assert.deepEqual(result.unexpected, ['blob-02-4-attempt-1.json', 'blob-2-4-attempt-0.json', 'blob-2-4.json', 'blob-5-4-attempt-1.json', 'blob-5-5-attempt-1.json']);
+  assert.deepEqual(result.selected.map(entry => entry.source), ['blob-1-4-attempt-2.json', 'blob-3-4-attempt-1.json', 'blob-4-4-attempt-1.json']);
 });
 
 test('reports listed files that are missing, unexpected or reported twice', () => {
@@ -70,11 +95,22 @@ test('the commands fail on a missing shard report and on a file-count mismatch',
   try {
     const blobs = join(directory, 'blobs');
     await mkdir(blobs);
-    for (const name of ['blob-1-2.json', 'blob-2-2.json']) await writeFile(join(blobs, name), '[]');
-    await run('blobs', blobs, '2');
-    await rm(join(blobs, 'blob-2-2.json'));
-    await assert.rejects(run('blobs', blobs, '2'), error => error.code === 1 && /Missing: blob-2-2\.json/.test(error.stderr));
-    await assert.rejects(run('blobs', join(directory, 'absent'), '2'), error => error.code === 1);
+    for (const [name, content] of [['blob-1-2-attempt-1.json', 'one'], ['blob-2-2-attempt-1.json', 'two, failed'], ['blob-2-2-attempt-2.json', 'two, passed']]) {
+      await writeFile(join(blobs, name), content);
+    }
+    const merge = join(directory, 'merge');
+    const { stdout: selected } = await run('blobs', blobs, '2', merge);
+    assert.match(selected, /Superseded by a later attempt: blob-2-2-attempt-1\.json\./);
+    assert.deepEqual((await readdir(merge)).sort(), ['blob-1-2.json', 'blob-2-2.json']);
+    assert.equal(await readFile(join(merge, 'blob-1-2.json'), 'utf8'), 'one');
+    assert.equal(await readFile(join(merge, 'blob-2-2.json'), 'utf8'), 'two, passed');
+    await assert.rejects(run('blobs', blobs, '2', merge), error => error.code === 1 && /not empty/.test(error.stderr));
+
+    await rm(join(blobs, 'blob-2-2-attempt-1.json'));
+    await rm(join(blobs, 'blob-2-2-attempt-2.json'));
+    await assert.rejects(run('blobs', blobs, '2', join(directory, 'merge-missing')), error => error.code === 1 && /Missing: blob-2-2\.json/.test(error.stderr));
+    await assert.rejects(run('blobs', join(directory, 'absent'), '2', join(directory, 'merge-absent')), error => error.code === 1);
+    await assert.rejects(run('blobs', blobs, '2'), error => error.code === 2);
 
     const list = join(directory, 'list.json');
     const totals = join(directory, 'totals.json');
