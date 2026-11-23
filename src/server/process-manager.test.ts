@@ -1,3 +1,4 @@
+// test-tier: heavy (child processes, network listeners)
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 

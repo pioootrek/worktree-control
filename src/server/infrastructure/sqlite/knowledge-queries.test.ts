@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

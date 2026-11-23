@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite migrations)
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { resumeFixtureSecurity } from "./fixtures/protected-security";
 import { rewindHumanRuntime } from "./fixtures/schema-rewind";

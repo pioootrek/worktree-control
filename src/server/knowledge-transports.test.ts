@@ -1,3 +1,4 @@
+// test-tier: heavy (network listeners)
 import { ownedFixtureDatabase } from "./unmanaged-sqlite-fixture";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

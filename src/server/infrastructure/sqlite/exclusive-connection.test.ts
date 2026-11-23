@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { resumeFixtureSecurity } from "./fixtures/protected-security";
 import { unmanagedFixtureDatabase } from "../../unmanaged-sqlite-fixture";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";

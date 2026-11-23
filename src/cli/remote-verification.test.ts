@@ -1,3 +1,4 @@
+// test-tier: heavy (durable SQLite stores)
 import { AuthenticationService } from "@/server/modules/authentication";
 import { acquireControllerLock } from "@/server/controller-lock";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";

@@ -1,3 +1,4 @@
+// test-tier: heavy (network listeners, durable SQLite stores)
 import { unmanagedFixtureDatabase } from "./unmanaged-sqlite-fixture";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
