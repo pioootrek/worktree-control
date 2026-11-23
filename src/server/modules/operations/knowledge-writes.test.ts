@@ -113,10 +113,10 @@ describe("knowledge.create_thread: definition and input", () => {
     expect(accepted({ body: "b".repeat(65_537) })).toBe(false);
     expect(accepted({ body: "😀".repeat(16_384) })).toBe(true);
     expect(accepted({ body: `${"😀".repeat(16_384)}x` })).toBe(false);
-    // Each control character is one UTF-8 byte and six JSON bytes: 32767 of them give 196604 JSON bytes, 32768 give 196610.
-    expect(Buffer.byteLength(JSON.stringify("\u0001".repeat(32_767)))).toBeLessThanOrEqual(KNOWLEDGE_THREAD_BODY_JSON_BYTES);
-    expect(accepted({ body: `x${"\u0001".repeat(32_766)}x` })).toBe(true);
-    expect(accepted({ body: `x${"\u0001".repeat(32_767)}x` })).toBe(false);
+    // Each control character is one UTF-8 byte and six JSON bytes: four letters and 32767 of them give exactly 196608 JSON bytes.
+    expect(Buffer.byteLength(JSON.stringify(`xxxx${"\u0001".repeat(32_767)}`))).toBe(KNOWLEDGE_THREAD_BODY_JSON_BYTES);
+    expect(accepted({ body: `xxxx${"\u0001".repeat(32_767)}` })).toBe(true);
+    expect(accepted({ body: `xxxxx${"\u0001".repeat(32_767)}` })).toBe(false);
   });
 
   it("refuses text that does not survive storage: a lone surrogate in title or body", async () => {
@@ -196,8 +196,8 @@ describe("knowledge.create_thread over the real store", () => {
     await f.admitted(() => f.store.saveKnowledgeProject({ id: projectId, name: "long", status: "active", revision: 1, createdAt: new Date(NOW).toISOString(), updatedAt: new Date(NOW).toISOString() }, "fixture"));
     const agent = await mint("api", await f.agent(accountId, [["operator", projectId]]));
     // The largest accepted body in JSON bytes, and a title of maximum escaping.
-    const body = `x${"\u0001".repeat(32_766)}x`, title = "\u0001".repeat(200);
-    expect(Buffer.byteLength(JSON.stringify(body))).toBe(196_604);
+    const body = `xxxx${"\u0001".repeat(32_767)}`, title = "\u0001".repeat(200);
+    expect(Buffer.byteLength(JSON.stringify(body))).toBe(KNOWLEDGE_THREAD_BODY_JSON_BYTES);
     const op = f.operation();
     const first = await f.release(c.runner, op, agent, { projectId, title, body }, { idempotencyKey: "largest" });
     expect(first.result).toEqual(committed);
@@ -453,13 +453,15 @@ describe("knowledge.create_thread: authorship (decision 8)", () => {
     expect(await f.threads()).toEqual([]);
   });
 
-  it("refuses a human whose stored principal row is no longer active", async () => {
+  it("a human whose stored principal row is no longer active is refused by the grants before the author check", async () => {
     const { f, c, mint } = await world("better-auth", { humans: true });
     const h = await f.human("alice", [["operator", "project-a"]]);
     const context = await mint("api", h.presented, h.session);
     await f.admitted(() => f.database.prepare("UPDATE remote_principals SET status='revoked' WHERE id='alice'").run());
+    // The grants snapshot knows no active account, so the project is not visible; the author check (above,
+    // through the port) is the second line that holds where a principal row and the grants disagree.
     expect((await f.release(c.runner, f.operation(), context, input())).writes)
-      .toEqual([{ kind: "refuse", value: notStarted("internal", 500, "author_unverified"), admitted: 1 }]);
+      .toEqual([{ kind: "refuse", value: notStarted("not_found", 404, "resource_not_found"), admitted: 1 }]);
     expect(await f.threads()).toEqual([]);
   });
 
@@ -504,7 +506,7 @@ describe("knowledge.create_thread beside the legacy path", () => {
     const iso = new Date(NOW).toISOString();
     // The legacy store write, with its own idempotency table.
     await f.admitted(() => f.store.createThread({ id: "legacy-1", projectId: "project-a", title: "Legacy", body: "Old path.", revision: 1, createdBy: "agent", createdAt: iso, updatedAt: iso },
-      { actor: { principalId: "agent", principalKind: "agent", credentialId: "c", authenticationMethod: "agent_token" }, projectId: "project-a", idempotencyKey: "k", requestHash: "h" }));
+      { actor: { principalId: "agent", principalKind: "agent", credentialId: "c", authenticationMethod: "agent_token" }, projectId: "project-a", idempotencyKey: "k", requestHash: "0".repeat(64) }));
     const op2 = f.operation({ id: () => "new-2" });
     await f.release(c.runner, op2, agent, input({ title: "New two" }), { idempotencyKey: "k2" });
     const listed = await f.admitted(() => f.store.listThreads("project-a", 10, 0));

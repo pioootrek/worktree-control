@@ -210,6 +210,8 @@ describe("SQLite resolver: projects", () => {
       "src/server/infrastructure/sqlite/identity-queries.ts",
       "src/server/infrastructure/sqlite/knowledge-queries.ts",
       "src/server/infrastructure/sqlite/knowledge-role-migration.ts",
+      // D2b-2: reads a project's status before the thread write; it never writes the table.
+      "src/server/infrastructure/sqlite/knowledge-thread-writer.ts",
       "src/server/infrastructure/sqlite/mapping-structure-migration.ts",
       "src/server/infrastructure/sqlite/mapping-upgrade-acts.ts",
       "src/server/infrastructure/sqlite/migrations.ts",

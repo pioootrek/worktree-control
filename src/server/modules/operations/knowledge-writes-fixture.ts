@@ -109,8 +109,11 @@ export async function knowledgeFixture(mode: Mode, setup: { retention?: boolean;
     if (role) current.database.prepare("DELETE FROM account_grants WHERE account_id=? AND role=?").run(account, role);
     else current.database.prepare("DELETE FROM account_grants WHERE account_id=?").run(account);
   });
+  /** Archives or restores a project through the store's own project write (the next revision). */
   const setProjectStatus = (projectId: string, status: "active" | "archived") => admitted(() => {
-    current.database.prepare("UPDATE knowledge_projects SET status=? WHERE id=?").run(status, projectId);
+    const existing = current.store.getKnowledgeProject(projectId);
+    if (!existing) throw new Error("no such project");
+    current.store.saveKnowledgeProject({ ...existing, status, revision: existing.revision + 1, updatedAt: iso(NOW) }, "fixture");
   });
 
   /** What the bootstrap composition needs; the suite adds `knowledge` and listener overrides. */
