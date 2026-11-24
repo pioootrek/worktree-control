@@ -55,7 +55,8 @@ export function KnowledgeDashboard({ token: transportToken, setToken, access, ch
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [readerExpanded, setReaderExpanded] = useState(false);
   const returnFocusIdRef = useRef("");
-  const focusedMobileRecordRef = useRef({ id: "", projectId: "", tab: "" });
+  // `pending` marks a narrow-screen record remembered as the return target before its reader heading took focus.
+  const focusedMobileRecordRef = useRef<{ id: string; projectId: string; tab: string; pending?: boolean }>({ id: "", projectId: "", tab: "" });
   const focusReaderAfterSaveRef = useRef(false);
   const focusedReplyRef = useRef<{ key: string; node: HTMLElement } | null>(null);
   const pendingReplyPageRef = useRef<{ scope: string; offset: number } | null>(null);
@@ -107,9 +108,10 @@ export function KnowledgeDashboard({ token: transportToken, setToken, access, ch
   }, [detail, identity?.principal.id, model.error, model.loading, model.replies, selection.projectId, selection.recordId, selection.replyId, selection.tab]);
   useEffect(() => {
     const focused = focusedMobileRecordRef.current;
-    if (selection.recordId && !selection.replyId && detail && (focused.id !== selection.recordId || focused.projectId !== selection.projectId || focused.tab !== selection.tab) && window.matchMedia("(max-width: 1023px)").matches) {
-      detailRef.current?.querySelector<HTMLElement>("h3")?.focus();
-      focusedMobileRecordRef.current = { id: selection.recordId, projectId: selection.projectId, tab: selection.tab };
+    if (selection.recordId && !selection.replyId && (focused.pending || focused.id !== selection.recordId || focused.projectId !== selection.projectId || focused.tab !== selection.tab) && window.matchMedia("(max-width: 1023px)").matches) {
+      // Remember the record at once, so browser Back before the read lands can still return focus to its link.
+      if (detail) detailRef.current?.querySelector<HTMLElement>("h3")?.focus();
+      focusedMobileRecordRef.current = { id: selection.recordId, projectId: selection.projectId, tab: selection.tab, ...(detail ? {} : { pending: true }) };
     } else if (!selection.recordId) {
       const previous = focusedMobileRecordRef.current;
       if (previous.id && (previous.projectId !== selection.projectId || previous.tab !== selection.tab)) {

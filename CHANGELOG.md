@@ -76,6 +76,12 @@ pre-1.0: the CLI, configuration and data model may change between minor versions
   Existing links are untouched. See
   [authentication](docs/authentication.md).
 
+### Fixed
+
+- On a narrow screen, pressing the browser's Back button before a Knowledge
+  record has finished loading returns keyboard focus to the record's link in
+  the list, instead of losing it.
+
 ### Known issues
 
 - **Release blocker, open owner decision: in `open` mode the HTTPS worker

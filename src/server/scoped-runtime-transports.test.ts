@@ -219,7 +219,8 @@ describe("scoped runtime HTTP/MCP/CLI boundaries", () => {
     expect((await f.call(client, "stop_project", {
       projectId, reservationId: held.reservationId, idempotencyKey: "authorized-runtime",
     })).value).toMatchObject({ outcome: "noop" });
-  }, 20_000);
+    // 512 sequential calls: 5.5 s median, 16.6 s maximum in 66 passing CI runs, and two timeouts at 20 s on slow runners.
+  }, 60_000);
 
   it("filters two credentials across discovery/status/worktrees and exposes no privileged runtime capabilities", async () => {
     const f = await fixture();
