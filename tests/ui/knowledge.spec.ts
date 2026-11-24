@@ -450,6 +450,36 @@ test("mobile reader hides list controls and returns focus to the selected discus
   expect(f.errors).toEqual([]);
 });
 
+test("browser Back before a mobile record loads returns focus to its link", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const f = await mountKnowledge(page);
+  f.records.push({ id: "pending-thread", projectId: "knowledge-only", title: "Pending decision", body: "Slow context", revision: 1, createdBy: "owner" });
+  await page.getByRole("tab", { name: "Discussions", exact: true }).click();
+  let requested = false;
+  let settled = false;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/knowledge", async route => {
+    const { operation, input } = route.request().postDataJSON();
+    if (operation !== "thread" || input.threadId !== "pending-thread") return route.fallback();
+    requested = true;
+    await gate;
+    try { await route.abort(); } catch { /* Back already aborted the read. */ }
+    settled = true;
+  });
+  const link = page.getByRole("link", { name: "Pending decision", exact: true });
+  try {
+    await link.click();
+    await expect.poll(() => requested).toBe(true);
+    await expect(page.getByLabel("Search discussions", { exact: true })).toBeHidden();
+    await page.goBack();
+    await expect(page.getByLabel("Search discussions", { exact: true })).toBeVisible();
+    await expect(link).toBeFocused();
+  } finally { release(); }
+  await expect.poll(() => settled).toBe(true);
+  expect(f.errors).toEqual([]);
+});
+
 test("changing Knowledge tabs or projects does not return focus to an old mobile record", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const f = await mountKnowledge(page);

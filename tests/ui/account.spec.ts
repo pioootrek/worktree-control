@@ -367,11 +367,11 @@ for (const operation of independentOperations) for (const status of [401, 403]) 
       stateUnavailable = false;
       denied = true;
       if (status === 401) fixture.session = null;
-      const [answer] = await Promise.all([
+      await Promise.all([
         page.waitForResponse(response => response.url().endsWith("/api/knowledge") && response.status() === status && response.request().postDataJSON()?.operation === operation),
         triggerIndependentKnowledge(page, operation),
       ]);
-      await answer.finished();
+      // No finished(): a 401 unmounts Knowledge and aborts the body read, and an aborted response never resolves finished().
       if (status === 401) {
         await expect(page.getByRole("heading", { name: "Account sign-in" })).toBeVisible();
         await expect(page.getByText("The session expired or was revoked. Sign in again.")).toBeVisible();

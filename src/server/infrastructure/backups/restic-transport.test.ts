@@ -9,7 +9,7 @@ import { ResticBackupTransport } from "./restic-transport";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-function fixture(mode = "healthy", repository = "rest:https://example.test/repo/", timeoutSeconds = 1) {
+function fixture(mode = "healthy", repository = "rest:https://example.test/repo/", timeoutSeconds = 15) {
   const root = mkdtempSync(join(tmpdir(), "restic-adapter-")), script = join(root, "restic"), statePath = join(root, "state.json");
   const manifest = "{\"fixture\":true}";
   writeFileSync(statePath, JSON.stringify({ mode, snapshots: [], calls: [], manifest }));
@@ -139,7 +139,8 @@ describe("shell-free restic adapter", () => {
     expect(f.state().snapshots).toHaveLength(0);
   });
   it.each(["wrong-repository", "wrong-manifest", "timeout", "oversized"])("bounds failures and returns no raw stderr, credentials or commands: %s", async mode => {
-    const f = fixture(mode); await expect(f.transport.upload(f.source)).rejects.toThrow(/^remote_failed$/);
+    // The timeout case needs the one-second deadline; the others would fail the same way with any deadline.
+    const f = fixture(mode, undefined, mode === "timeout" ? 1 : undefined); await expect(f.transport.upload(f.source)).rejects.toThrow(/^remote_failed$/);
     if (mode === "wrong-repository") expect(f.state().snapshots).toHaveLength(0);
   });
   it("does not inherit ambient repository/password commands/proxy/hooks and hides credentials from argv", async () => {
